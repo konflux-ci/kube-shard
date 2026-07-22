@@ -373,23 +373,7 @@ Switch from SQLite to a production-representative storage backend:
 
 **Success criteria:** All prior validations pass with PostgreSQL; data survives pod restarts; no performance regressions.
 
-### Phase 6: Namespace sync controller
-
-Build and deploy the lightweight namespace synchronization controller using [Kubebuilder](https://book.kubebuilder.io/):
-
-1. Scaffold controller with Kubebuilder in `controllers/namespace-sync/` subdirectory
-2. Implement reconciler: watch Namespaces on main → mirror create/delete to secondary
-3. Use label selector (e.g., `konflux.dev/tenant`) to scope to tenant namespaces
-4. Handle edge cases (rapid create/delete, controller restart, secondary unreachable)
-5. Validate that PipelineRun creation works immediately after namespace sync
-
-The controller lives in this repository under `controllers/namespace-sync/` and is built with Kubebuilder conventions (controller-runtime, standard RBAC markers, Makefile targets).
-
-Note: lower priority -- creating namespaces via script is a sufficient workaround for earlier phases.
-
-**Success criteria:** Namespaces propagate to secondary within seconds; controller recovers from restarts; no namespace leak.
-
-### Phase 7: Konflux integration
+### Phase 6: Konflux integration
 
 Validate the full Konflux pipeline workflow with the aggregated API server:
 
@@ -399,6 +383,32 @@ Validate the full Konflux pipeline workflow with the aggregated API server:
 4. Test interaction with other Konflux controllers (PaC, Integration Service)
 
 **Success criteria:** Chains signs TaskRuns; real Konflux pipelines complete; no regressions from aggregation.
+
+### Phase 7: kube-kine operator
+
+Build the kube-kine operator using [Kubebuilder](https://book.kubebuilder.io/) to replace all manual setup scripts with a declarative, reconciliation-driven approach. The operator manages the full lifecycle of the secondary API server and is generic -- not tied to Tekton or any specific CRD.
+
+**Responsibilities:**
+
+1. **Secondary API server lifecycle** -- deploy and manage the secondary kube-apiserver + Kine stack, replacing `setup-phase*.sh` scripts with a single `SecondaryAPIServer` custom resource
+2. **Generic CRD aggregation** -- accept a list of API groups/versions to aggregate (e.g., `tekton.dev`, `resolution.tekton.dev`, `appstudio.redhat.com`); install CRDs on secondary, register APIService objects on primary, remove conflicting CRDs from primary
+3. **Admission webhook synchronization** -- watch MutatingWebhookConfiguration/ValidatingWebhookConfiguration on the primary for configured labels/names, mirror them to the secondary with `clientConfig.service` → `clientConfig.url` transformation, and keep `caBundle` in sync on cert rotation
+4. **Namespace synchronization** -- watch Namespaces on main → mirror create/delete to secondary, scoped by label selector (e.g., `konflux.dev/tenant`), ignoring system namespaces
+
+**Implementation plan:**
+
+1. Scaffold operator with Kubebuilder in this repository
+2. Define CRD: `SecondaryAPIServer` (spec includes API groups, webhook selectors, namespace label selector, storage backend config)
+3. Implement reconcilers:
+   - Secondary deployment controller (kube-apiserver + Kine Deployment, Service, certificates)
+   - APIService registration controller
+   - Webhook sync controller (primary → secondary, with service→url and caBundle refresh)
+   - Namespace sync controller (main → secondary)
+   - CRD sync controller (install target CRDs on secondary)
+4. Validate that operator-managed deployment matches manual setup behavior
+5. Migrate PoC to operator-managed mode
+
+**Success criteria:** A single `SecondaryAPIServer` CR drives the entire deployment; operator handles cert rotation, webhook sync, namespace mirroring; works for any set of CRDs (not just Tekton); manual scripts are no longer required for new deployments.
 
 ### Phase 8: Integration test suites
 
@@ -451,7 +461,7 @@ Extend the secondary to serve additional Konflux-specific CRDs:
 
 ## Scope
 
-**Phases 1-9:** `tekton.dev` and `resolution.tekton.dev` API groups only (Konflux integration in Phase 7 uses these groups with real Konflux pipelines).
+**Phases 1-9:** `tekton.dev` and `resolution.tekton.dev` API groups only (Konflux integration in Phase 6 uses these groups with real Konflux pipelines).
 
 **Phase 10:** Konflux-specific CRDs (Snapshot, Release) moved to the same secondary API server.
 
