@@ -41,6 +41,14 @@ phase4: ## Upgrade to Phase 4: Kueue + tekton-kueue integration (requires Phase 
 test-phase4: ## Validate Phase 4: Kueue quota management tests
 	./hack/validate-phase4.sh
 
+.PHONY: phase5
+phase5: ## Upgrade to Phase 5: PostgreSQL backend (requires Phase 3)
+	./hack/setup-phase5.sh
+
+.PHONY: test-phase5
+test-phase5: ## Validate Phase 5: PostgreSQL persistence and regression tests
+	./hack/validate-phase5.sh
+
 .PHONY: kind
 kind: ## Create the kind cluster only
 	./hack/setup-kind.sh
