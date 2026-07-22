@@ -259,7 +259,22 @@ Additional APIService objects for:
 
 ### Migration from CRDs to APIService
 
-CRDs and APIService objects cannot coexist for the same group/version. Migration sequence:
+CRDs and aggregated APIService objects cannot coexist for the same group/version. This was validated experimentally in the PoC:
+
+**Proven behavior:** When a CRD exists on the primary for the same group/version as an aggregated APIService (one with `spec.service` pointing to an external server), the kube-aggregator controller:
+
+1. Labels the APIService with `kube-aggregator.kubernetes.io/automanaged: "true"`
+2. **Removes the `service` field** from the APIService spec
+3. Converts the APIService status to `reason: Local` with message "Local APIServices are always available"
+4. The primary now serves the resource directly from its own etcd (via CRD handler), bypassing aggregation entirely
+
+**Consequence:** All data stored on the secondary (Kine/SQLite/PostgreSQL) becomes invisible to clients of the primary. The primary's etcd has no Tekton resources, so clients see an empty list. There is a brief race window where the first request may still reach the secondary before the kube-aggregator reconciles, but it takes over within seconds.
+
+**Recovery:** Deleting the CRDs from the primary and re-applying the APIService with the `service` field restores proper aggregation and all data reappears from the secondary.
+
+**Production implication:** If the OpenShift Pipelines operator (or any Tekton installation) creates CRDs on the same cluster, it will immediately break aggregation. The operator's CRD management must be disabled on clusters using the aggregated secondary. The setup script (`hack/setup-poc.sh`) explicitly removes pre-existing Tekton CRDs before registering APIService objects.
+
+Migration sequence for existing clusters:
 
 1. **Drain:** Stop pipeline activity (or accept brief disruption)
 2. **Export:** Dump live Tekton resources from etcd (non-terminal PipelineRuns/TaskRuns)
@@ -290,7 +305,7 @@ The blast radius of secondary API server failure is similar to today's etcd fail
 |------|----------|------------|
 | **Kine watch performance at scale** -- SQL-polling watch handling 6000+ objects with 5+ concurrent watchers | High | Load test in PoC Phase 3. Kine polling interval is configurable. Upstream k3s benchmarks available. |
 | **ROSA compatibility** -- custom APIService registration on managed ROSA | Medium | Standard K8s API; OCP uses it extensively. Validate that ROSA operators don't reconcile/remove user-created APIServices. |
-| **OpenShift Pipelines operator conflict** -- operator expects to own Tekton CRDs | High | Overlay that disables CRD management on Konflux clusters. Long-term: operator-native support. |
+| **OpenShift Pipelines operator conflict** -- operator expects to own Tekton CRDs | High | **Validated:** CRDs on primary cause kube-aggregator to auto-manage the APIService, removing the `service` field and breaking aggregation. Operator CRD management must be disabled on Konflux clusters. Long-term: operator-native support. |
 | **Tekton controller assumptions** -- controllers relying on cross-resource resourceVersion ordering | Medium | Code review of Tekton pipeline controller. Unlikely (informer-based, not direct etcd). |
 | **Webhook certificate management** -- Tekton webhook self-generates certs | Medium | Provide certs externally (cert-manager) and disable self-cert logic. |
 | **Observability** -- etcd dashboards don't apply; need new PostgreSQL/Kine monitoring | Low | Build dashboards for Kine metrics and RDS CloudWatch. |
