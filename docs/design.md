@@ -70,7 +70,7 @@ flowchart TB
 | ResolutionRequest | Secondary → PostgreSQL | Short-lived, created per pipeline run |
 | Pods, ConfigMaps, Secrets, Events, Leases | Main → etcd | Unchanged |
 | Namespaces | Both (mirrored) | Sync controller copies from main → secondary |
-| Konflux CRDs (Snapshot, Release) | Phase 2: Secondary → PostgreSQL | Start with Tekton only |
+| Konflux CRDs (Snapshot, Release) | Phase 9: Secondary → PostgreSQL | Start with Tekton only |
 
 ## Secondary API Server Configuration
 
@@ -282,34 +282,124 @@ Validate API aggregation works end-to-end with Tekton controllers:
 
 **Success criteria:** PipelineRun completes; TaskRuns created; Pods scheduled; GC works.
 
-### Phase 2: Auth and namespace sync (kind + PostgreSQL)
+### Phase 2: Webhook authorization + RBAC
 
-1. Switch to in-cluster PostgreSQL
-2. Enable webhook authorization
-3. Deploy namespace sync controller
-4. Test RBAC enforcement
-5. Deploy Tekton Chains -- verify signing
+Validate that authorization delegation works correctly with the existing SQLite backend:
 
-**Success criteria:** RBAC works via delegation; namespaces propagate; Chains signs completed TaskRuns.
+1. Enable `--authorization-mode=Webhook` (delegate authz to main cluster's SubjectAccessReview)
+2. Configure authorization webhook config (ServiceAccount token with `system:auth-delegator` binding)
+3. Test RBAC enforcement (verify that existing RoleBindings on the main cluster gate access to Tekton resources on the secondary)
+4. Verify that unauthorized requests are rejected
 
-### Phase 3: Scale validation (kind or staging)
+**Success criteria:** RBAC works via webhook delegation; unauthorized users cannot create/list PipelineRuns.
 
-1. Deploy Kueue + tekton-kueue
-2. Generate concurrent PipelineRuns (100, 300, 500, 1000)
-3. Measure watch latency, reconciliation time, PostgreSQL throughput, Kine resource usage
-4. Compare against etcd-backed baseline
-5. Find Kine's breaking point
+### Phase 3: Tekton admission webhooks
 
-**Success criteria:** 1000+ concurrent PipelineRuns with <5s reconciliation latency; no watch storms.
+Validate that Tekton admission webhooks (validation + mutation) work when registered on the secondary:
 
-### Phase 4: Production readiness (ROSA staging)
+1. Register Tekton's ValidatingWebhookConfiguration and MutatingWebhookConfiguration on secondary
+2. Verify Tekton webhook validates/mutates PipelineRun specs correctly
+3. Verify invalid resources are rejected
 
-1. Deploy on Konflux staging cluster
+**Success criteria:** Tekton admission webhooks fire correctly on the secondary; invalid PipelineRuns rejected; mutation (defaults) applied.
+
+### Phase 4: Kueue + tekton-kueue integration
+
+Validate that the Kueue quota system and its admission webhooks work with the aggregated API server:
+
+1. Deploy cert-manager (required by Kueue)
+2. Deploy Kueue
+3. Deploy tekton-kueue controller
+4. Register Kueue's admission webhooks on secondary
+5. Configure ClusterQueues and LocalQueues
+6. Submit PipelineRuns and verify they are admitted/queued by Kueue
+7. Verify Kueue admission webhook correctly intercepts PipelineRun creation
+
+Reference: [konflux-ci/tekton-kueue Makefile](https://github.com/konflux-ci/tekton-kueue/blob/main/Makefile) for installing cert-manager, Kueue, and tekton-kueue.
+
+**Success criteria:** PipelineRuns are queued and admitted according to Kueue quotas; tekton-kueue correctly suspends/resumes PipelineRuns; Kueue admission webhook fires on the secondary.
+
+### Phase 5: PostgreSQL backend
+
+Switch from SQLite to a production-representative storage backend:
+
+1. Deploy in-cluster PostgreSQL
+2. Configure Kine with PostgreSQL connection string
+3. Re-run Phase 1-4 validations against PostgreSQL
+4. Validate data persistence across Kine restarts
+
+**Success criteria:** All prior validations pass with PostgreSQL; data survives pod restarts; no performance regressions.
+
+### Phase 6: Namespace sync controller
+
+Build and deploy the lightweight namespace synchronization controller using [Kubebuilder](https://book.kubebuilder.io/):
+
+1. Scaffold controller with Kubebuilder in `controllers/namespace-sync/` subdirectory
+2. Implement reconciler: watch Namespaces on main → mirror create/delete to secondary
+3. Use label selector (e.g., `konflux.dev/tenant`) to scope to tenant namespaces
+4. Handle edge cases (rapid create/delete, controller restart, secondary unreachable)
+5. Validate that PipelineRun creation works immediately after namespace sync
+
+The controller lives in this repository under `controllers/namespace-sync/` and is built with Kubebuilder conventions (controller-runtime, standard RBAC markers, Makefile targets).
+
+Note: lower priority -- creating namespaces via script is a sufficient workaround for earlier phases.
+
+**Success criteria:** Namespaces propagate to secondary within seconds; controller recovers from restarts; no namespace leak.
+
+### Phase 7: Konflux integration
+
+Validate the full Konflux pipeline workflow with the aggregated API server:
+
+1. Deploy Tekton Chains -- verify TaskRun signing works
+2. Run real Konflux pipelines (build-container, integration-test)
+3. Verify Chains produces signed attestations for TaskRuns stored on the secondary
+4. Test interaction with other Konflux controllers (PaC, Integration Service)
+
+**Success criteria:** Chains signs TaskRuns; real Konflux pipelines complete; no regressions from aggregation.
+
+### Phase 8: Integration test suites
+
+Build automated test suites in Go using [Ginkgo](https://onsi.github.io/ginkgo/) and [Gomega](https://onsi.github.io/gomega/) for Tekton and Kueue integration. These will be reused in Phase 9 for scale validation:
+
+1. Scaffold test suite under `test/e2e/` using Ginkgo
+2. Tekton integration tests: create PipelineRuns with various configurations, verify completion, TaskRun creation, Pod scheduling, GC cleanup
+3. Kueue integration tests: submit PipelineRuns against ClusterQueues, verify admission/queueing/suspension/resumption
+4. Parameterize tests for concurrency level (1, 10, 100, N) to support scale runs
+5. Add metrics collection hooks (reconciliation latency, watch event counts, Kine/PostgreSQL stats)
+6. CI-friendly: tests runnable via `make test-e2e` with configurable target cluster
+
+**Success criteria:** Repeatable Ginkgo test suite that validates Tekton + Kueue integration; parameterizable for scale; produces structured metrics output.
+
+### Phase 9: Scale validation
+
+Stress-test the secondary API server under concurrent load using the test suites from Phase 8:
+
+1. Run integration tests at increasing concurrency (100, 300, 500, 1000 PipelineRuns)
+2. Measure watch latency, reconciliation time, PostgreSQL throughput, Kine resource usage
+3. Compare against etcd-backed baseline
+4. Find Kine's breaking point
+5. Validate Kueue behavior under high concurrency
+
+**Success criteria:** 1000+ concurrent PipelineRuns with <5s reconciliation latency; no watch storms; Kueue quotas enforced correctly at scale.
+
+### Phase 10: Konflux API groups aggregation (Snapshots + Releases)
+
+Extend the secondary to serve additional Konflux-specific CRDs:
+
+1. Install Snapshot and Release CRDs on secondary
+2. Register APIService objects for `appstudio.redhat.com` (Snapshots, Releases)
+3. Validate Konflux controllers continue to reconcile these resources
+4. Verify cross-resource ownership chains (GC) work across groups
+
+**Success criteria:** Snapshot and Release resources stored on secondary (PostgreSQL); controllers unaffected; GC handles cross-group ownership.
+
+### Phase 11: Production readiness (ROSA staging)
+
+1. Deploy on Konflux staging cluster (ROSA)
 2. Validate APIService survives cluster operator reconciliation
 3. Test OpenShift Pipelines operator coexistence
-4. Run real Konflux pipelines (build, integration test)
-5. Validate admission webhooks
-6. Failover testing
+4. Failover testing (kill secondary pods, RDS failover simulation)
+5. Validate monitoring and alerting (Kine metrics, PostgreSQL CloudWatch)
 
 ## Deployment Strategy
 
@@ -318,9 +408,9 @@ Validate API aggregation works end-to-end with Tekton controllers:
 
 ## Scope
 
-**Phase 1 (initial):** `tekton.dev` and `resolution.tekton.dev` API groups only.
+**Phases 1-9:** `tekton.dev` and `resolution.tekton.dev` API groups only (Konflux integration in Phase 7 uses these groups with real Konflux pipelines).
 
-**Phase 2 (future):** Konflux-specific CRDs (Snapshot, Release) moved to the same secondary API server.
+**Phase 10:** Konflux-specific CRDs (Snapshot, Release) moved to the same secondary API server.
 
 **Future exploration:** If proven at scale, this approach could replace KubArchive for storing historical pipeline snapshots and release resources -- the PostgreSQL backend provides native query capabilities without needing a separate archival system.
 
