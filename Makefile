@@ -33,6 +33,14 @@ phase3: ## Upgrade to Phase 3: Tekton admission webhooks (requires Phase 2)
 test-phase3: ## Validate Phase 3: Tekton webhook validation/mutation tests
 	./hack/validate-phase3.sh
 
+.PHONY: phase4
+phase4: ## Upgrade to Phase 4: Kueue + tekton-kueue integration (requires Phase 3)
+	./hack/setup-phase4.sh
+
+.PHONY: test-phase4
+test-phase4: ## Validate Phase 4: Kueue quota management tests
+	./hack/validate-phase4.sh
+
 .PHONY: kind
 kind: ## Create the kind cluster only
 	./hack/setup-kind.sh
