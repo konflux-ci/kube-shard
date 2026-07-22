@@ -19,7 +19,7 @@ set -euo pipefail
 # can verify TLS when proxying to the secondary.
 #
 # Environment variables:
-#   KIND_CLUSTER_NAME    - Used to find the control-plane container (default: kube-kine-poc)
+#   KIND_CLUSTER_NAME    - Used to find the control-plane container (default: kube-shard-poc)
 #   USE_EXISTING_CLUSTER - If "true", won't attempt kind container extraction
 #   FRONT_PROXY_CA       - Path to an existing front-proxy CA cert file.
 #                          If set, skips extraction from kind. Required for
@@ -27,7 +27,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CERT_DIR="${REPO_ROOT}/_output/certs"
-KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-kine-poc}"
+KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-shard-poc}"
 USE_EXISTING_CLUSTER="${USE_EXISTING_CLUSTER:-false}"
 FRONT_PROXY_CA="${FRONT_PROXY_CA:-}"
 

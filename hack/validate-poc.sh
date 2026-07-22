@@ -15,11 +15,11 @@ set -euo pipefail
 #   5. Resources are accessible through the aggregated API path
 #
 # Environment variables:
-#   KIND_CLUSTER_NAME - Cluster context to use (default: kube-kine-poc)
+#   KIND_CLUSTER_NAME - Cluster context to use (default: kube-shard-poc)
 #   TIMEOUT           - Max seconds to wait for PipelineRun (default: 300)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-kine-poc}"
+KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-shard-poc}"
 TIMEOUT="${TIMEOUT:-300}"
 
 kubectl config use-context "kind-${KIND_CLUSTER_NAME}" >/dev/null 2>&1

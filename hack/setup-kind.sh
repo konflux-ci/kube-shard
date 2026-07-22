@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# setup-kind.sh - Creates a kind cluster for the kube-kine PoC.
+# setup-kind.sh - Creates a kind cluster for the kube-shard PoC.
 #
 # Purpose:
 #   Provisions a single-node kind cluster that acts as the "primary" cluster.
@@ -13,10 +13,10 @@ set -euo pipefail
 #   - Skips creation if the cluster already exists (idempotent)
 #
 # Environment variables:
-#   KIND_CLUSTER_NAME          - Cluster name (default: kube-kine-poc)
+#   KIND_CLUSTER_NAME          - Cluster name (default: kube-shard-poc)
 #   KIND_EXPERIMENTAL_PROVIDER - Override runtime detection (docker|podman)
 
-KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-kine-poc}"
+KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-shard-poc}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Auto-detect container runtime

@@ -30,7 +30,7 @@ CERT_DIR="${REPO_ROOT}/_output/certs"
 SECONDARY_PORT="${SECONDARY_PORT:-6444}"
 
 echo "============================================"
-echo "  kube-kine Phase 3: Tekton Admission Webhooks"
+echo "  kube-shard Phase 3: Tekton Admission Webhooks"
 echo "============================================"
 echo ""
 

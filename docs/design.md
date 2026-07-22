@@ -146,7 +146,7 @@ The Tekton webhook controller self-manages its TLS CA and injects the `caBundle`
 
 **Cert rotation risk:** The Tekton webhook may rotate its CA on pod restart. When this happens, the `caBundle` on the secondary becomes stale and webhook calls (both admission and CRD conversion) will fail with TLS errors.
 
-**Future automation (kube-kine-operator):** In production, the kube-kine-operator (see Phase 6) will watch webhook configurations on the primary and automatically mirror `caBundle` changes to the secondary. For the PoC, re-running `make phase3` after a Tekton webhook restart is sufficient.
+**Future automation (kube-shard-operator):** In production, the kube-shard-operator (see Phase 6) will watch webhook configurations on the primary and automatically mirror `caBundle` changes to the secondary. For the PoC, re-running `make phase3` after a Tekton webhook restart is sufficient.
 
 ### CRD conversion webhooks
 
@@ -164,14 +164,14 @@ The Phase 3 setup transforms all `clientConfig.service` references to `clientCon
 
 `NamespaceLifecycle` admission is disabled on the secondary. However, the secondary still needs Namespace objects in its store for list/watch to scope correctly.
 
-A lightweight sync controller (running on the main cluster) watches Namespaces and mirrors create/delete to the secondary. This will be one reconciliation loop of the **kube-kine-operator** (a Kubebuilder-based operator that owns the full lifecycle of the secondary API server):
+A lightweight sync controller (running on the main cluster) watches Namespaces and mirrors create/delete to the secondary. This will be one reconciliation loop of the **kube-shard-operator** (a Kubebuilder-based operator that owns the full lifecycle of the secondary API server):
 
 - Watches Namespaces on main → creates/deletes corresponding Namespace on secondary
 - Only syncs `metadata.name` and `metadata.labels`
 - Uses a label selector (e.g., `konflux.dev/tenant`) to limit scope to tenant namespaces
 - Ignores system namespaces (`kube-system`, `openshift-*`, etc.)
 
-The kube-kine-operator will also handle webhook config sync, CRD management, APIService registration, and secondary lifecycle management -- consolidating all sync/management concerns into a single operator.
+The kube-shard-operator will also handle webhook config sync, CRD management, APIService registration, and secondary lifecycle management -- consolidating all sync/management concerns into a single operator.
 
 **Failure modes:**
 - Sync controller behind: new namespaces won't exist on secondary immediately. PipelineRun creation still accepted (NamespaceLifecycle disabled), but list by namespace returns empty until sync catches up.
@@ -384,9 +384,9 @@ Validate the full Konflux pipeline workflow with the aggregated API server:
 
 **Success criteria:** Chains signs TaskRuns; real Konflux pipelines complete; no regressions from aggregation.
 
-### Phase 7: kube-kine operator
+### Phase 7: kube-shard operator
 
-Build the kube-kine operator using [Kubebuilder](https://book.kubebuilder.io/) to replace all manual setup scripts with a declarative, reconciliation-driven approach. The operator manages the full lifecycle of the secondary API server and is generic -- not tied to Tekton or any specific CRD.
+Build the kube-shard operator using [Kubebuilder](https://book.kubebuilder.io/) to replace all manual setup scripts with a declarative, reconciliation-driven approach. The operator manages the full lifecycle of the secondary API server and is generic -- not tied to Tekton or any specific CRD.
 
 **Responsibilities:**
 

@@ -4,7 +4,7 @@ set -euo pipefail
 # setup-poc.sh - Main orchestration for the Phase 1 PoC.
 #
 # Purpose:
-#   Deploys the complete kube-kine stack, validating that API aggregation works
+#   Deploys the complete kube-shard stack, validating that API aggregation works
 #   end-to-end with Tekton controllers.
 #
 # Supports two modes:
@@ -34,7 +34,7 @@ set -euo pipefail
 # Environment variables:
 #   USE_EXISTING_CLUSTER  - Skip kind creation, use current context (default: false)
 #   SKIP_TEKTON_INSTALL   - Don't install Tekton controller (default: false)
-#   KIND_CLUSTER_NAME     - Kind cluster name (default: kube-kine-poc)
+#   KIND_CLUSTER_NAME     - Kind cluster name (default: kube-shard-poc)
 #   TEKTON_VERSION        - Tekton Pipeline version (default: v0.65.2)
 #   FRONT_PROXY_CA        - Path to front-proxy CA cert. Auto-detected for kind.
 #                           Required for non-kind clusters if auto-detection fails.
@@ -43,7 +43,7 @@ set -euo pipefail
 #   SECONDARY_PORT        - Local port for port-forward to secondary (default: 6444)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-kine-poc}"
+KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-shard-poc}"
 NAMESPACE="tekton-apiserver"
 TEKTON_VERSION="${TEKTON_VERSION:-v0.65.2}"
 CERT_DIR="${REPO_ROOT}/_output/certs"
@@ -53,7 +53,7 @@ SKIP_TEKTON_INSTALL="${SKIP_TEKTON_INSTALL:-false}"
 MIRROR_NAMESPACES="${MIRROR_NAMESPACES:-default}"
 
 echo "============================================"
-echo "  kube-kine Phase 1 PoC Setup"
+echo "  kube-shard Phase 1 PoC Setup"
 echo "  Kine backend: SQLite"
 echo "  Tekton version: ${TEKTON_VERSION}"
 if [[ "${USE_EXISTING_CLUSTER}" == "true" ]]; then
@@ -82,8 +82,8 @@ echo "=== Step 2/7: Generate certificates ==="
 "${REPO_ROOT}/hack/generate-certs.sh"
 echo ""
 
-# ---------- Step 3: Deploy kube-kine stack (kustomize) ----------
-echo "=== Step 3/7: Deploy kube-kine stack ==="
+# ---------- Step 3: Deploy kube-shard stack (kustomize) ----------
+echo "=== Step 3/7: Deploy kube-shard stack ==="
 kubectl apply -k "${REPO_ROOT}/deploy/poc"
 
 kubectl -n "${NAMESPACE}" create secret generic secondary-apiserver-certs \

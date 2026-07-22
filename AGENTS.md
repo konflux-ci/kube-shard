@@ -4,7 +4,7 @@ Instructions for AI agents working on this repository.
 
 ## Project Overview
 
-kube-kine is a secondary aggregated Kubernetes API server backed by Kine (SQLite/PostgreSQL) instead of etcd. It offloads Tekton CRDs from the main cluster's etcd to eliminate the 8 GB storage size constraint that caps PipelineRun concurrency.
+kube-shard is a secondary aggregated Kubernetes API server backed by Kine (SQLite/PostgreSQL) instead of etcd. It offloads Tekton CRDs from the main cluster's etcd to eliminate the 8 GB storage size constraint that caps PipelineRun concurrency.
 
 The full design is in [docs/design.md](docs/design.md).
 
@@ -97,7 +97,7 @@ Use the shim script for direct access to the secondary (bypassing aggregation):
 |----------|---------|-------------|
 | `USE_EXISTING_CLUSTER` | `false` | Skip kind creation, deploy on current kubectl context |
 | `SKIP_TEKTON_INSTALL` | `false` | Don't install Tekton controller (use existing) |
-| `KIND_CLUSTER_NAME` | `kube-kine-poc` | Name of the kind cluster to create/use |
+| `KIND_CLUSTER_NAME` | `kube-shard-poc` | Name of the kind cluster to create/use |
 | `TEKTON_VERSION` | `v0.65.2` | Tekton Pipeline release to install |
 | `FRONT_PROXY_CA` | *(auto-detected)* | Path to the cluster's front-proxy CA cert |
 | `MIRROR_NAMESPACES` | `default` | Space-separated namespaces to create on secondary |
@@ -106,7 +106,7 @@ Use the shim script for direct access to the secondary (bypassing aggregation):
 
 ## Development Conventions
 
-- Go module: `github.com/konflux-ci/kube-kine`
+- Go module: `github.com/konflux-ci/kube-shard`
 - Scripts in `hack/` should be self-documenting with a header comment block
 - Kubernetes manifests use Kustomize (`deploy/poc/kustomization.yaml`)
 - Generated/temporary files go in `_output/` (gitignored)

@@ -1,10 +1,10 @@
-# kube-kine
+# kube-shard
 
 An aggregated Kubernetes API server backed by [Kine](https://github.com/k3s-io/kine) (PostgreSQL/SQLite/MySQL) instead of etcd. Offloads CRDs from the main cluster's etcd to eliminate storage size constraints.
 
 ## What it does
 
-kube-kine runs a secondary `kube-apiserver` on a Kubernetes cluster, backed by PostgreSQL (or SQLite for development). The main cluster's kube-apiserver forwards requests for configured API groups to kube-kine via [API aggregation](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/apiserver-aggregation/) (APIService resources).
+kube-shard runs a secondary `kube-apiserver` on a Kubernetes cluster, backed by PostgreSQL (or SQLite for development). The main cluster's kube-apiserver forwards requests for configured API groups to kube-shard via [API aggregation](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/apiserver-aggregation/) (APIService resources).
 
 Controllers and clients are unaware of the split -- they talk to the main kube-apiserver as usual, and aggregation transparently routes requests to the correct backend.
 
@@ -24,13 +24,13 @@ Etcd has a hard 8 GB storage limit. For workloads that generate large, high-chur
 ┌─────────────────────────────────────────────────────────┐
 │  Main kube-apiserver (manages Pods, Secrets, etc.)      │
 │  ┌───────────────────────────────────────────────────┐  │
-│  │ APIService: forward tekton.dev → kube-kine        │  │
+│  │ APIService: forward tekton.dev → kube-shard        │  │
 │  └───────────────────────────────────────────────────┘  │
 └──────────────────────────┬──────────────────────────────┘
                            │ aggregation proxy
                            ▼
 ┌─────────────────────────────────────────────────────────┐
-│  kube-kine (secondary kube-apiserver)                   │
+│  kube-shard (secondary kube-apiserver)                   │
 │  • Serves configured CRDs (e.g., tekton.dev)           │
 │  • Delegates authz to main cluster (webhook)           │
 │  • Admission webhooks registered locally               │
@@ -112,7 +112,7 @@ All configuration is via environment variables:
 |----------|---------|-------------|
 | `USE_EXISTING_CLUSTER` | `false` | Skip kind creation, deploy on current kubectl context |
 | `SKIP_TEKTON_INSTALL` | `false` | Don't install Tekton controller (use existing) |
-| `KIND_CLUSTER_NAME` | `kube-kine-poc` | Name of the kind cluster to create/use |
+| `KIND_CLUSTER_NAME` | `kube-shard-poc` | Name of the kind cluster to create/use |
 | `TEKTON_VERSION` | `v0.65.2` | Tekton Pipeline release to install |
 | `FRONT_PROXY_CA` | *(auto-detected)* | Path to the cluster's front-proxy CA cert |
 | `MIRROR_NAMESPACES` | `default` | Space-separated namespaces to create on secondary |

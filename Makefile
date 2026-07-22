@@ -2,7 +2,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 KUBE_VERSION ?= $(shell kubectl version --client -o json 2>/dev/null | jq -r '.clientVersion.gitVersion' | sed 's/+.*//')
-KIND_CLUSTER_NAME ?= kube-kine-poc
+KIND_CLUSTER_NAME ?= kube-shard-poc
 NAMESPACE ?= tekton-apiserver
 
 .PHONY: help

@@ -35,7 +35,7 @@ CERT_DIR="${REPO_ROOT}/_output/certs"
 SECONDARY_PORT="${SECONDARY_PORT:-6444}"
 
 echo "============================================"
-echo "  kube-kine Phase 2: Webhook Authorization"
+echo "  kube-shard Phase 2: Webhook Authorization"
 echo "============================================"
 echo ""
 

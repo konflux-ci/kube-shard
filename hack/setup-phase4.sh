@@ -33,7 +33,7 @@ KUEUE_VERSION="${KUEUE_VERSION:-v0.16.6}"
 TEKTON_KUEUE_VERSION="${TEKTON_KUEUE_VERSION:-v0.3.1}"
 
 echo "============================================"
-echo "  kube-kine Phase 4: Kueue + tekton-kueue"
+echo "  kube-shard Phase 4: Kueue + tekton-kueue"
 echo "============================================"
 echo ""
 echo "  cert-manager: ${CERT_MANAGER_VERSION}"

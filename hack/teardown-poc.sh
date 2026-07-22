@@ -7,9 +7,9 @@ set -euo pipefail
 #   Deletes the kind cluster and cleans up generated artifacts (_output/).
 #
 # Environment variables:
-#   KIND_CLUSTER_NAME - Cluster to delete (default: kube-kine-poc)
+#   KIND_CLUSTER_NAME - Cluster to delete (default: kube-shard-poc)
 
-KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-kine-poc}"
+KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-kube-shard-poc}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "==> Tearing down PoC..."
