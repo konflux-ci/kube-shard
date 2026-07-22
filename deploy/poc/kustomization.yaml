@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: tekton-apiserver
+
+resources:
+- namespace.yaml
+- kine.yaml
+- secondary-apiserver.yaml
+
+images:
+- name: rancher/kine
+  newName: rancher/kine
+  newTag: v0.14.14
+- name: registry.k8s.io/kube-apiserver
+  newName: registry.k8s.io/kube-apiserver
+  newTag: v1.36.2

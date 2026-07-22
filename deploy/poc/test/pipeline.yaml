@@ -1,0 +1,25 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world
+  namespace: default
+spec:
+  tasks:
+  - name: say-hello
+    taskSpec:
+      steps:
+      - name: hello
+        image: alpine:3.20
+        script: |
+          echo "Hello from kube-kine secondary API server!"
+          echo "This PipelineRun is stored in Kine (SQLite), not etcd."
+          date
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: hello-world-run
+  namespace: default
+spec:
+  pipelineRef:
+    name: hello-world

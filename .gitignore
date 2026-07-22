@@ -1,0 +1,6 @@
+_output/
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

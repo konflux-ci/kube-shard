@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secondary-apiserver
+  namespace: tekton-apiserver
+  labels:
+    app: secondary-apiserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: secondary-apiserver
+  template:
+    metadata:
+      labels:
+        app: secondary-apiserver
+    spec:
+      containers:
+      - name: kube-apiserver
+        image: registry.k8s.io/kube-apiserver
+        command:
+        - kube-apiserver
+        args:
+        - --etcd-servers=http://kine.tekton-apiserver.svc:2379
+        - --secure-port=6443
+        - --tls-cert-file=/etc/kube/pki/serving.crt
+        - --tls-private-key-file=/etc/kube/pki/serving.key
+        # Request header auth (API aggregation from main KAS)
+        - --requestheader-client-ca-file=/etc/kube/pki/front-proxy-ca.crt
+        - --requestheader-allowed-names=front-proxy-client
+        - --requestheader-username-headers=X-Remote-User
+        - --requestheader-group-headers=X-Remote-Group
+        - --requestheader-extra-headers-prefix=X-Remote-Extra-
+        # Static token auth for direct access (PoC only)
+        - --token-auth-file=/etc/kube/pki/token-auth.csv
+        # Phase 1: allow all authenticated requests
+        - --authorization-mode=AlwaysAllow
+        # SA signing (required by apiserver binary, but unused for aggregated serving)
+        - --service-account-key-file=/etc/kube/pki/sa-signing.pub
+        - --service-account-signing-key-file=/etc/kube/pki/sa-signing.key
+        - --service-account-issuer=https://kubernetes.default.svc
+        # Disabled admission plugins:
+        # - NamespaceLifecycle: Namespaces are mirrored from the primary, not
+        #   authoritative on the secondary. This plugin would reject requests
+        #   targeting namespaces that haven't been synced yet.
+        # - ServiceAccount: The secondary never validates SA tokens directly.
+        #   All authentication happens on the primary; the secondary receives
+        #   pre-authenticated identity via request headers. Enabling this plugin
+        #   would require syncing ServiceAccount objects to the secondary.
+        - --disable-admission-plugins=NamespaceLifecycle,ServiceAccount
+        ports:
+        - containerPort: 6443
+          name: https
+          protocol: TCP
+        volumeMounts:
+        - name: pki
+          mountPath: /etc/kube/pki
+          readOnly: true
+        readinessProbe:
+          tcpSocket:
+            port: 6443
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 6443
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 5
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+      volumes:
+      - name: pki
+        secret:
+          secretName: secondary-apiserver-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tekton-apiserver
+  namespace: tekton-apiserver
+spec:
+  selector:
+    app: secondary-apiserver
+  ports:
+  - port: 443
+    targetPort: 6443
+    protocol: TCP
+    name: https

@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kine
+  namespace: tekton-apiserver
+  labels:
+    app: kine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kine
+  template:
+    metadata:
+      labels:
+        app: kine
+    spec:
+      containers:
+      - name: kine
+        image: rancher/kine
+        args:
+        - --endpoint=sqlite:///data/kine.db
+        - --listen-address=tcp://0.0.0.0:2379
+        ports:
+        - containerPort: 2379
+          name: etcd
+          protocol: TCP
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        readinessProbe:
+          tcpSocket:
+            port: 2379
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 2379
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kine
+  namespace: tekton-apiserver
+spec:
+  selector:
+    app: kine
+  ports:
+  - port: 2379
+    targetPort: 2379
+    protocol: TCP
+    name: etcd
