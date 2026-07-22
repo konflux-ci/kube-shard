@@ -25,6 +25,14 @@ phase2: ## Upgrade to Phase 2: webhook authorization + RBAC (requires Phase 1)
 test-phase2: ## Validate Phase 2: RBAC enforcement tests
 	./hack/validate-phase2.sh
 
+.PHONY: phase3
+phase3: ## Upgrade to Phase 3: Tekton admission webhooks (requires Phase 2)
+	./hack/setup-phase3.sh
+
+.PHONY: test-phase3
+test-phase3: ## Validate Phase 3: Tekton webhook validation/mutation tests
+	./hack/validate-phase3.sh
+
 .PHONY: kind
 kind: ## Create the kind cluster only
 	./hack/setup-kind.sh

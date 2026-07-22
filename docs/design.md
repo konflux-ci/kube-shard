@@ -136,16 +136,42 @@ The main kube-apiserver does **not** run admission webhooks for aggregated API r
 
 Tekton's validation/mutation webhooks and Kueue's admission controller need to be registered on the secondary server (as ValidatingWebhookConfiguration/MutatingWebhookConfiguration objects in the secondary's store). They point to the same in-cluster webhook Services, which are reachable from the secondary via cluster DNS.
 
+### caBundle synchronization
+
+The Tekton webhook controller self-manages its TLS CA and injects the `caBundle` into webhook configurations and CRD conversion specs -- but only on objects in the **primary's** store. The secondary receives these objects via a copy/sync mechanism:
+
+1. The setup script extracts fully-configured webhook configs (with `caBundle` already injected) from the primary
+2. Applies them to the secondary's store
+3. Patches CRDs on the secondary with the same `caBundle` for conversion webhook connectivity
+
+**Cert rotation risk:** The Tekton webhook may rotate its CA on pod restart. When this happens, the `caBundle` on the secondary becomes stale and webhook calls (both admission and CRD conversion) will fail with TLS errors.
+
+**Future automation (kube-kine-operator):** In production, the kube-kine-operator (see Phase 6) will watch webhook configurations on the primary and automatically mirror `caBundle` changes to the secondary. For the PoC, re-running `make phase3` after a Tekton webhook restart is sufficient.
+
+### CRD conversion webhooks
+
+Tekton CRDs declare `v1beta1` as a served version with `spec.conversion.strategy: Webhook`, pointing at `tekton-pipelines-webhook`. However, the Tekton webhook server does **not** implement a conversion endpoint (responds with "no controller registered for: /"). This means CRD conversion is non-functional regardless of how the webhook is configured.
+
+The Phase 3 setup disables these non-functional conversion webhooks by setting `spec.conversion.strategy: None` on all Tekton CRDs on the secondary. Only v1 (the stored version) is actively used.
+
+### Webhook `clientConfig.service` vs `url`
+
+When a webhook config uses `clientConfig.service`, the API server looks up the Service object in its **own** store (not via DNS). Since the secondary doesn't have `tekton-pipelines-webhook` Service in its store, service-based webhook references fail.
+
+The Phase 3 setup transforms all `clientConfig.service` references to `clientConfig.url` (e.g., `https://tekton-pipelines-webhook.tekton-pipelines.svc:443/defaulting`). URL-based references use standard DNS resolution, which works because the secondary pod is in the same cluster and can resolve cluster-internal Service names.
+
 ## Namespace Synchronization
 
 `NamespaceLifecycle` admission is disabled on the secondary. However, the secondary still needs Namespace objects in its store for list/watch to scope correctly.
 
-A lightweight sync controller (running on the main cluster) watches Namespaces and mirrors create/delete to the secondary:
+A lightweight sync controller (running on the main cluster) watches Namespaces and mirrors create/delete to the secondary. This will be one reconciliation loop of the **kube-kine-operator** (a Kubebuilder-based operator that owns the full lifecycle of the secondary API server):
 
 - Watches Namespaces on main → creates/deletes corresponding Namespace on secondary
 - Only syncs `metadata.name` and `metadata.labels`
 - Uses a label selector (e.g., `konflux.dev/tenant`) to limit scope to tenant namespaces
 - Ignores system namespaces (`kube-system`, `openshift-*`, etc.)
+
+The kube-kine-operator will also handle webhook config sync, CRD management, APIService registration, and secondary lifecycle management -- consolidating all sync/management concerns into a single operator.
 
 **Failure modes:**
 - Sync controller behind: new namespaces won't exist on secondary immediately. PipelineRun creation still accepted (NamespaceLifecycle disabled), but list by namespace returns empty until sync catches up.
