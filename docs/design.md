@@ -82,22 +82,24 @@ The secondary kube-apiserver runs as a Deployment in a dedicated namespace (`tek
 |------|-------|-----------|
 | `--etcd-servers` | `http://kine.tekton-apiserver.svc:2379` | Kine endpoint (in-cluster) |
 | `--authorization-mode` | `Webhook` | Delegates authz to main cluster |
-| `--authorization-webhook-config-file` | `/etc/kube/authz-webhook.yaml` | Points to main cluster's SAR endpoint |
-| `--requestheader-client-ca-file` | `/etc/kube/front-proxy-ca.crt` | Trust the main KAS identity headers |
+| `--authorization-webhook-config-file` | `/etc/kube/authz/webhook-config.yaml` | Points to main cluster's SAR endpoint |
+| `--authorization-webhook-version` | `v1` | Required for k8s 1.36+ (default is v1beta1) |
+| `--requestheader-client-ca-file` | `/etc/kube/pki/front-proxy-ca.crt` | Trust the main KAS identity headers |
 | `--requestheader-allowed-names` | `front-proxy-client` | Only accept headers from the main KAS |
-| `--disable-admission-plugins` | `NamespaceLifecycle` | Namespaces are mirrored, not authoritative here |
+| `--disable-admission-plugins` | `NamespaceLifecycle,ServiceAccount` | Namespaces are mirrored; SA tokens handled by main |
 | `--enable-admission-plugins` | `MutatingAdmissionWebhook,ValidatingAdmissionWebhook` | For Tekton/Kueue webhooks |
 | `--tls-cert-file` / `--tls-private-key-file` | Serving cert for the Service | TLS between main KAS and secondary |
+| `--service-account-key-file` | SA signing public key | Required by kube-apiserver binary (unused for auth) |
 
-Note: `--service-account-key-file` is NOT needed on the secondary. The secondary never receives raw ServiceAccount tokens -- the main KAS authenticates all tokens and passes the authenticated identity via request headers. The secondary only trusts these headers (via `--requestheader-client-ca-file`).
+Note: `--service-account-key-file` and `--service-account-signing-key-file` are required by the kube-apiserver binary but not used for authentication. The secondary never validates raw ServiceAccount tokens -- the main KAS authenticates all tokens and passes the authenticated identity via request headers. The secondary only trusts these headers (via `--requestheader-client-ca-file`).
 
-For the authz webhook callback (secondary → main KAS SubjectAccessReview), the secondary authenticates to the main cluster using a dedicated ServiceAccount token with `system:auth-delegator` ClusterRoleBinding. This token is specified in the `--authorization-webhook-config-file` kubeconfig.
+For the authz webhook callback (secondary → main KAS SubjectAccessReview), the secondary pod runs as a ServiceAccount with `system:auth-delegator` ClusterRoleBinding. The webhook kubeconfig references the kubelet-projected token (`tokenFile`) and cluster CA from the pod's mounted service account volume -- no manual token management required.
 
 ### What is NOT enabled on the secondary
 
 - No scheduler, no controller-manager, no kubelet integration
 - No built-in controllers (garbage collection handled by main cluster's GC through the aggregation layer)
-- No service account token issuer (tokens issued by main cluster; secondary validates them)
+- No service account token validation (tokens authenticated by main cluster; secondary receives identity via request headers)
 
 ### Deployment Spec
 

@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../poc
+- authz-rbac.yaml
+- webhook-kubeconfig.yaml
+
+patches:
+- target:
+    kind: Deployment
+    name: secondary-apiserver
+  path: secondary-apiserver-patch.yaml

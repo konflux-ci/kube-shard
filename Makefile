@@ -17,6 +17,14 @@ poc: ## Run the full Phase 1 POC (fresh kind cluster + Kine/SQLite + Tekton)
 poc-existing: ## Deploy on existing cluster (uses current kubectl context)
 	USE_EXISTING_CLUSTER=true SKIP_TEKTON_INSTALL=true ./hack/setup-poc.sh
 
+.PHONY: phase2
+phase2: ## Upgrade to Phase 2: webhook authorization + RBAC (requires Phase 1)
+	./hack/setup-phase2.sh
+
+.PHONY: test-phase2
+test-phase2: ## Validate Phase 2: RBAC enforcement tests
+	./hack/validate-phase2.sh
+
 .PHONY: kind
 kind: ## Create the kind cluster only
 	./hack/setup-kind.sh
