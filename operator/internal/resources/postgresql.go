@@ -61,6 +61,10 @@ func BuildPostgreSQLSecret(shard *kubeshardv1alpha1.APIShard) *corev1.Secret {
 	labels := postgresLabels(shard)
 
 	return &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Secret",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: shard.Spec.TargetNamespace,
@@ -92,6 +96,10 @@ func BuildPostgreSQLDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploy
 	}
 
 	return &appsv1.Deployment{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: shard.Spec.TargetNamespace,
@@ -176,6 +184,10 @@ func BuildPostgreSQLService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	labels := postgresLabels(shard)
 
 	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Service",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: shard.Spec.TargetNamespace,

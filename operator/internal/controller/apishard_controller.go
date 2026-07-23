@@ -23,16 +23,18 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/konflux-ci/konflux-ci/operator/pkg/tracking"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
@@ -41,7 +43,19 @@ import (
 const (
 	finalizerName = "kube-shard.konflux-ci.dev/finalizer"
 	requeueDelay  = 30 * time.Second
+	fieldManager  = "kube-shard-operator"
+
+	ownerLabelKey     = "kube-shard.konflux-ci.dev/owner"
+	componentLabelKey = "kube-shard.konflux-ci.dev/component"
 )
+
+// managedGVKs lists all GVKs that the APIShardReconciler may create,
+// used by the tracking client for orphan cleanup.
+var managedGVKs = []schema.GroupVersionKind{
+	{Group: "apps", Version: "v1", Kind: "Deployment"},
+	{Group: "", Version: "v1", Kind: "Service"},
+	{Group: "", Version: "v1", Kind: "Secret"},
+}
 
 // APIShardReconciler reconciles a APIShard object
 type APIShardReconciler struct {
@@ -55,7 +69,7 @@ type APIShardReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *APIShardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -86,7 +100,6 @@ func (r *APIShardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.setPhaseAndRequeue(ctx, &shard, kubeshardv1alpha1.PhaseError, err)
 	}
 
-	// Set phase to Provisioning if not already set
 	if shard.Status.Phase == "" {
 		shard.Status.Phase = kubeshardv1alpha1.PhaseProvisioning
 		if err := r.Status().Update(ctx, &shard); err != nil {
@@ -94,24 +107,38 @@ func (r *APIShardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
+	// Create a tracking client with ownership for SSA + orphan cleanup
+	tc := tracking.NewClientWithOwnership(r.Client, tracking.OwnershipConfig{
+		Owner:             &shard,
+		OwnerLabelKey:     ownerLabelKey,
+		ComponentLabelKey: componentLabelKey,
+		Component:         "apishard",
+		FieldManager:      fieldManager,
+	})
+
 	// Reconcile in-cluster PostgreSQL if configured
 	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeInClusterPostgreSQL {
-		if err := r.reconcileInClusterPostgreSQL(ctx, &shard); err != nil {
+		if err := r.reconcileInClusterPostgreSQL(ctx, tc, &shard); err != nil {
 			logger.Error(err, "Failed to reconcile in-cluster PostgreSQL")
 			return r.setPhaseAndRequeue(ctx, &shard, kubeshardv1alpha1.PhaseError, err)
 		}
 	}
 
 	// Reconcile Kine
-	if err := r.reconcileKine(ctx, &shard); err != nil {
+	if err := r.reconcileKine(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile Kine")
 		return r.setPhaseAndRequeue(ctx, &shard, kubeshardv1alpha1.PhaseError, err)
 	}
 
 	// Reconcile Secondary API server
-	if err := r.reconcileSecondary(ctx, &shard); err != nil {
+	if err := r.reconcileSecondary(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile secondary API server")
 		return r.setPhaseAndRequeue(ctx, &shard, kubeshardv1alpha1.PhaseError, err)
+	}
+
+	// Cleanup orphaned resources that were not applied this reconcile
+	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, managedGVKs); err != nil {
+		logger.Error(err, "Failed to cleanup orphans")
 	}
 
 	// Check health of deployments
@@ -154,8 +181,7 @@ func (r *APIShardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 func (r *APIShardReconciler) reconcileDelete(ctx context.Context, shard *kubeshardv1alpha1.APIShard) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("Reconciling APIShard deletion")
+	log.FromContext(ctx).Info("Reconciling APIShard deletion")
 
 	controllerutil.RemoveFinalizer(shard, finalizerName)
 	if err := r.Update(ctx, shard); err != nil {
@@ -187,81 +213,48 @@ func (r *APIShardReconciler) ensureNamespace(ctx context.Context, shard *kubesha
 	return r.Create(ctx, ns)
 }
 
-func (r *APIShardReconciler) reconcileKine(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
-	// Reconcile Kine Deployment
-	desired := resources.BuildKineDeployment(shard)
-	if err := r.reconcileDeployment(ctx, shard, desired); err != nil {
+func (r *APIShardReconciler) reconcileKine(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	deployment := resources.BuildKineDeployment(shard)
+	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("kine deployment: %w", err)
 	}
 
-	// Reconcile Kine Service
-	desiredSvc := resources.BuildKineService(shard)
-	if err := r.reconcileService(ctx, shard, desiredSvc); err != nil {
+	svc := resources.BuildKineService(shard)
+	if err := tc.ApplyOwned(ctx, svc); err != nil {
 		return fmt.Errorf("kine service: %w", err)
 	}
 
 	return nil
 }
 
-func (r *APIShardReconciler) reconcileSecondary(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
-	// Reconcile Secondary Deployment
-	desired := resources.BuildSecondaryDeployment(shard)
-	if err := r.reconcileDeployment(ctx, shard, desired); err != nil {
+func (r *APIShardReconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	deployment := resources.BuildSecondaryDeployment(shard)
+	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("secondary deployment: %w", err)
 	}
 
-	// Reconcile Secondary Service
-	desiredSvc := resources.BuildSecondaryService(shard)
-	if err := r.reconcileService(ctx, shard, desiredSvc); err != nil {
+	svc := resources.BuildSecondaryService(shard)
+	if err := tc.ApplyOwned(ctx, svc); err != nil {
 		return fmt.Errorf("secondary service: %w", err)
 	}
 
 	return nil
 }
 
-func (r *APIShardReconciler) reconcileDeployment(ctx context.Context, shard *kubeshardv1alpha1.APIShard, desired *appsv1.Deployment) error {
-	existing := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
-	if apierrors.IsNotFound(err) {
-		if err := ctrl.SetControllerReference(shard, desired, r.Scheme); err != nil {
-			return err
-		}
-		return r.Create(ctx, desired)
-	}
-	if err != nil {
-		return err
+func (r *APIShardReconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	secret := resources.BuildPostgreSQLSecret(shard)
+	if err := tc.ApplyOwned(ctx, secret); err != nil {
+		return fmt.Errorf("postgresql secret: %w", err)
 	}
 
-	// Update if spec changed
-	if !equality.Semantic.DeepEqual(existing.Spec.Template.Spec, desired.Spec.Template.Spec) ||
-		!equality.Semantic.DeepEqual(existing.Spec.Replicas, desired.Spec.Replicas) {
-		existing.Spec.Template = desired.Spec.Template
-		existing.Spec.Replicas = desired.Spec.Replicas
-		return r.Update(ctx, existing)
+	deployment := resources.BuildPostgreSQLDeployment(shard)
+	if err := tc.ApplyOwned(ctx, deployment); err != nil {
+		return fmt.Errorf("postgresql deployment: %w", err)
 	}
 
-	return nil
-}
-
-func (r *APIShardReconciler) reconcileService(ctx context.Context, shard *kubeshardv1alpha1.APIShard, desired *corev1.Service) error {
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
-	if apierrors.IsNotFound(err) {
-		if err := ctrl.SetControllerReference(shard, desired, r.Scheme); err != nil {
-			return err
-		}
-		return r.Create(ctx, desired)
-	}
-	if err != nil {
-		return err
-	}
-
-	// Update if spec changed (preserve ClusterIP)
-	if !equality.Semantic.DeepEqual(existing.Spec.Ports, desired.Spec.Ports) ||
-		!equality.Semantic.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) {
-		existing.Spec.Ports = desired.Spec.Ports
-		existing.Spec.Selector = desired.Spec.Selector
-		return r.Update(ctx, existing)
+	svc := resources.BuildPostgreSQLService(shard)
+	if err := tc.ApplyOwned(ctx, svc); err != nil {
+		return fmt.Errorf("postgresql service: %w", err)
 	}
 
 	return nil
@@ -299,37 +292,6 @@ func (r *APIShardReconciler) setPhaseAndRequeue(ctx context.Context, shard *kube
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeueDelay}, reconcileErr
-}
-
-func (r *APIShardReconciler) reconcileInClusterPostgreSQL(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
-	// Secret
-	desiredSecret := resources.BuildPostgreSQLSecret(shard)
-	existingSecret := &corev1.Secret{}
-	err := r.Get(ctx, types.NamespacedName{Name: desiredSecret.Name, Namespace: desiredSecret.Namespace}, existingSecret)
-	if apierrors.IsNotFound(err) {
-		if err := ctrl.SetControllerReference(shard, desiredSecret, r.Scheme); err != nil {
-			return err
-		}
-		if err := r.Create(ctx, desiredSecret); err != nil {
-			return fmt.Errorf("creating postgresql secret: %w", err)
-		}
-	} else if err != nil {
-		return err
-	}
-
-	// Deployment
-	desiredDeploy := resources.BuildPostgreSQLDeployment(shard)
-	if err := r.reconcileDeployment(ctx, shard, desiredDeploy); err != nil {
-		return fmt.Errorf("postgresql deployment: %w", err)
-	}
-
-	// Service
-	desiredSvc := resources.BuildPostgreSQLService(shard)
-	if err := r.reconcileService(ctx, shard, desiredSvc); err != nil {
-		return fmt.Errorf("postgresql service: %w", err)
-	}
-
-	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

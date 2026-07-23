@@ -25,7 +25,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -340,9 +339,6 @@ func servicePath(path *string) string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WebhookSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Suppress unused import
-	_ = labels.Everything()
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.WebhookSync{}).
 		Watches(&admissionregistrationv1.MutatingWebhookConfiguration{}, &webhookEventHandler{client: r.Client}).
