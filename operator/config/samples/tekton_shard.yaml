@@ -1,0 +1,36 @@
+apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: APIShard
+metadata:
+  name: tekton-shard
+spec:
+  targetNamespace: kube-shard-operator
+  apiGroups:
+  - group: tekton.dev
+    versions: ["v1", "v1beta1"]
+  - group: resolution.tekton.dev
+    versions: ["v1beta1"]
+  storage:
+    type: InClusterPostgreSQL
+    inCluster:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
+  namespaceSync:
+    labelSelector:
+      matchLabels:
+        konflux.dev/type: tenant
+  secondary:
+    replicas: 1
+    image: registry.k8s.io/kube-apiserver:v1.32.0
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+  kine:
+    replicas: 1
+    image: rancher/kine:v0.14.14

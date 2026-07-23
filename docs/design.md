@@ -417,20 +417,8 @@ Build the kube-shard operator using [Kubebuilder](https://book.kubebuilder.io/) 
 3. **Admission webhook synchronization** -- watch MutatingWebhookConfiguration/ValidatingWebhookConfiguration on the primary for configured labels/names, mirror them to the secondary with `clientConfig.service` → `clientConfig.url` transformation, and keep `caBundle` in sync on cert rotation
 4. **Namespace synchronization** -- watch Namespaces on main → mirror create/delete to secondary, scoped by label selector (e.g., `konflux.dev/tenant`), ignoring system namespaces
 
-**Implementation plan:**
 
-1. Scaffold operator with Kubebuilder in this repository
-2. Define CRD: `SecondaryAPIServer` (spec includes API groups, webhook selectors, namespace label selector, storage backend config)
-3. Implement reconcilers:
-   - Secondary deployment controller (kube-apiserver + Kine Deployment, Service, certificates)
-   - APIService registration controller
-   - Webhook sync controller (primary → secondary, with service→url and caBundle refresh)
-   - Namespace sync controller (main → secondary)
-   - CRD sync controller (install target CRDs on secondary, coordinate with upstream operators that own those CRDs)
-4. Validate that operator-managed deployment matches manual setup behavior
-5. Migrate PoC to operator-managed mode
-
-**Success criteria:** A single `SecondaryAPIServer` CR drives the entire deployment; operator handles cert rotation, webhook sync, namespace mirroring; works for any set of CRDs (not just Tekton); manual scripts are no longer required for new deployments.
+**Success criteria:** `Shard` CR drives the entire deployment; operator handles cert rotation, webhook sync, namespace mirroring; works for any set of CRDs (not just Tekton); manual scripts are no longer required for new deployments. Multiple "`Shard` CRs should be supported on a single clusters.
 
 ### Phase 8: Integration test suites
 

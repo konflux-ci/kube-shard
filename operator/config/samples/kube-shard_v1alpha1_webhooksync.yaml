@@ -1,0 +1,9 @@
+apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: WebhookSync
+metadata:
+  labels:
+    app.kubernetes.io/name: operator
+    app.kubernetes.io/managed-by: kustomize
+  name: webhooksync-sample
+spec:
+  # TODO(user): Add fields here

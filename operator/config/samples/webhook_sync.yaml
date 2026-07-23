@@ -1,0 +1,11 @@
+apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: WebhookSync
+metadata:
+  name: tekton-shard-webhook-sync
+spec:
+  shardRef: tekton-shard
+  sourceLabelSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: tekton-pipelines
+  syncMutating: true
+  syncValidating: true

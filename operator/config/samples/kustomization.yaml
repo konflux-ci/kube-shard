@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- kube-shard_v1alpha1_apishard.yaml
+- kube-shard_v1alpha1_namespacesync.yaml
+- kube-shard_v1alpha1_webhooksync.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

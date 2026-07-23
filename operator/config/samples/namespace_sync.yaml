@@ -1,0 +1,14 @@
+apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: NamespaceSync
+metadata:
+  name: tekton-shard-ns-sync
+spec:
+  shardRef: tekton-shard
+  labelSelector:
+    matchLabels:
+      konflux.dev/type: tenant
+  excludeNamespaces:
+  - kube-system
+  - kube-public
+  - kube-node-lease
+  - default

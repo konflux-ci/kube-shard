@@ -1,0 +1,19 @@
+apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: APIShard
+metadata:
+  name: tekton-shard-dev
+spec:
+  targetNamespace: kube-shard-operator
+  apiGroups:
+  - group: tekton.dev
+    versions: ["v1"]
+  storage:
+    type: SQLite
+  namespaceSync:
+    labelSelector:
+      matchLabels:
+        konflux.dev/type: tenant
+  secondary:
+    replicas: 1
+  kine:
+    replicas: 1
