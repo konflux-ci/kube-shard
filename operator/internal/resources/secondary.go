@@ -80,7 +80,7 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 		"--service-account-signing-key-file=/etc/kubernetes/pki/tls.key",
 		"--service-account-issuer=https://kubernetes.default.svc",
 		"--disable-admission-plugins=NamespaceLifecycle,ServiceAccount",
-		"--requestheader-client-ca-file=/etc/kubernetes/pki/ca.crt",
+		"--requestheader-client-ca-file=/etc/kubernetes/requestheader/requestheader-client-ca-file",
 		"--requestheader-allowed-names=front-proxy-client",
 		"--requestheader-extra-headers-prefix=X-Remote-Extra-",
 		"--requestheader-group-headers=X-Remote-Group",
@@ -133,6 +133,11 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 									MountPath: "/etc/kubernetes/auth",
 									ReadOnly:  true,
 								},
+								{
+									Name:      "requestheader-ca",
+									MountPath: "/etc/kubernetes/requestheader",
+									ReadOnly:  true,
+								},
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
@@ -173,6 +178,16 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 								ConfigMap: &corev1.ConfigMapVolumeSource{
 									LocalObjectReference: corev1.LocalObjectReference{
 										Name: fmt.Sprintf("%s-auth-config", shard.Name),
+									},
+								},
+							},
+						},
+						{
+							Name: "requestheader-ca",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: fmt.Sprintf("%s-requestheader-ca", shard.Name),
 									},
 								},
 							},

@@ -73,7 +73,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				Reason:  "ShardNotFound",
 				Message: fmt.Sprintf("APIShard %s not found", whSync.Spec.ShardRef),
 			})
-			_ = r.Status().Update(ctx, &whSync)
+			if updateErr := r.Status().Update(ctx, &whSync); updateErr != nil {
+				logger.Error(updateErr, "Failed to update WebhookSync status")
+			}
 			return ctrl.Result{RequeueAfter: webhookSyncRequeue}, nil
 		}
 		return ctrl.Result{}, err
@@ -87,7 +89,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			Reason:  "ShardNotReady",
 			Message: fmt.Sprintf("APIShard %s is in phase %s", shard.Name, shard.Status.Phase),
 		})
-		_ = r.Status().Update(ctx, &whSync)
+		if updateErr := r.Status().Update(ctx, &whSync); updateErr != nil {
+			logger.Error(updateErr, "Failed to update WebhookSync status")
+		}
 		return ctrl.Result{RequeueAfter: webhookSyncRequeue}, nil
 	}
 
@@ -156,7 +160,10 @@ func (r *Reconciler) syncMutatingWebhooks(
 	logger := log.FromContext(ctx)
 
 	var mwhcList admissionregistrationv1.MutatingWebhookConfigurationList
-	opts := r.listOptions(whSync)
+	opts, err := r.listOptions(whSync)
+	if err != nil {
+		return nil, []error{err}
+	}
 	if err := r.List(ctx, &mwhcList, opts...); err != nil {
 		return nil, []error{fmt.Errorf("listing MutatingWebhookConfigurations: %w", err)}
 	}
@@ -205,7 +212,10 @@ func (r *Reconciler) syncValidatingWebhooks(
 	logger := log.FromContext(ctx)
 
 	var vwhcList admissionregistrationv1.ValidatingWebhookConfigurationList
-	opts := r.listOptions(whSync)
+	opts, err := r.listOptions(whSync)
+	if err != nil {
+		return nil, []error{err}
+	}
 	if err := r.List(ctx, &vwhcList, opts...); err != nil {
 		return nil, []error{fmt.Errorf("listing ValidatingWebhookConfigurations: %w", err)}
 	}
@@ -246,14 +256,17 @@ func (r *Reconciler) syncValidatingWebhooks(
 	return synced, errs
 }
 
-func (r *Reconciler) listOptions(whSync *kubeshardv1alpha1.WebhookSync) []client.ListOption {
+func (r *Reconciler) listOptions(whSync *kubeshardv1alpha1.WebhookSync) ([]client.ListOption, error) {
 	selector, err := metav1.LabelSelectorAsSelector(&whSync.Spec.SourceLabelSelector)
-	if err != nil || selector.Empty() {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("invalid label selector: %w", err)
+	}
+	if selector.Empty() {
+		return nil, nil
 	}
 	return []client.ListOption{
 		&client.ListOptions{LabelSelector: selector},
-	}
+	}, nil
 }
 
 func (r *Reconciler) shouldSync(whSync *kubeshardv1alpha1.WebhookSync, name string) bool {
@@ -272,6 +285,10 @@ func transformMutatingWebhook(src *admissionregistrationv1.MutatingWebhookConfig
 	result := src.DeepCopy()
 	result.ResourceVersion = ""
 	result.UID = ""
+	result.OwnerReferences = nil
+	result.ManagedFields = nil
+	result.Generation = 0
+	result.Finalizers = nil
 
 	for i := range result.Webhooks {
 		wh := &result.Webhooks[i]
@@ -295,6 +312,10 @@ func transformValidatingWebhook(src *admissionregistrationv1.ValidatingWebhookCo
 	result := src.DeepCopy()
 	result.ResourceVersion = ""
 	result.UID = ""
+	result.OwnerReferences = nil
+	result.ManagedFields = nil
+	result.Generation = 0
+	result.Finalizers = nil
 
 	for i := range result.Webhooks {
 		wh := &result.Webhooks[i]

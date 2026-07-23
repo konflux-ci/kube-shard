@@ -76,6 +76,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 // Reconcile drives the desired state for a single APIShard resource. It provisions
 // the target namespace, storage backend, TLS certificates, auth configuration, and
@@ -143,6 +144,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
+	// Copy front-proxy CA from primary for request-header authentication
+	if err := r.reconcileRequestHeaderCA(ctx, tc, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile requestheader CA")
+		return r.setErrorAndRequeue(ctx, &shard, err)
+	}
+
 	// Reconcile Secondary API server
 	if err := r.reconcileSecondary(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile secondary API server")
@@ -153,6 +160,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.reconcileAPIServices(ctx, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile APIServices")
 		return r.setErrorAndRequeue(ctx, &shard, err)
+	}
+
+	// Detect CRD conflicts — CRDs on the primary for aggregated groups will
+	// shadow the APIService registration, breaking the shard.
+	conflictResult, err := aggregation.DetectCRDConflicts(ctx, r.Client, &shard)
+	if err != nil {
+		logger.Error(err, "Failed to detect CRD conflicts")
+	} else if conflictResult != nil && conflictResult.HasConflict {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               "CRDConflict",
+			Status:             metav1.ConditionTrue,
+			Reason:             "ConflictingCRDsDetected",
+			Message:            conflictResult.Message,
+			ObservedGeneration: shard.Generation,
+		})
+	} else {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               "CRDConflict",
+			Status:             metav1.ConditionFalse,
+			Reason:             "NoConflicts",
+			Message:            "No conflicting CRDs detected on primary",
+			ObservedGeneration: shard.Generation,
+		})
 	}
 
 	// Cleanup orphaned resources that were not applied this reconcile
@@ -196,7 +226,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
-	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+	return ctrl.Result{}, nil
 }
 
 // ensureNamespace creates the target namespace if it doesn't already exist.
@@ -261,8 +291,17 @@ func (r *Reconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client
 // reconcileInClusterPostgreSQL deploys a PostgreSQL instance inside the target
 // namespace along with a credentials Secret. Only called when the storage type
 // is InClusterPostgreSQL; external PostgreSQL expects user-provided credentials.
+//
+// If the credentials Secret already exists, the existing password is reused to
+// avoid breaking the running PostgreSQL instance. A new random password is
+// generated only on first creation.
 func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
-	secret := resources.BuildPostgreSQLSecret(shard)
+	password, err := r.getOrGeneratePostgresPassword(ctx, shard)
+	if err != nil {
+		return fmt.Errorf("postgres password: %w", err)
+	}
+
+	secret := resources.BuildPostgreSQLSecret(shard, password)
 	if err := tc.ApplyOwned(ctx, secret); err != nil {
 		return fmt.Errorf("postgresql secret: %w", err)
 	}
@@ -278,6 +317,24 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 	}
 
 	return nil
+}
+
+// getOrGeneratePostgresPassword returns the existing PostgreSQL password from
+// the credentials Secret if it exists, or generates a new cryptographically
+// random one. This ensures password stability across reconciliation loops.
+func (r *Reconciler) getOrGeneratePostgresPassword(ctx context.Context, shard *kubeshardv1alpha1.APIShard) (string, error) {
+	existing := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      resources.PostgreSQLSecretName(shard),
+		Namespace: shard.Spec.TargetNamespace,
+	}, existing)
+	if err == nil {
+		if pw, ok := existing.Data["POSTGRES_PASSWORD"]; ok && len(pw) > 0 {
+			return string(pw), nil
+		}
+	}
+
+	return resources.GeneratePassword()
 }
 
 // reconcileCertManager creates the cert-manager Issuer and Certificate resources
@@ -305,7 +362,7 @@ func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Clie
 // the secondary to delegate SubjectAccessReview calls to the primary cluster.
 func (r *Reconciler) reconcileAuthConfig(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	cmName := fmt.Sprintf("%s-auth-config", shard.Name)
-	webhookConfig := fmt.Sprintf(`apiVersion: v1
+	webhookConfig := `apiVersion: v1
 kind: Config
 clusters:
 - name: primary
@@ -322,7 +379,7 @@ contexts:
     cluster: primary
     user: webhook
   name: webhook
-`)
+`
 
 	cm := &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
@@ -340,6 +397,45 @@ contexts:
 
 	if err := tc.ApplyOwned(ctx, cm); err != nil {
 		return fmt.Errorf("auth config configmap: %w", err)
+	}
+
+	return nil
+}
+
+// reconcileRequestHeaderCA copies the front-proxy CA from the primary cluster's
+// extension-apiserver-authentication ConfigMap in kube-system into a ConfigMap
+// in the target namespace. The secondary API server uses this CA to verify
+// request-header identity forwarding from the primary's aggregation proxy.
+func (r *Reconciler) reconcileRequestHeaderCA(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	sourceCM := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      "extension-apiserver-authentication",
+		Namespace: "kube-system",
+	}, sourceCM); err != nil {
+		return fmt.Errorf("reading extension-apiserver-authentication from kube-system: %w", err)
+	}
+
+	caData := sourceCM.Data["requestheader-client-ca-file"]
+	if caData == "" {
+		return fmt.Errorf("requestheader-client-ca-file not found in extension-apiserver-authentication ConfigMap")
+	}
+
+	cm := &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-requestheader-ca", shard.Name),
+			Namespace: shard.Spec.TargetNamespace,
+		},
+		Data: map[string]string{
+			"requestheader-client-ca-file": caData,
+		},
+	}
+
+	if err := tc.ApplyOwned(ctx, cm); err != nil {
+		return fmt.Errorf("requestheader CA configmap: %w", err)
 	}
 
 	return nil
@@ -407,12 +503,13 @@ func (r *Reconciler) checkDeploymentHealth(ctx context.Context, shard *kubeshard
 // setErrorAndRequeue sets the APIShard phase to Error and returns a requeue
 // result along with the original error for logging by the controller runtime.
 func (r *Reconciler) setErrorAndRequeue(ctx context.Context, shard *kubeshardv1alpha1.APIShard, reconcileErr error) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 	shard.Status.Phase = kubeshardv1alpha1.PhaseError
 	shard.Status.ObservedGeneration = shard.Generation
 	if err := r.Status().Update(ctx, shard); err != nil {
-		return ctrl.Result{}, err
+		logger.Error(err, "Failed to update APIShard status after error")
 	}
-	return ctrl.Result{RequeueAfter: requeueDelay}, reconcileErr
+	return ctrl.Result{}, reconcileErr
 }
 
 // SetupWithManager sets up the controller with the Manager.

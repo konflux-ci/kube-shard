@@ -38,6 +38,7 @@ type SyncedNamespace struct {
 
 type NamespaceSyncStatus struct {
 	Phase              string             `json:"phase,omitempty"`
+	SyncedCount        int32              `json:"syncedCount,omitempty"`
 	SyncedNamespaces   []SyncedNamespace  `json:"syncedNamespaces,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
@@ -48,7 +49,7 @@ type NamespaceSyncStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Shard",type=string,JSONPath=`.spec.shardRef`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Synced",type=integer,JSONPath=`.status.syncedNamespaces`
+// +kubebuilder:printcolumn:name="Synced",type=integer,JSONPath=`.status.syncedCount`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type NamespaceSync struct {
 	metav1.TypeMeta   `json:",inline"`

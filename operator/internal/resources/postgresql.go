@@ -17,6 +17,8 @@ limitations under the License.
 package resources
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -47,18 +49,31 @@ func PostgreSQLSecretName(shard *kubeshardv1alpha1.APIShard) string {
 }
 
 // PostgreSQLDSN returns the connection string for Kine to connect to the in-cluster PostgreSQL.
-func PostgreSQLDSN(shard *kubeshardv1alpha1.APIShard) string {
-	return fmt.Sprintf("postgres://kine:kine@%s.%s.svc:%d/kine?sslmode=disable",
+func PostgreSQLDSN(shard *kubeshardv1alpha1.APIShard, user, password string) string {
+	return fmt.Sprintf("postgres://%s:%s@%s.%s.svc:%d/kine?sslmode=disable",
+		user, password,
 		PostgreSQLServiceName(shard),
 		shard.Spec.TargetNamespace,
 		PostgreSQLPort,
 	)
 }
 
+// GeneratePassword returns a cryptographically random 16-byte hex-encoded password.
+func GeneratePassword() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating random password: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // BuildPostgreSQLSecret creates the credentials secret for in-cluster PostgreSQL.
-func BuildPostgreSQLSecret(shard *kubeshardv1alpha1.APIShard) *corev1.Secret {
+// The caller must provide the password; this function does not generate one so
+// that existing secrets can be preserved across reconciliation loops.
+func BuildPostgreSQLSecret(shard *kubeshardv1alpha1.APIShard, password string) *corev1.Secret {
 	name := PostgreSQLSecretName(shard)
 	labels := postgresLabels(shard)
+	user := "kine"
 
 	return &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{
@@ -71,10 +86,10 @@ func BuildPostgreSQLSecret(shard *kubeshardv1alpha1.APIShard) *corev1.Secret {
 			Labels:    labels,
 		},
 		StringData: map[string]string{
-			"POSTGRES_USER":     "kine",
-			"POSTGRES_PASSWORD": "kine",
+			"POSTGRES_USER":     user,
+			"POSTGRES_PASSWORD": password,
 			"POSTGRES_DB":       "kine",
-			"KINE_ENDPOINT":     PostgreSQLDSN(shard),
+			"KINE_ENDPOINT":     PostgreSQLDSN(shard, user, password),
 		},
 	}
 }

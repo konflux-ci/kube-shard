@@ -72,7 +72,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				Message: fmt.Sprintf("APIShard %s not found", nsSync.Spec.ShardRef),
 			})
 			nsSync.Status.Phase = kubeshardv1alpha1.PhaseWaiting
-			_ = r.Status().Update(ctx, &nsSync)
+			if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
+				logger.Error(updateErr, "Failed to update NamespaceSync status")
+			}
 			return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
 		}
 		return ctrl.Result{}, err
@@ -87,7 +89,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			Reason:  "ShardNotReady",
 			Message: fmt.Sprintf("APIShard %s is in phase %s", shard.Name, shard.Status.Phase),
 		})
-		_ = r.Status().Update(ctx, &nsSync)
+		if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
+			logger.Error(updateErr, "Failed to update NamespaceSync status")
+		}
 		return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
 	}
 
@@ -117,6 +121,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	synced := make([]kubeshardv1alpha1.SyncedNamespace, 0, len(nsList.Items))
+	desiredNames := make(map[string]bool, len(nsList.Items))
 	var syncErrors []error
 
 	for i := range nsList.Items {
@@ -124,6 +129,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if excluded[ns.Name] {
 			continue
 		}
+
+		desiredNames[ns.Name] = true
 
 		if err := r.ensureNamespaceOnSecondary(ctx, secondaryClient, ns); err != nil {
 			syncErrors = append(syncErrors, fmt.Errorf("namespace %s: %w", ns.Name, err))
@@ -136,7 +143,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		})
 	}
 
+	// Delete namespaces on secondary that are no longer desired (previously
+	// synced but now removed from primary or excluded).
+	for _, prev := range nsSync.Status.SyncedNamespaces {
+		if desiredNames[prev.Name] {
+			continue
+		}
+		if err := r.deleteNamespaceOnSecondary(ctx, secondaryClient, prev.Name); err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("deleting namespace %s: %w", prev.Name, err))
+		}
+	}
+
 	nsSync.Status.SyncedNamespaces = synced
+	nsSync.Status.SyncedCount = int32(len(synced))
 	nsSync.Status.ObservedGeneration = nsSync.Generation
 
 	if len(syncErrors) > 0 {
@@ -189,6 +208,17 @@ func (r *Reconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryCl
 	}
 	err = secondaryClient.Create(ctx, newNS)
 	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+func (r *Reconciler) deleteNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, name string) error {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}
+	err := secondaryClient.Delete(ctx, ns)
+	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil

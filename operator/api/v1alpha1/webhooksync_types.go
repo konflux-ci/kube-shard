@@ -32,11 +32,11 @@ type WebhookSyncSpec struct {
 
 	// SyncMutating controls whether MutatingWebhookConfigurations are synced.
 	// +kubebuilder:default=true
-	SyncMutating bool `json:"syncMutating,omitempty"`
+	SyncMutating bool `json:"syncMutating"`
 
 	// SyncValidating controls whether ValidatingWebhookConfigurations are synced.
 	// +kubebuilder:default=true
-	SyncValidating bool `json:"syncValidating,omitempty"`
+	SyncValidating bool `json:"syncValidating"`
 }
 
 type SyncedWebhook struct {

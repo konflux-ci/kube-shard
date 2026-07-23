@@ -50,6 +50,7 @@ type ClientProvider struct {
 
 type clientEntry struct {
 	client    client.Client
+	host      string
 	createdAt time.Time
 }
 
@@ -61,12 +62,14 @@ func NewClientProvider(scheme *runtime.Scheme) *ClientProvider {
 }
 
 // GetOrCreate returns an existing client or creates a new one for the given shard.
+// If the endpoint (Host) has changed since the client was cached, the old client
+// is invalidated and a new one is created.
 func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client.Client, error) {
 	p.mu.RLock()
 	entry, exists := p.clients[shardName]
 	p.mu.RUnlock()
 
-	if exists {
+	if exists && entry.host == cfg.Host {
 		return entry.client, nil
 	}
 
@@ -74,7 +77,7 @@ func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if entry, exists = p.clients[shardName]; exists {
+	if entry, exists = p.clients[shardName]; exists && entry.host == cfg.Host {
 		return entry.client, nil
 	}
 
@@ -87,6 +90,7 @@ func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client
 
 	p.clients[shardName] = &clientEntry{
 		client:    c,
+		host:      cfg.Host,
 		createdAt: time.Now(),
 	}
 
@@ -118,8 +122,8 @@ func buildRESTConfig(cfg ClientConfig) *rest.Config {
 	if cfg.Token != "" {
 		restCfg.BearerToken = cfg.Token
 	} else if len(cfg.ClientCert) > 0 && len(cfg.ClientKey) > 0 {
-		restCfg.TLSClientConfig.CertData = cfg.ClientCert
-		restCfg.TLSClientConfig.KeyData = cfg.ClientKey
+		restCfg.CertData = cfg.ClientCert
+		restCfg.KeyData = cfg.ClientKey
 	}
 
 	return restCfg
