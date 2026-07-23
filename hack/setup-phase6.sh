@@ -163,30 +163,18 @@ for crd in ${SECONDARY_CRDS}; do
 done
 echo ""
 
-# ---------- Step 5: Configure authorization webhook ----------
-echo "=== Step 5/9: Configure authorization webhook on secondary ==="
-
-# The secondary needs to delegate authorization to the primary's SubjectAccessReview API
-# (same approach as Phase 2)
-kubectl apply -k "${REPO_ROOT}/deploy/phase2" 2>&1 | grep -v "unchanged" | sed 's/^/    /' || true
-
-# Restart secondary to pick up authorization config
-kubectl -n "${NAMESPACE}" rollout restart deployment/secondary-apiserver
-kubectl -n "${NAMESPACE}" rollout status deployment/secondary-apiserver --timeout=120s
-
-# Re-establish port-forward after restart
-kill ${PF_PID} 2>/dev/null || true
-sleep 2
-kubectl -n "${NAMESPACE}" port-forward svc/tekton-apiserver ${SECONDARY_PORT}:443 &
-PF_PID=$!
-sleep 3
-for i in $(seq 1 15); do
-  if curl -sk -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-    "https://localhost:${SECONDARY_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
-    break
-  fi
-  sleep 2
-done
+# ---------- Step 5: Verify authorization webhook is configured ----------
+echo "=== Step 5/9: Verify authorization webhook on secondary ==="
+# The Phase 5 kustomize overlay (applied in Step 2) already includes the Phase 2
+# authorization webhook configuration (phase5 → phase3 → phase2 → poc chain).
+# No additional apply is needed; just verify the secondary has the authz config.
+AUTHZ_MODE=$(kubectl -n "${NAMESPACE}" get deployment secondary-apiserver \
+  -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null | grep -o "authorization-mode=[^ ]*" || echo "")
+if echo "${AUTHZ_MODE}" | grep -q "Webhook"; then
+  echo "    Authorization webhook is configured: ${AUTHZ_MODE}"
+else
+  echo "    [WARN] Authorization webhook not detected. Args: ${AUTHZ_MODE}"
+fi
 echo ""
 
 # ---------- Step 6: Remove CRDs from primary + register APIService ----------
