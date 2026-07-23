@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package webhooksync
 
 import (
 	"context"
@@ -37,8 +37,8 @@ import (
 
 const webhookSyncRequeue = 60 * time.Second
 
-// WebhookSyncReconciler reconciles a WebhookSync object.
-type WebhookSyncReconciler struct {
+// Reconciler reconciles a WebhookSync object.
+type Reconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
 	ClientProvider *secondary.ClientProvider
@@ -50,7 +50,7 @@ type WebhookSyncReconciler struct {
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=mutatingwebhookconfigurations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch
 
-func (r *WebhookSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	var whSync kubeshardv1alpha1.WebhookSync
@@ -141,14 +141,14 @@ func (r *WebhookSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{RequeueAfter: webhookSyncRequeue}, nil
 }
 
-func (r *WebhookSyncReconciler) getSecondaryClient(shard *kubeshardv1alpha1.APIShard) (client.Client, error) {
+func (r *Reconciler) getSecondaryClient(shard *kubeshardv1alpha1.APIShard) (client.Client, error) {
 	cfg := secondary.ClientConfig{
 		Host: shard.Status.SecondaryEndpoint,
 	}
 	return r.ClientProvider.GetOrCreate(shard.Name, cfg)
 }
 
-func (r *WebhookSyncReconciler) syncMutatingWebhooks(
+func (r *Reconciler) syncMutatingWebhooks(
 	ctx context.Context,
 	whSync *kubeshardv1alpha1.WebhookSync,
 	secondaryClient client.Client,
@@ -197,7 +197,7 @@ func (r *WebhookSyncReconciler) syncMutatingWebhooks(
 	return synced, errs
 }
 
-func (r *WebhookSyncReconciler) syncValidatingWebhooks(
+func (r *Reconciler) syncValidatingWebhooks(
 	ctx context.Context,
 	whSync *kubeshardv1alpha1.WebhookSync,
 	secondaryClient client.Client,
@@ -246,7 +246,7 @@ func (r *WebhookSyncReconciler) syncValidatingWebhooks(
 	return synced, errs
 }
 
-func (r *WebhookSyncReconciler) listOptions(whSync *kubeshardv1alpha1.WebhookSync) []client.ListOption {
+func (r *Reconciler) listOptions(whSync *kubeshardv1alpha1.WebhookSync) []client.ListOption {
 	selector, err := metav1.LabelSelectorAsSelector(&whSync.Spec.SourceLabelSelector)
 	if err != nil || selector.Empty() {
 		return nil
@@ -256,7 +256,7 @@ func (r *WebhookSyncReconciler) listOptions(whSync *kubeshardv1alpha1.WebhookSyn
 	}
 }
 
-func (r *WebhookSyncReconciler) shouldSync(whSync *kubeshardv1alpha1.WebhookSync, name string) bool {
+func (r *Reconciler) shouldSync(whSync *kubeshardv1alpha1.WebhookSync, name string) bool {
 	if len(whSync.Spec.SourceNames) == 0 {
 		return true
 	}
@@ -329,7 +329,7 @@ func servicePath(path *string) string {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *WebhookSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.WebhookSync{}).
 		Watches(&admissionregistrationv1.MutatingWebhookConfiguration{}, &webhookEventHandler{client: r.Client}).

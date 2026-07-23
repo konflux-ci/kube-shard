@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package namespacesync
 
 import (
 	"context"
@@ -37,8 +37,8 @@ import (
 
 const namespaceSyncRequeue = 60 * time.Second
 
-// NamespaceSyncReconciler reconciles a NamespaceSync object.
-type NamespaceSyncReconciler struct {
+// Reconciler reconciles a NamespaceSync object.
+type Reconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
 	ClientProvider *secondary.ClientProvider
@@ -49,7 +49,7 @@ type NamespaceSyncReconciler struct {
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=namespacesyncs/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
-func (r *NamespaceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	var nsSync kubeshardv1alpha1.NamespaceSync
@@ -164,14 +164,14 @@ func (r *NamespaceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
 }
 
-func (r *NamespaceSyncReconciler) getSecondaryClient(shard *kubeshardv1alpha1.APIShard) (client.Client, error) {
+func (r *Reconciler) getSecondaryClient(shard *kubeshardv1alpha1.APIShard) (client.Client, error) {
 	cfg := secondary.ClientConfig{
 		Host: shard.Status.SecondaryEndpoint,
 	}
 	return r.ClientProvider.GetOrCreate(shard.Name, cfg)
 }
 
-func (r *NamespaceSyncReconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, ns *corev1.Namespace) error {
+func (r *Reconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, ns *corev1.Namespace) error {
 	existing := &corev1.Namespace{}
 	err := secondaryClient.Get(ctx, types.NamespacedName{Name: ns.Name}, existing)
 	if err == nil {
@@ -209,7 +209,7 @@ func filterLabels(src map[string]string) map[string]string {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *NamespaceSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.NamespaceSync{}).
 		Watches(&corev1.Namespace{}, &namespaceEventHandler{client: r.Client}).

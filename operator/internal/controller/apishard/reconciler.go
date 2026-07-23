@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package apishard
 
 import (
 	"context"
@@ -32,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/konflux-ci/konflux-ci/operator/pkg/tracking"
@@ -43,7 +42,6 @@ import (
 )
 
 const (
-	finalizerName = "kube-shard.konflux-ci.dev/finalizer"
 	requeueDelay  = 30 * time.Second
 	fieldManager  = "kube-shard-operator"
 
@@ -51,23 +49,25 @@ const (
 	componentLabelKey = "kube-shard.konflux-ci.dev/component"
 )
 
-// managedGVKs lists all GVKs that the APIShardReconciler may create,
+// managedGVKs lists all GVKs that the Reconciler may create,
 // used by the tracking client for orphan cleanup.
 var managedGVKs = []schema.GroupVersionKind{
 	{Group: "apps", Version: "v1", Kind: "Deployment"},
 	{Group: "", Version: "v1", Kind: "Service"},
 	{Group: "", Version: "v1", Kind: "Secret"},
+	{Group: "", Version: "v1", Kind: "ConfigMap"},
+	{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"},
+	{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
 }
 
-// APIShardReconciler reconciles a APIShard object
-type APIShardReconciler struct {
+// Reconciler reconciles an APIShard object.
+type Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
@@ -75,7 +75,7 @@ type APIShardReconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch;delete
 
-func (r *APIShardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	var shard kubeshardv1alpha1.APIShard
@@ -87,14 +87,7 @@ func (r *APIShardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if !shard.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &shard)
-	}
-
-	if !controllerutil.ContainsFinalizer(&shard, finalizerName) {
-		controllerutil.AddFinalizer(&shard, finalizerName)
-		if err := r.Update(ctx, &shard); err != nil {
-			return ctrl.Result{}, err
-		}
+		return ctrl.Result{}, nil
 	}
 
 	// Ensure target namespace exists
@@ -134,7 +127,7 @@ func (r *APIShardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Reconcile cert-manager resources for TLS
-	if err := r.reconcileCertManager(ctx, &shard); err != nil {
+	if err := r.reconcileCertManager(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile cert-manager resources")
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
@@ -195,18 +188,7 @@ func (r *APIShardReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 }
 
-func (r *APIShardReconciler) reconcileDelete(ctx context.Context, shard *kubeshardv1alpha1.APIShard) (ctrl.Result, error) {
-	log.FromContext(ctx).Info("Reconciling APIShard deletion")
-
-	controllerutil.RemoveFinalizer(shard, finalizerName)
-	if err := r.Update(ctx, shard); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
-}
-
-func (r *APIShardReconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
+func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
 	ns := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: shard.Spec.TargetNamespace}, ns)
 	if err == nil {
@@ -228,7 +210,7 @@ func (r *APIShardReconciler) ensureNamespace(ctx context.Context, shard *kubesha
 	return r.Create(ctx, ns)
 }
 
-func (r *APIShardReconciler) reconcileKine(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	deployment := resources.BuildKineDeployment(shard)
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("kine deployment: %w", err)
@@ -242,7 +224,7 @@ func (r *APIShardReconciler) reconcileKine(ctx context.Context, tc *tracking.Cli
 	return nil
 }
 
-func (r *APIShardReconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+func (r *Reconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	deployment := resources.BuildSecondaryDeployment(shard)
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("secondary deployment: %w", err)
@@ -256,7 +238,7 @@ func (r *APIShardReconciler) reconcileSecondary(ctx context.Context, tc *trackin
 	return nil
 }
 
-func (r *APIShardReconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	secret := resources.BuildPostgreSQLSecret(shard)
 	if err := tc.ApplyOwned(ctx, secret); err != nil {
 		return fmt.Errorf("postgresql secret: %w", err)
@@ -275,7 +257,7 @@ func (r *APIShardReconciler) reconcileInClusterPostgreSQL(ctx context.Context, t
 	return nil
 }
 
-func (r *APIShardReconciler) reconcileCertManager(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
+func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	certResources := []*unstructured.Unstructured{
 		certs.BuildSelfSignedIssuer(shard),
 		certs.BuildCACertificate(shard),
@@ -283,25 +265,16 @@ func (r *APIShardReconciler) reconcileCertManager(ctx context.Context, shard *ku
 		certs.BuildServingCertificate(shard),
 	}
 
-	ownerRef := certs.OwnerReference(shard)
 	for _, res := range certResources {
-		res.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
-
-		existing := res.DeepCopy()
-		err := r.Get(ctx, types.NamespacedName{Name: res.GetName(), Namespace: res.GetNamespace()}, existing)
-		if apierrors.IsNotFound(err) {
-			if err := r.Create(ctx, res); err != nil {
-				return fmt.Errorf("creating %s %s: %w", res.GetKind(), res.GetName(), err)
-			}
-		} else if err != nil {
-			return err
+		if err := tc.ApplyOwned(ctx, res); err != nil {
+			return fmt.Errorf("applying %s %s: %w", res.GetKind(), res.GetName(), err)
 		}
 	}
 
 	return nil
 }
 
-func (r *APIShardReconciler) reconcileAuthConfig(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+func (r *Reconciler) reconcileAuthConfig(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	cmName := fmt.Sprintf("%s-auth-config", shard.Name)
 	webhookConfig := fmt.Sprintf(`apiVersion: v1
 kind: Config
@@ -343,7 +316,7 @@ contexts:
 	return nil
 }
 
-func (r *APIShardReconciler) checkDeploymentHealth(ctx context.Context, shard *kubeshardv1alpha1.APIShard) (bool, error) {
+func (r *Reconciler) checkDeploymentHealth(ctx context.Context, shard *kubeshardv1alpha1.APIShard) (bool, error) {
 	kineDeploy := &appsv1.Deployment{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      resources.KineDeploymentName(shard),
@@ -368,7 +341,7 @@ func (r *APIShardReconciler) checkDeploymentHealth(ctx context.Context, shard *k
 	return kineReady && secondaryReady, nil
 }
 
-func (r *APIShardReconciler) setErrorAndRequeue(ctx context.Context, shard *kubeshardv1alpha1.APIShard, reconcileErr error) (ctrl.Result, error) {
+func (r *Reconciler) setErrorAndRequeue(ctx context.Context, shard *kubeshardv1alpha1.APIShard, reconcileErr error) (ctrl.Result, error) {
 	shard.Status.Phase = kubeshardv1alpha1.PhaseError
 	shard.Status.ObservedGeneration = shard.Generation
 	if err := r.Status().Update(ctx, shard); err != nil {
@@ -378,7 +351,7 @@ func (r *APIShardReconciler) setErrorAndRequeue(ctx context.Context, shard *kube
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *APIShardReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.APIShard{}).
 		Owns(&appsv1.Deployment{}).

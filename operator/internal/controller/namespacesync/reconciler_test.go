@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package namespacesync
 
 import (
 	. "github.com/onsi/ginkgo/v2"
@@ -27,39 +27,37 @@ import (
 	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
 )
 
-var _ = Describe("WebhookSync Controller", func() {
+var _ = Describe("NamespaceSync Controller", func() {
 	Context("When the referenced APIShard does not exist", func() {
 		It("should set phase to Waiting", func() {
-			whSync := &kubeshardv1alpha1.WebhookSync{
+			nsSync := &kubeshardv1alpha1.NamespaceSync{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-wh-sync",
+					Name: "test-ns-sync",
 				},
-				Spec: kubeshardv1alpha1.WebhookSyncSpec{
+				Spec: kubeshardv1alpha1.NamespaceSyncSpec{
 					ShardRef: "nonexistent-shard",
-					SourceLabelSelector: metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "tekton"},
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
 					},
-					SyncMutating:   true,
-					SyncValidating: true,
 				},
 			}
-			Expect(k8sClient.Create(ctx, whSync)).To(Succeed())
+			Expect(k8sClient.Create(ctx, nsSync)).To(Succeed())
 			defer func() {
-				_ = k8sClient.Delete(ctx, whSync)
+				_ = k8sClient.Delete(ctx, nsSync)
 			}()
 
-			reconciler := &WebhookSyncReconciler{
+			reconciler := &Reconciler{
 				Client:         k8sClient,
 				Scheme:         k8sClient.Scheme(),
 				ClientProvider: secondary.NewClientProvider(k8sClient.Scheme()),
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: whSync.Name},
+				NamespacedName: types.NamespacedName{Name: nsSync.Name},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			updated := &kubeshardv1alpha1.WebhookSync{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: whSync.Name}, updated)).To(Succeed())
+			updated := &kubeshardv1alpha1.NamespaceSync{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nsSync.Name}, updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseWaiting))
 		})
 	})

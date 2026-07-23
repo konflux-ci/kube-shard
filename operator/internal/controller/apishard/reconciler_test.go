@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package apishard
 
 import (
 	"time"
@@ -78,7 +78,7 @@ var _ = Describe("APIShard Controller", func() {
 		})
 
 		It("should create the target namespace", func() {
-			reconciler := &APIShardReconciler{
+			reconciler := &Reconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -94,7 +94,7 @@ var _ = Describe("APIShard Controller", func() {
 		})
 
 		It("should create Kine deployment and service", func() {
-			reconciler := &APIShardReconciler{
+			reconciler := &Reconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -123,7 +123,7 @@ var _ = Describe("APIShard Controller", func() {
 		})
 
 		It("should create secondary API server deployment and service", func() {
-			reconciler := &APIShardReconciler{
+			reconciler := &Reconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -151,8 +151,8 @@ var _ = Describe("APIShard Controller", func() {
 			}, timeout, interval).Should(Succeed())
 		})
 
-		It("should add a finalizer", func() {
-			reconciler := &APIShardReconciler{
+		It("should set status to Provisioning", func() {
+			reconciler := &Reconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -163,7 +163,7 @@ var _ = Describe("APIShard Controller", func() {
 
 			updated := &kubeshardv1alpha1.APIShard{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, updated)).To(Succeed())
-			Expect(updated.Finalizers).To(ContainElement(finalizerName))
+			Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseProvisioning))
 		})
 	})
 
@@ -209,7 +209,7 @@ var _ = Describe("APIShard Controller", func() {
 		})
 
 		It("should create PostgreSQL deployment, service, and secret", func() {
-			reconciler := &APIShardReconciler{
+			reconciler := &Reconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}

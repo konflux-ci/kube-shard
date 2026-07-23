@@ -38,7 +38,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
-	"github.com/konflux-ci/kube-shard/operator/internal/controller"
+	"github.com/konflux-ci/kube-shard/operator/internal/controller/apishard"
+	"github.com/konflux-ci/kube-shard/operator/internal/controller/namespacesync"
+	"github.com/konflux-ci/kube-shard/operator/internal/controller/webhooksync"
 	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
 	// +kubebuilder:scaffold:imports
 )
@@ -205,14 +207,14 @@ func main() {
 
 	clientProvider := secondary.NewClientProvider(scheme)
 
-	if err = (&controller.APIShardReconciler{
+	if err = (&apishard.Reconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "APIShard")
 		os.Exit(1)
 	}
-	if err = (&controller.NamespaceSyncReconciler{
+	if err = (&namespacesync.Reconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		ClientProvider: clientProvider,
@@ -220,7 +222,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NamespaceSync")
 		os.Exit(1)
 	}
-	if err = (&controller.WebhookSyncReconciler{
+	if err = (&webhooksync.Reconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		ClientProvider: clientProvider,

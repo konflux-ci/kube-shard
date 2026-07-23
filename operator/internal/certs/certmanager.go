@@ -22,7 +22,6 @@ package certs
 import (
 	"fmt"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -30,18 +29,6 @@ import (
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
 )
 
-var (
-	IssuerGVR = schema.GroupVersionResource{
-		Group:    "cert-manager.io",
-		Version:  "v1",
-		Resource: "issuers",
-	}
-	CertificateGVR = schema.GroupVersionResource{
-		Group:    "cert-manager.io",
-		Version:  "v1",
-		Resource: "certificates",
-	}
-)
 
 func IssuerName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-ca-issuer", shard.Name)
@@ -169,12 +156,3 @@ func certLabels(shard *kubeshardv1alpha1.APIShard) map[string]string {
 	}
 }
 
-// OwnerReference returns an owner reference for the shard to set on cert-manager resources.
-func OwnerReference(shard *kubeshardv1alpha1.APIShard) metav1.OwnerReference {
-	return metav1.OwnerReference{
-		APIVersion: kubeshardv1alpha1.GroupVersion.String(),
-		Kind:       "APIShard",
-		Name:       shard.Name,
-		UID:        shard.UID,
-	}
-}
