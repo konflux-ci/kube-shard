@@ -69,12 +69,12 @@ type KineSpec struct {
 }
 
 type APIShardSpec struct {
-	TargetNamespace string          `json:"targetNamespace"`
-	APIGroups       []APIGroupSpec  `json:"apiGroups"`
-	Storage         StorageSpec     `json:"storage"`
+	TargetNamespace string              `json:"targetNamespace"`
+	APIGroups       []APIGroupSpec      `json:"apiGroups"`
+	Storage         StorageSpec         `json:"storage"`
 	NamespaceSync   NamespaceSyncConfig `json:"namespaceSync"`
-	Secondary       SecondarySpec   `json:"secondary,omitempty"`
-	Kine            KineSpec        `json:"kine,omitempty"`
+	Secondary       SecondarySpec       `json:"secondary,omitempty"`
+	Kine            KineSpec            `json:"kine,omitempty"`
 }
 
 type ConnectionSecretReference struct {
@@ -109,8 +109,4 @@ type APIShardList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []APIShard `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(&APIShard{}, &APIShardList{})
 }

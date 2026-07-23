@@ -203,7 +203,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	clientProvider := secondary.NewClientProvider()
+	clientProvider := secondary.NewClientProvider(scheme)
 
 	if err = (&controller.APIShardReconciler{
 		Client: mgr.GetClient(),

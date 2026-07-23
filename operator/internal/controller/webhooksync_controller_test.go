@@ -51,7 +51,7 @@ var _ = Describe("WebhookSync Controller", func() {
 			reconciler := &WebhookSyncReconciler{
 				Client:         k8sClient,
 				Scheme:         k8sClient.Scheme(),
-				ClientProvider: secondary.NewClientProvider(),
+				ClientProvider: secondary.NewClientProvider(k8sClient.Scheme()),
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: whSync.Name},
@@ -60,7 +60,7 @@ var _ = Describe("WebhookSync Controller", func() {
 
 			updated := &kubeshardv1alpha1.WebhookSync{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: whSync.Name}, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal("Waiting"))
+			Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseWaiting))
 		})
 	})
 })

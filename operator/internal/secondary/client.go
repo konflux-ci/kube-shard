@@ -25,8 +25,9 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -40,32 +41,33 @@ type ClientConfig struct {
 	ClientKey  []byte
 }
 
-// ClientProvider manages clients for secondary API servers, caching them by shard name.
+// ClientProvider manages controller-runtime clients for secondary API servers, caching by shard name.
 type ClientProvider struct {
 	mu      sync.RWMutex
 	clients map[string]*clientEntry
+	scheme  *runtime.Scheme
 }
 
 type clientEntry struct {
-	client    kubernetes.Interface
-	restCfg   *rest.Config
+	client    client.Client
 	createdAt time.Time
 }
 
-func NewClientProvider() *ClientProvider {
+func NewClientProvider(scheme *runtime.Scheme) *ClientProvider {
 	return &ClientProvider{
 		clients: make(map[string]*clientEntry),
+		scheme:  scheme,
 	}
 }
 
 // GetOrCreate returns an existing client or creates a new one for the given shard.
-func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (kubernetes.Interface, *rest.Config, error) {
+func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client.Client, error) {
 	p.mu.RLock()
 	entry, exists := p.clients[shardName]
 	p.mu.RUnlock()
 
 	if exists {
-		return entry.client, entry.restCfg, nil
+		return entry.client, nil
 	}
 
 	p.mu.Lock()
@@ -73,26 +75,22 @@ func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (kubern
 
 	// Double-check after acquiring write lock
 	if entry, exists = p.clients[shardName]; exists {
-		return entry.client, entry.restCfg, nil
+		return entry.client, nil
 	}
 
-	restCfg, err := buildRESTConfig(cfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("building REST config for shard %s: %w", shardName, err)
-	}
+	restCfg := buildRESTConfig(cfg)
 
-	client, err := kubernetes.NewForConfig(restCfg)
+	c, err := client.New(restCfg, client.Options{Scheme: p.scheme})
 	if err != nil {
-		return nil, nil, fmt.Errorf("creating client for shard %s: %w", shardName, err)
+		return nil, fmt.Errorf("creating client for shard %s: %w", shardName, err)
 	}
 
 	p.clients[shardName] = &clientEntry{
-		client:    client,
-		restCfg:   restCfg,
+		client:    c,
 		createdAt: time.Now(),
 	}
 
-	return client, restCfg, nil
+	return c, nil
 }
 
 // Invalidate removes a cached client for the given shard, forcing re-creation on next access.
@@ -102,7 +100,7 @@ func (p *ClientProvider) Invalidate(shardName string) {
 	delete(p.clients, shardName)
 }
 
-func buildRESTConfig(cfg ClientConfig) (*rest.Config, error) {
+func buildRESTConfig(cfg ClientConfig) *rest.Config {
 	restCfg := &rest.Config{
 		Host: cfg.Host,
 	}
@@ -124,7 +122,7 @@ func buildRESTConfig(cfg ClientConfig) (*rest.Config, error) {
 		restCfg.TLSClientConfig.KeyData = cfg.ClientKey
 	}
 
-	return restCfg, nil
+	return restCfg
 }
 
 // HealthChecker performs health checks against a secondary API server.
@@ -170,7 +168,7 @@ func (h *HealthChecker) CheckHealth(ctx context.Context, endpoint string) (bool,
 		logger.V(1).Info("Health check failed", "endpoint", endpoint, "error", err)
 		return false, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	healthy := resp.StatusCode == http.StatusOK
 	if !healthy {

@@ -142,9 +142,9 @@ func BuildServingCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Un
 	ns := shard.Spec.TargetNamespace
 
 	cert.Object["spec"] = map[string]interface{}{
-		"secretName": PKISecretName(shard),
-		"duration":   "8760h", // 1 year
-		"renewBefore": "720h", // 30 days
+		"secretName":  PKISecretName(shard),
+		"duration":    "8760h", // 1 year
+		"renewBefore": "720h",  // 30 days
 		"dnsNames": []interface{}{
 			svcName,
 			fmt.Sprintf("%s.%s", svcName, ns),

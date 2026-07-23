@@ -37,10 +37,10 @@ type SyncedNamespace struct {
 }
 
 type NamespaceSyncStatus struct {
-	Phase              string            `json:"phase,omitempty"`
-	SyncedNamespaces   []SyncedNamespace `json:"syncedNamespaces,omitempty"`
+	Phase              string             `json:"phase,omitempty"`
+	SyncedNamespaces   []SyncedNamespace  `json:"syncedNamespaces,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
-	ObservedGeneration int64             `json:"observedGeneration,omitempty"`
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -63,8 +63,4 @@ type NamespaceSyncList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []NamespaceSync `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(&NamespaceSync{}, &NamespaceSyncList{})
 }

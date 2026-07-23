@@ -20,9 +20,9 @@ import (
 	"context"
 	"fmt"
 
-	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -60,7 +60,7 @@ func ReconcileAPIServices(ctx context.Context, c client.Client, shard *kubeshard
 						Name:      serviceName,
 						Namespace: serviceNamespace,
 					},
-					CABundle:             caBundle,
+					CABundle:              caBundle,
 					InsecureSkipTLSVerify: len(caBundle) == 0,
 				},
 			}

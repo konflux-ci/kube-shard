@@ -41,4 +41,5 @@ const (
 	PhaseReady        = "Ready"
 	PhaseDegraded     = "Degraded"
 	PhaseError        = "Error"
+	PhaseWaiting      = "Waiting"
 )

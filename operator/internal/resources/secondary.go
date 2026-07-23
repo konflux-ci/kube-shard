@@ -76,11 +76,11 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 		"--tls-cert-file=/etc/kubernetes/pki/tls.crt",
 		"--tls-private-key-file=/etc/kubernetes/pki/tls.key",
 		"--client-ca-file=/etc/kubernetes/pki/ca.crt",
-		"--service-account-key-file=/etc/kubernetes/pki/sa.pub",
-		"--service-account-signing-key-file=/etc/kubernetes/pki/sa.key",
+		"--service-account-key-file=/etc/kubernetes/pki/tls.key",
+		"--service-account-signing-key-file=/etc/kubernetes/pki/tls.key",
 		"--service-account-issuer=https://kubernetes.default.svc",
 		"--disable-admission-plugins=NamespaceLifecycle,ServiceAccount",
-		"--requestheader-client-ca-file=/etc/kubernetes/pki/front-proxy-ca.crt",
+		"--requestheader-client-ca-file=/etc/kubernetes/pki/ca.crt",
 		"--requestheader-allowed-names=front-proxy-client",
 		"--requestheader-extra-headers-prefix=X-Remote-Extra-",
 		"--requestheader-group-headers=X-Remote-Group",
@@ -111,9 +111,10 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
-							Name:  "kube-apiserver",
-							Image: image,
-							Args:  args,
+							Name:    "kube-apiserver",
+							Image:   image,
+							Command: []string{"kube-apiserver"},
+							Args:    args,
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "https",

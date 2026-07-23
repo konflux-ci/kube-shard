@@ -49,7 +49,7 @@ var _ = Describe("NamespaceSync Controller", func() {
 			reconciler := &NamespaceSyncReconciler{
 				Client:         k8sClient,
 				Scheme:         k8sClient.Scheme(),
-				ClientProvider: secondary.NewClientProvider(),
+				ClientProvider: secondary.NewClientProvider(k8sClient.Scheme()),
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: nsSync.Name},
@@ -58,7 +58,7 @@ var _ = Describe("NamespaceSync Controller", func() {
 
 			updated := &kubeshardv1alpha1.NamespaceSync{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nsSync.Name}, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal("Waiting"))
+			Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseWaiting))
 		})
 	})
 })

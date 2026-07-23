@@ -27,7 +27,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -72,7 +71,7 @@ func (r *NamespaceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				Reason:  "ShardNotFound",
 				Message: fmt.Sprintf("APIShard %s not found", nsSync.Spec.ShardRef),
 			})
-			nsSync.Status.Phase = "Waiting"
+			nsSync.Status.Phase = kubeshardv1alpha1.PhaseWaiting
 			_ = r.Status().Update(ctx, &nsSync)
 			return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
 		}
@@ -81,7 +80,7 @@ func (r *NamespaceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if shard.Status.Phase != kubeshardv1alpha1.PhaseReady {
 		logger.Info("APIShard not ready yet, requeuing", "shard", shard.Name, "phase", shard.Status.Phase)
-		nsSync.Status.Phase = "Waiting"
+		nsSync.Status.Phase = kubeshardv1alpha1.PhaseWaiting
 		meta.SetStatusCondition(&nsSync.Status.Conditions, metav1.Condition{
 			Type:    "Ready",
 			Status:  metav1.ConditionFalse,
@@ -92,8 +91,8 @@ func (r *NamespaceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
 	}
 
-	// Get secondary client
-	secondaryClient, _, err := r.getSecondaryClient(&shard)
+	// Get secondary controller-runtime client
+	secondaryClient, err := r.getSecondaryClient(&shard)
 	if err != nil {
 		logger.Error(err, "Failed to get secondary client")
 		return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
@@ -117,7 +116,7 @@ func (r *NamespaceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		excluded[ns] = true
 	}
 
-	var synced []kubeshardv1alpha1.SyncedNamespace
+	synced := make([]kubeshardv1alpha1.SyncedNamespace, 0, len(nsList.Items))
 	var syncErrors []error
 
 	for i := range nsList.Items {
@@ -165,19 +164,16 @@ func (r *NamespaceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
 }
 
-func (r *NamespaceSyncReconciler) getSecondaryClient(shard *kubeshardv1alpha1.APIShard) (kubernetes.Interface, *secondary.ClientConfig, error) {
+func (r *NamespaceSyncReconciler) getSecondaryClient(shard *kubeshardv1alpha1.APIShard) (client.Client, error) {
 	cfg := secondary.ClientConfig{
 		Host: shard.Status.SecondaryEndpoint,
 	}
-	client, _, err := r.ClientProvider.GetOrCreate(shard.Name, cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	return client, &cfg, nil
+	return r.ClientProvider.GetOrCreate(shard.Name, cfg)
 }
 
-func (r *NamespaceSyncReconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryClient kubernetes.Interface, ns *corev1.Namespace) error {
-	_, err := secondaryClient.CoreV1().Namespaces().Get(ctx, ns.Name, metav1.GetOptions{})
+func (r *NamespaceSyncReconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, ns *corev1.Namespace) error {
+	existing := &corev1.Namespace{}
+	err := secondaryClient.Get(ctx, types.NamespacedName{Name: ns.Name}, existing)
 	if err == nil {
 		return nil
 	}
@@ -191,7 +187,7 @@ func (r *NamespaceSyncReconciler) ensureNamespaceOnSecondary(ctx context.Context
 			Labels: filterLabels(ns.Labels),
 		},
 	}
-	_, err = secondaryClient.CoreV1().Namespaces().Create(ctx, newNS, metav1.CreateOptions{})
+	err = secondaryClient.Create(ctx, newNS)
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}

@@ -72,7 +72,3 @@ type WebhookSyncList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []WebhookSync `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&WebhookSync{}, &WebhookSyncList{})
-}
