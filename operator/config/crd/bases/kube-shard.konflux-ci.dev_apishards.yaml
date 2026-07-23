@@ -364,6 +364,10 @@ spec:
                 type: integer
               phase:
                 type: string
+              registeredAPIServices:
+                items:
+                  type: string
+                type: array
               secondaryEndpoint:
                 type: string
             type: object

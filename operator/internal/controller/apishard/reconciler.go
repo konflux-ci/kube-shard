@@ -37,6 +37,7 @@ import (
 	"github.com/konflux-ci/konflux-ci/operator/pkg/tracking"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
+	"github.com/konflux-ci/kube-shard/operator/internal/aggregation"
 	"github.com/konflux-ci/kube-shard/operator/internal/certs"
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
 )
@@ -74,7 +75,11 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=get;list;watch;create;update;patch;delete
 
+// Reconcile drives the desired state for a single APIShard resource. It provisions
+// the target namespace, storage backend, TLS certificates, auth configuration, and
+// the secondary API server, then checks deployment health and updates status.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -144,6 +149,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
+	// Register APIService objects on the primary cluster
+	if err := r.reconcileAPIServices(ctx, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile APIServices")
+		return r.setErrorAndRequeue(ctx, &shard, err)
+	}
+
 	// Cleanup orphaned resources that were not applied this reconcile
 	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, managedGVKs); err != nil {
 		logger.Error(err, "Failed to cleanup orphans")
@@ -188,6 +199,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 }
 
+// ensureNamespace creates the target namespace if it doesn't already exist.
+// This deliberately does NOT use the tracking client because ApplyOwned sets an
+// owner reference — if the APIShard were deleted, garbage collection would
+// cascade-delete the namespace and all workloads inside it.
 func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
 	ns := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: shard.Spec.TargetNamespace}, ns)
@@ -210,6 +225,8 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alph
 	return r.Create(ctx, ns)
 }
 
+// reconcileKine ensures the Kine deployment and service exist in the target namespace.
+// Kine translates etcd gRPC calls into SQL queries against the configured storage backend.
 func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	deployment := resources.BuildKineDeployment(shard)
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
@@ -224,6 +241,9 @@ func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, sha
 	return nil
 }
 
+// reconcileSecondary ensures the secondary kube-apiserver deployment and its
+// ClusterIP service exist. The secondary API server serves the aggregated API
+// groups backed by Kine.
 func (r *Reconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	deployment := resources.BuildSecondaryDeployment(shard)
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
@@ -238,6 +258,9 @@ func (r *Reconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client
 	return nil
 }
 
+// reconcileInClusterPostgreSQL deploys a PostgreSQL instance inside the target
+// namespace along with a credentials Secret. Only called when the storage type
+// is InClusterPostgreSQL; external PostgreSQL expects user-provided credentials.
 func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	secret := resources.BuildPostgreSQLSecret(shard)
 	if err := tc.ApplyOwned(ctx, secret); err != nil {
@@ -257,6 +280,9 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 	return nil
 }
 
+// reconcileCertManager creates the cert-manager Issuer and Certificate resources
+// that provision TLS for the secondary API server. The chain is:
+// self-signed Issuer -> CA Certificate -> CA-backed Issuer -> serving Certificate.
 func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	certResources := []*unstructured.Unstructured{
 		certs.BuildSelfSignedIssuer(shard),
@@ -274,6 +300,9 @@ func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Clie
 	return nil
 }
 
+// reconcileAuthConfig creates a ConfigMap containing the kubeconfig used by the
+// secondary API server's --authorization-webhook-config-file flag. This allows
+// the secondary to delegate SubjectAccessReview calls to the primary cluster.
 func (r *Reconciler) reconcileAuthConfig(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	cmName := fmt.Sprintf("%s-auth-config", shard.Name)
 	webhookConfig := fmt.Sprintf(`apiVersion: v1
@@ -316,6 +345,40 @@ contexts:
 	return nil
 }
 
+// reconcileAPIServices registers APIService objects on the primary cluster and
+// cleans up stale ones when API groups are removed from the spec. It reads the
+// CA bundle from the cert-manager Secret — if the Secret isn't ready yet, it
+// returns an error to trigger a requeue.
+//
+// Orphan detection uses the status-tracked list of previously registered names
+// rather than labels, so external actors cannot trick the operator into deleting
+// APIServices it does not own.
+func (r *Reconciler) reconcileAPIServices(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
+	secretName := certs.PKISecretName(shard)
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      secretName,
+		Namespace: shard.Spec.TargetNamespace,
+	}, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("TLS secret %s not yet available (cert-manager pending)", secretName)
+		}
+		return fmt.Errorf("reading TLS secret %s: %w", secretName, err)
+	}
+
+	caBundle := secret.Data["ca.crt"]
+
+	result, err := aggregation.Reconcile(ctx, r.Client, shard, caBundle, shard.Status.RegisteredAPIServices)
+	if err != nil {
+		return err
+	}
+
+	shard.Status.RegisteredAPIServices = result.Registered
+	return nil
+}
+
+// checkDeploymentHealth returns true when both the Kine and secondary API server
+// deployments have all replicas ready.
 func (r *Reconciler) checkDeploymentHealth(ctx context.Context, shard *kubeshardv1alpha1.APIShard) (bool, error) {
 	kineDeploy := &appsv1.Deployment{}
 	if err := r.Get(ctx, types.NamespacedName{
@@ -341,6 +404,8 @@ func (r *Reconciler) checkDeploymentHealth(ctx context.Context, shard *kubeshard
 	return kineReady && secondaryReady, nil
 }
 
+// setErrorAndRequeue sets the APIShard phase to Error and returns a requeue
+// result along with the original error for logging by the controller runtime.
 func (r *Reconciler) setErrorAndRequeue(ctx context.Context, shard *kubeshardv1alpha1.APIShard, reconcileErr error) (ctrl.Result, error) {
 	shard.Status.Phase = kubeshardv1alpha1.PhaseError
 	shard.Status.ObservedGeneration = shard.Generation

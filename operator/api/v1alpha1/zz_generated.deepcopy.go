@@ -138,6 +138,11 @@ func (in *APIShardStatus) DeepCopyInto(out *APIShardStatus) {
 		*out = new(ConnectionSecretReference)
 		**out = **in
 	}
+	if in.RegisteredAPIServices != nil {
+		in, out := &in.RegisteredAPIServices, &out.RegisteredAPIServices
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

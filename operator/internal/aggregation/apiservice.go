@@ -30,26 +30,41 @@ import (
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
 )
 
-// ReconcileAPIServices ensures APIService objects are registered on the primary cluster
-// pointing to the secondary API server's service.
-func ReconcileAPIServices(ctx context.Context, c client.Client, shard *kubeshardv1alpha1.APIShard, caBundle []byte) error {
+// ReconcileResult holds the outcome of an APIService reconciliation pass.
+type ReconcileResult struct {
+	// Registered is the complete set of APIService names now managed by the shard.
+	Registered []string
+}
+
+// Reconcile creates or updates APIService objects for the desired API groups and
+// deletes any previously registered APIServices that are no longer desired.
+//
+// Orphan detection uses the previouslyRegistered list (from APIShard status) rather
+// than labels or owner references — this prevents an attacker with APIService write
+// access from tricking the operator into deleting resources it doesn't own.
+func Reconcile(
+	ctx context.Context,
+	c client.Client,
+	shard *kubeshardv1alpha1.APIShard,
+	caBundle []byte,
+	previouslyRegistered []string,
+) (*ReconcileResult, error) {
 	logger := log.FromContext(ctx)
 
 	serviceName := resources.SecondaryServiceName(shard)
 	serviceNamespace := shard.Spec.TargetNamespace
 
+	desired := desiredAPIServiceNames(shard)
+	desiredSet := toSet(desired)
+
+	// Create or update desired APIServices
 	for _, apiGroup := range shard.Spec.APIGroups {
 		for _, version := range apiGroup.Versions {
-			apiServiceName := apiServiceNameFor(version, apiGroup.Group)
-			logger.Info("Reconciling APIService", "name", apiServiceName)
+			name := apiServiceName(version, apiGroup.Group)
 
-			desired := &apiregistrationv1.APIService{
+			apiSvc := &apiregistrationv1.APIService{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: apiServiceName,
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "kube-shard-operator",
-						"app.kubernetes.io/instance":   shard.Name,
-					},
+					Name: name,
 				},
 				Spec: apiregistrationv1.APIServiceSpec{
 					Group:                apiGroup.Group,
@@ -66,66 +81,74 @@ func ReconcileAPIServices(ctx context.Context, c client.Client, shard *kubeshard
 			}
 
 			existing := &apiregistrationv1.APIService{}
-			err := c.Get(ctx, types.NamespacedName{Name: apiServiceName}, existing)
+			err := c.Get(ctx, types.NamespacedName{Name: name}, existing)
 			if err != nil {
 				if client.IgnoreNotFound(err) != nil {
-					return fmt.Errorf("getting APIService %s: %w", apiServiceName, err)
+					return nil, fmt.Errorf("getting APIService %s: %w", name, err)
 				}
-				if err := c.Create(ctx, desired); err != nil {
-					return fmt.Errorf("creating APIService %s: %w", apiServiceName, err)
+				if err := c.Create(ctx, apiSvc); err != nil {
+					return nil, fmt.Errorf("creating APIService %s: %w", name, err)
 				}
-				logger.Info("Created APIService", "name", apiServiceName)
+				logger.Info("Created APIService", "name", name)
 				continue
 			}
 
-			// Update if needed
-			if existing.Spec.Service == nil ||
-				existing.Spec.Service.Name != serviceName ||
-				existing.Spec.Service.Namespace != serviceNamespace {
-				existing.Spec = desired.Spec
-				existing.Labels = desired.Labels
-				if err := c.Update(ctx, existing); err != nil {
-					return fmt.Errorf("updating APIService %s: %w", apiServiceName, err)
-				}
-				logger.Info("Updated APIService", "name", apiServiceName)
+			existing.Spec = apiSvc.Spec
+			if err := c.Update(ctx, existing); err != nil {
+				return nil, fmt.Errorf("updating APIService %s: %w", name, err)
 			}
+			logger.Info("Updated APIService", "name", name)
 		}
 	}
 
-	return nil
+	// Delete orphaned APIServices: previously registered but no longer desired
+	for _, name := range previouslyRegistered {
+		if desiredSet[name] {
+			continue
+		}
+
+		existing := &apiregistrationv1.APIService{}
+		err := c.Get(ctx, types.NamespacedName{Name: name}, existing)
+		if err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return nil, fmt.Errorf("getting orphaned APIService %s: %w", name, err)
+			}
+			continue
+		}
+
+		if err := c.Delete(ctx, existing); err != nil {
+			return nil, fmt.Errorf("deleting orphaned APIService %s: %w", name, err)
+		}
+		logger.Info("Deleted orphaned APIService", "name", name)
+	}
+
+	return &ReconcileResult{Registered: desired}, nil
 }
 
-// DeleteAPIServices removes all APIService objects managed by this shard.
-func DeleteAPIServices(ctx context.Context, c client.Client, shard *kubeshardv1alpha1.APIShard) error {
-	logger := log.FromContext(ctx)
+// DesiredAPIServiceNames returns the list of APIService names that should exist
+// for the given shard based on its spec.
+func DesiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {
+	return desiredAPIServiceNames(shard)
+}
 
+func desiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {
+	var names []string
 	for _, apiGroup := range shard.Spec.APIGroups {
 		for _, version := range apiGroup.Versions {
-			apiServiceName := apiServiceNameFor(version, apiGroup.Group)
-			existing := &apiregistrationv1.APIService{}
-			err := c.Get(ctx, types.NamespacedName{Name: apiServiceName}, existing)
-			if err != nil {
-				if client.IgnoreNotFound(err) != nil {
-					return err
-				}
-				continue
-			}
-
-			// Only delete if managed by us
-			if existing.Labels["app.kubernetes.io/managed-by"] != "kube-shard-operator" {
-				continue
-			}
-
-			if err := c.Delete(ctx, existing); err != nil {
-				return fmt.Errorf("deleting APIService %s: %w", apiServiceName, err)
-			}
-			logger.Info("Deleted APIService", "name", apiServiceName)
+			names = append(names, apiServiceName(version, apiGroup.Group))
 		}
 	}
-
-	return nil
+	return names
 }
 
-func apiServiceNameFor(version, group string) string {
+func apiServiceName(version, group string) string {
 	return fmt.Sprintf("%s.%s", version, group)
+}
+
+func toSet(items []string) map[string]bool {
+	s := make(map[string]bool, len(items))
+	for _, item := range items {
+		s[item] = true
+	}
+	return s
 }

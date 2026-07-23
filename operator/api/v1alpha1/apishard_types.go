@@ -83,11 +83,12 @@ type ConnectionSecretReference struct {
 }
 
 type APIShardStatus struct {
-	Phase              string                     `json:"phase,omitempty"`
-	ConnectionSecret   *ConnectionSecretReference `json:"connectionSecret,omitempty"`
-	SecondaryEndpoint  string                     `json:"secondaryEndpoint,omitempty"`
-	Conditions         []metav1.Condition         `json:"conditions,omitempty"`
-	ObservedGeneration int64                      `json:"observedGeneration,omitempty"`
+	Phase                 string                     `json:"phase,omitempty"`
+	ConnectionSecret      *ConnectionSecretReference `json:"connectionSecret,omitempty"`
+	SecondaryEndpoint     string                     `json:"secondaryEndpoint,omitempty"`
+	RegisteredAPIServices []string                   `json:"registeredAPIServices,omitempty"`
+	Conditions            []metav1.Condition         `json:"conditions,omitempty"`
+	ObservedGeneration    int64                      `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
