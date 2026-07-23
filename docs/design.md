@@ -384,6 +384,28 @@ Validate the full Konflux pipeline workflow with the aggregated API server:
 
 **Success criteria:** Chains signs TaskRuns; real Konflux pipelines complete; no regressions from aggregation.
 
+**Validated finding -- Tekton Operator CRD ownership:**
+
+The Tekton Operator (v0.80.0) manages pipeline CRDs via `TektonInstallerSet` resources (e.g., `pipeline-main-static-*`). The operator reconciles these CRDs continuously. Since CRDs and APIService objects for the same group/version cannot coexist on the primary (the aggregator auto-manages Local APIServices when CRDs exist), the Tekton Operator must be scaled down during Phase 6 to prevent it from re-creating the CRDs we remove.
+
+This is acceptable for PoC validation but not for production. The kube-shard-operator (Phase 7) must handle this coordination. The problem is generic: **any** operator that manages CRDs (not just Tekton) will conflict with API aggregation when we remove those CRDs from the primary.
+
+**Design constraint:** The kube-shard-operator should NOT patch upstream operator resources (e.g., TektonInstallerSets). That approach is fragile, couples kube-shard to implementation details of every upstream operator, and would need to be re-implemented for each new operator we integrate with.
+
+**Options to explore:**
+
+1. **Upstream Tekton Operator change** -- add a flag or annotation (e.g., `tektonconfig.spec.pipeline.manageCRDs: false`) that tells the Tekton Operator to skip CRD installation while still managing deployments, webhooks, and RBAC. This solves the problem cleanly for Tekton but does not generalize to other operators.
+
+2. **Generic "CRD guard" admission webhook** -- deploy a validating admission webhook on the primary that rejects CREATE operations on CRDs for aggregated API groups. Any operator attempting to re-create a removed CRD would be blocked. This is generic and works regardless of which operator manages the CRDs, but operators may enter error/retry loops.
+
+3. **Aggregation-aware CRD coexistence** -- investigate whether kube-apiserver can be configured or patched to prefer an APIService with a `service` field over a Local APIService created by a CRD. Currently the aggregator auto-manages Local APIServices when CRDs exist, making coexistence impossible. An upstream Kubernetes change here would solve the problem for everyone.
+
+4. **Operator lifecycle management** -- the kube-shard-operator scales down or pauses upstream operators that conflict, similar to what Phase 6 does manually. Simple but heavy-handed; operators stop reconciling all their resources (not just CRDs).
+
+5. **CRD finalizer/ownership approach** -- keep CRDs on the primary but configure them with a special annotation that prevents the aggregator from creating Local APIServices. This would require a Kubernetes upstream change.
+
+The preferred long-term solution is likely a combination: upstream Tekton Operator support (option 1) for the immediate need, plus a generic mechanism (option 2 or 3) for operators that don't support opt-out. This is exploration work for Phase 7 design.
+
 ### Phase 7: kube-shard operator
 
 Build the kube-shard operator using [Kubebuilder](https://book.kubebuilder.io/) to replace all manual setup scripts with a declarative, reconciliation-driven approach. The operator manages the full lifecycle of the secondary API server and is generic -- not tied to Tekton or any specific CRD.
@@ -391,7 +413,7 @@ Build the kube-shard operator using [Kubebuilder](https://book.kubebuilder.io/) 
 **Responsibilities:**
 
 1. **Secondary API server lifecycle** -- deploy and manage the secondary kube-apiserver + Kine stack, replacing `setup-phase*.sh` scripts with a single `SecondaryAPIServer` custom resource
-2. **Generic CRD aggregation** -- accept a list of API groups/versions to aggregate (e.g., `tekton.dev`, `resolution.tekton.dev`, `appstudio.redhat.com`); install CRDs on secondary, register APIService objects on primary, remove conflicting CRDs from primary
+2. **Generic CRD aggregation** -- accept a list of API groups/versions to aggregate (e.g., `tekton.dev`, `resolution.tekton.dev`, `appstudio.redhat.com`); install CRDs on secondary, register APIService objects on primary, remove conflicting CRDs from primary, and coordinate with upstream operators (e.g., Tekton Operator) that manage those CRDs via InstallerSets or similar mechanisms
 3. **Admission webhook synchronization** -- watch MutatingWebhookConfiguration/ValidatingWebhookConfiguration on the primary for configured labels/names, mirror them to the secondary with `clientConfig.service` → `clientConfig.url` transformation, and keep `caBundle` in sync on cert rotation
 4. **Namespace synchronization** -- watch Namespaces on main → mirror create/delete to secondary, scoped by label selector (e.g., `konflux.dev/tenant`), ignoring system namespaces
 
@@ -404,7 +426,7 @@ Build the kube-shard operator using [Kubebuilder](https://book.kubebuilder.io/) 
    - APIService registration controller
    - Webhook sync controller (primary → secondary, with service→url and caBundle refresh)
    - Namespace sync controller (main → secondary)
-   - CRD sync controller (install target CRDs on secondary)
+   - CRD sync controller (install target CRDs on secondary, coordinate with upstream operators that own those CRDs)
 4. Validate that operator-managed deployment matches manual setup behavior
 5. Migrate PoC to operator-managed mode
 

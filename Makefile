@@ -49,6 +49,14 @@ phase5: ## Upgrade to Phase 5: PostgreSQL backend (requires Phase 3)
 test-phase5: ## Validate Phase 5: PostgreSQL persistence and regression tests
 	./hack/validate-phase5.sh
 
+.PHONY: phase6
+phase6: ## Phase 6: Deploy kube-shard on Konflux cluster (requires kind-konflux context)
+	./hack/setup-phase6.sh
+
+.PHONY: test-phase6
+test-phase6: ## Validate Phase 6: Konflux integration (Chains, pipelines, controllers)
+	./hack/validate-phase6.sh
+
 .PHONY: kind
 kind: ## Create the kind cluster only
 	./hack/setup-kind.sh
