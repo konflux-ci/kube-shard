@@ -39,7 +39,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/konflux-ci/konflux-ci/operator/pkg/tracking"
 
@@ -135,8 +137,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// Ensure the finalizer is present before any resource creation
 	if !controllerutil.ContainsFinalizer(&shard, finalizerName) {
+		base := shard.DeepCopy()
 		controllerutil.AddFinalizer(&shard, finalizerName)
-		if err := r.Update(ctx, &shard); err != nil {
+		if err := r.Patch(ctx, &shard, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -195,15 +198,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
-	// Reconcile Secondary API server
-	if err := r.reconcileSecondary(ctx, tc, &shard); err != nil {
-		logger.Error(err, "Failed to reconcile secondary API server")
+	// Create admin kubeconfig Secret (depends on PKI secret, not the secondary)
+	if err := r.reconcileAdminKubeconfig(ctx, tc, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile admin kubeconfig")
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
-	// Create admin kubeconfig Secret for the secondary API server
-	if err := r.reconcileAdminKubeconfig(ctx, tc, &shard); err != nil {
-		logger.Error(err, "Failed to reconcile admin kubeconfig")
+	// Reconcile Secondary API server
+	if err := r.reconcileSecondary(ctx, tc, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile secondary API server")
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
@@ -243,11 +246,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		})
 	}
 
-	// Cleanup orphaned resources that were not applied this reconcile
-	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, managedGVKs); err != nil {
-		logger.Error(err, "Failed to cleanup orphans")
-	}
-
 	// Check health of deployments
 	healthy, err := r.checkDeploymentHealth(ctx, &shard)
 	if err != nil {
@@ -281,6 +279,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			Message:            "Secondary API server is not yet ready",
 			ObservedGeneration: shard.Generation,
 		})
+	}
+
+	// Cleanup orphaned resources only after all apply steps have completed,
+	// so the tracked set is complete and nothing gets incorrectly deleted.
+	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, managedGVKs); err != nil {
+		logger.Error(err, "Failed to cleanup orphans")
 	}
 
 	shard.Status.Message = ""
@@ -858,8 +862,31 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&kubeshardv1alpha1.WebhookSync{}).
 		Owns(&apiregistrationv1.APIService{}).
 		Watches(&apiextensionsv1.CustomResourceDefinition{}, &crdEventHandler{client: r.Client}).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(
+			requestHeaderCAMapper(mgr.GetClient()),
+		)).
 		Named("apishard").
 		Complete(r)
+}
+
+func requestHeaderCAMapper(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		if obj.GetName() != "extension-apiserver-authentication" ||
+			obj.GetNamespace() != "kube-system" {
+			return nil
+		}
+		var shards kubeshardv1alpha1.APIShardList
+		if err := c.List(ctx, &shards); err != nil {
+			return nil
+		}
+		requests := make([]reconcile.Request, 0, len(shards.Items))
+		for i := range shards.Items {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: shards.Items[i].Name},
+			})
+		}
+		return requests
+	}
 }
 
 // crdEventHandler maps CRD events to APIShard reconcile requests for any shard
