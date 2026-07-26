@@ -63,6 +63,10 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
+// Reconcile synchronises namespaces from the primary cluster to the secondary
+// API server. It computes the desired set of namespaces (matching the label
+// selector minus exclusions), creates missing ones on the secondary, and
+// deletes orphaned ones that are no longer desired.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -190,11 +194,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
 }
 
+// buildSecondaryClient returns a cached controller-runtime client for the
+// secondary API server described by the NamespaceSync's connection spec.
 func (r *Reconciler) buildSecondaryClient(ctx context.Context, nsSync *kubeshardv1alpha1.NamespaceSync) (client.Client, error) {
 	cacheKey := fmt.Sprintf("%s/%s", nsSync.Namespace, nsSync.Name)
 	return r.ClientProvider.BuildClient(ctx, r.Client, nsSync.Spec.SecondaryConnection, nsSync.Namespace, cacheKey)
 }
 
+// ensureNamespaceOnSecondary creates the given namespace on the secondary API
+// server if it does not already exist, copying filtered labels from the primary.
 func (r *Reconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, ns *corev1.Namespace) error {
 	newNS := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -209,6 +217,8 @@ func (r *Reconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryCl
 	return nil
 }
 
+// deleteNamespaceOnSecondary removes a namespace from the secondary API server.
+// System namespaces are never deleted.
 func (r *Reconciler) deleteNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, name string) error {
 	if systemNamespaces.Has(name) {
 		return nil
@@ -223,6 +233,9 @@ func (r *Reconciler) deleteNamespaceOnSecondary(ctx context.Context, secondaryCl
 	return nil
 }
 
+// filterLabels returns a copy of the label map with Kubernetes-internal labels
+// (e.g. kubernetes.io/metadata.name) removed so they are not propagated to the
+// secondary.
 func filterLabels(src map[string]string) map[string]string {
 	if src == nil {
 		return nil
@@ -249,6 +262,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// secretToNamespaceSyncMapper returns a MapFunc that maps Secret events to
+// NamespaceSync reconcile requests for any NamespaceSync whose connection spec
+// references the changed Secret.
 func secretToNamespaceSyncMapper(c client.Client) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		var list kubeshardv1alpha1.NamespaceSyncList

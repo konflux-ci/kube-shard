@@ -58,6 +58,10 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
+// Reconcile synchronises webhook configurations from the primary cluster to the
+// secondary API server. It filters webhooks whose rules match the configured API
+// groups, transforms their ClientConfig from service references to URLs, and
+// deletes stale webhooks that no longer match.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -203,11 +207,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
+// buildSecondaryClient returns a cached controller-runtime client for the
+// secondary API server described by the WebhookSync's connection spec.
 func (r *Reconciler) buildSecondaryClient(ctx context.Context, whSync *kubeshardv1alpha1.WebhookSync) (client.Client, error) {
 	cacheKey := fmt.Sprintf("%s/%s", whSync.Namespace, whSync.Name)
 	return r.ClientProvider.BuildClient(ctx, r.Client, whSync.Spec.SecondaryConnection, whSync.Namespace, cacheKey)
 }
 
+// deleteStaleValidating removes ValidatingWebhookConfigurations from the
+// secondary that are not in the currentNames set (i.e. no longer match the
+// primary).
 func (r *Reconciler) deleteStaleValidating(ctx context.Context, secondaryClient client.Client, currentNames sets.Set[string]) error {
 	logger := log.FromContext(ctx)
 
@@ -229,6 +238,8 @@ func (r *Reconciler) deleteStaleValidating(ctx context.Context, secondaryClient 
 	return nil
 }
 
+// deleteStaleMutating removes MutatingWebhookConfigurations from the secondary
+// that are not in the currentNames set (i.e. no longer match the primary).
 func (r *Reconciler) deleteStaleMutating(ctx context.Context, secondaryClient client.Client, currentNames sets.Set[string]) error {
 	logger := log.FromContext(ctx)
 
@@ -250,6 +261,8 @@ func (r *Reconciler) deleteStaleMutating(ctx context.Context, secondaryClient cl
 	return nil
 }
 
+// shouldSyncValidatingWebhook returns true if any rule in the webhook list
+// targets one of the targetGroups or the wildcard group "*".
 func shouldSyncValidatingWebhook(webhooks []admissionregistrationv1.ValidatingWebhook, targetGroups sets.Set[string]) bool {
 	for i := range webhooks {
 		for j := range webhooks[i].Rules {
@@ -263,6 +276,8 @@ func shouldSyncValidatingWebhook(webhooks []admissionregistrationv1.ValidatingWe
 	return false
 }
 
+// shouldSyncMutatingWebhook returns true if any rule in the webhook list
+// targets one of the targetGroups or the wildcard group "*".
 func shouldSyncMutatingWebhook(webhooks []admissionregistrationv1.MutatingWebhook, targetGroups sets.Set[string]) bool {
 	for i := range webhooks {
 		for j := range webhooks[i].Rules {
@@ -276,6 +291,10 @@ func shouldSyncMutatingWebhook(webhooks []admissionregistrationv1.MutatingWebhoo
 	return false
 }
 
+// transformMutatingWebhook returns a deep copy of src suitable for the
+// secondary: cluster metadata is stripped, and service-based ClientConfigs are
+// converted to URL-based ones so the secondary can reach webhook servers
+// directly via in-cluster DNS.
 func transformMutatingWebhook(src *admissionregistrationv1.MutatingWebhookConfiguration) *admissionregistrationv1.MutatingWebhookConfiguration {
 	result := src.DeepCopy()
 	result.ResourceVersion = ""
@@ -303,6 +322,10 @@ func transformMutatingWebhook(src *admissionregistrationv1.MutatingWebhookConfig
 	return result
 }
 
+// transformValidatingWebhook returns a deep copy of src suitable for the
+// secondary: cluster metadata is stripped, and service-based ClientConfigs are
+// converted to URL-based ones so the secondary can reach webhook servers
+// directly via in-cluster DNS.
 func transformValidatingWebhook(src *admissionregistrationv1.ValidatingWebhookConfiguration) *admissionregistrationv1.ValidatingWebhookConfiguration {
 	result := src.DeepCopy()
 	result.ResourceVersion = ""
@@ -357,6 +380,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// secretToWebhookSyncMapper returns a MapFunc that maps Secret events to
+// WebhookSync reconcile requests for any WebhookSync whose connection spec
+// references the changed Secret.
 func secretToWebhookSyncMapper(c client.Client) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		var list kubeshardv1alpha1.WebhookSyncList

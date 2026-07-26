@@ -49,6 +49,8 @@ func (h *webhookEventHandler) Generic(ctx context.Context, e event.GenericEvent,
 	h.enqueueAll(ctx, q)
 }
 
+// enqueueAll lists every WebhookSync and adds a reconcile request for each,
+// ensuring all sync controllers re-evaluate after any webhook config event.
 func (h *webhookEventHandler) enqueueAll(ctx context.Context, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	var list kubeshardv1alpha1.WebhookSyncList
 	if err := h.client.List(ctx, &list); err != nil {

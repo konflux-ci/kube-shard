@@ -869,6 +869,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// requestHeaderCAMapper returns a MapFunc that triggers reconciliation of all
+// APIShards when the extension-apiserver-authentication ConfigMap in kube-system
+// changes, ensuring the secondary picks up front-proxy CA rotations.
 func requestHeaderCAMapper(c client.Client) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		if obj.GetName() != "extension-apiserver-authentication" ||
@@ -911,6 +914,8 @@ func (h *crdEventHandler) Generic(ctx context.Context, e event.GenericEvent, q w
 	h.enqueueForCRD(ctx, e.Object, q)
 }
 
+// enqueueForCRD enqueues reconcile requests for every APIShard whose apiGroups
+// overlap with the CRD's group, so conflict detection runs on CRD changes.
 func (h *crdEventHandler) enqueueForCRD(ctx context.Context, obj client.Object, q workqueue.TypedRateLimitingInterface[ctrl.Request]) {
 	crd, ok := obj.(*apiextensionsv1.CustomResourceDefinition)
 	if !ok {

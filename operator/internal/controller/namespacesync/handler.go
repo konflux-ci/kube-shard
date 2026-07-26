@@ -50,6 +50,8 @@ func (h *namespaceEventHandler) Generic(ctx context.Context, e event.GenericEven
 	h.enqueueAll(ctx, q)
 }
 
+// enqueueAll lists every NamespaceSync and adds a reconcile request for each,
+// ensuring all sync controllers re-evaluate after any namespace event.
 func (h *namespaceEventHandler) enqueueAll(ctx context.Context, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	var list kubeshardv1alpha1.NamespaceSyncList
 	if err := h.client.List(ctx, &list); err != nil {
