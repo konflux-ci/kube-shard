@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -58,7 +59,7 @@ func Reconcile(
 	serviceNamespace := shard.Spec.TargetNamespace
 
 	desired := desiredAPIServiceNames(shard)
-	desiredSet := toSet(desired)
+	desiredSet := sets.New[string](desired...)
 
 	// Create or update desired APIServices
 	for _, apiGroup := range shard.Spec.APIGroups {
@@ -111,7 +112,7 @@ func Reconcile(
 
 	// Delete orphaned APIServices: previously registered but no longer desired
 	for _, name := range previouslyRegistered {
-		if desiredSet[name] {
+		if desiredSet.Has(name) {
 			continue
 		}
 
@@ -151,12 +152,4 @@ func desiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {
 
 func apiServiceName(version, group string) string {
 	return fmt.Sprintf("%s.%s", version, group)
-}
-
-func toSet(items []string) map[string]bool {
-	s := make(map[string]bool, len(items))
-	for _, item := range items {
-		s[item] = true
-	}
-	return s
 }

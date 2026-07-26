@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -42,10 +43,11 @@ type ConflictResult struct {
 func DetectCRDConflicts(ctx context.Context, c client.Client, shard *kubeshardv1alpha1.APIShard) (*ConflictResult, error) {
 	logger := log.FromContext(ctx)
 
-	aggregatedGroups := make(map[string]bool, len(shard.Spec.APIGroups))
+	groups := make([]string, 0, len(shard.Spec.APIGroups))
 	for _, g := range shard.Spec.APIGroups {
-		aggregatedGroups[g.Group] = true
+		groups = append(groups, g.Group)
 	}
+	aggregatedGroups := sets.New[string](groups...)
 
 	crdList := &apiextensionsv1.CustomResourceDefinitionList{}
 	if err := c.List(ctx, crdList); err != nil {
@@ -55,7 +57,7 @@ func DetectCRDConflicts(ctx context.Context, c client.Client, shard *kubeshardv1
 	var conflicting []string
 	for i := range crdList.Items {
 		crd := &crdList.Items[i]
-		if aggregatedGroups[crd.Spec.Group] {
+		if aggregatedGroups.Has(crd.Spec.Group) {
 			conflicting = append(conflicting, crd.Name)
 			logger.Info("Detected conflicting CRD on primary",
 				"crd", crd.Name,

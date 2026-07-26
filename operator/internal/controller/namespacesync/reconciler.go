@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -42,12 +43,12 @@ const (
 	namespaceSyncErrorRequeue = 30 * time.Second
 )
 
-var systemNamespaces = map[string]bool{
-	"kube-system":     true,
-	"kube-public":     true,
-	"kube-node-lease": true,
-	"default":         true,
-}
+var systemNamespaces = sets.New[string](
+	"kube-system",
+	"kube-public",
+	"kube-node-lease",
+	"default",
+)
 
 // Reconciler reconciles a NamespaceSync object.
 type Reconciler struct {
@@ -102,18 +103,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, fmt.Errorf("listing primary namespaces: %w", err)
 	}
 
-	excluded := make(map[string]bool, len(nsSync.Spec.ExcludeNamespaces))
-	for _, ns := range nsSync.Spec.ExcludeNamespaces {
-		excluded[ns] = true
-	}
+	excluded := sets.New[string](nsSync.Spec.ExcludeNamespaces...)
 
-	desiredNames := make(map[string]bool)
+	desiredNames := sets.New[string]()
 	for i := range primaryNamespaces.Items {
 		ns := &primaryNamespaces.Items[i]
-		if excluded[ns.Name] {
+		if excluded.Has(ns.Name) {
 			continue
 		}
-		desiredNames[ns.Name] = true
+		desiredNames.Insert(ns.Name)
 	}
 
 	var secondaryNamespaces corev1.NamespaceList
@@ -133,9 +131,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: namespaceSyncErrorRequeue}, nil
 	}
 
-	secondaryExisting := make(map[string]bool, len(secondaryNamespaces.Items))
+	secondaryExisting := sets.New[string]()
 	for i := range secondaryNamespaces.Items {
-		secondaryExisting[secondaryNamespaces.Items[i].Name] = true
+		secondaryExisting.Insert(secondaryNamespaces.Items[i].Name)
 	}
 
 	var syncErrors []error
@@ -143,7 +141,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// Create missing namespaces on secondary
 	for i := range primaryNamespaces.Items {
 		ns := &primaryNamespaces.Items[i]
-		if excluded[ns.Name] || secondaryExisting[ns.Name] {
+		if excluded.Has(ns.Name) || secondaryExisting.Has(ns.Name) {
 			continue
 		}
 		if err := r.ensureNamespaceOnSecondary(ctx, secondaryClient, ns); err != nil {
@@ -154,7 +152,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// Delete orphaned namespaces from secondary
 	for i := range secondaryNamespaces.Items {
 		name := secondaryNamespaces.Items[i].Name
-		if desiredNames[name] || systemNamespaces[name] {
+		if desiredNames.Has(name) || systemNamespaces.Has(name) {
 			continue
 		}
 		if err := r.deleteNamespaceOnSecondary(ctx, secondaryClient, name); err != nil {
@@ -163,7 +161,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	now := metav1.Now()
-	nsSync.Status.SyncedNamespaces = int32(len(desiredNames))
+	nsSync.Status.SyncedNamespaces = int32(desiredNames.Len())
 	nsSync.Status.LastSyncTime = &now
 	nsSync.Status.ObservedGeneration = nsSync.Generation
 
@@ -180,7 +178,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			Type:               "Ready",
 			Status:             metav1.ConditionTrue,
 			Reason:             "SyncComplete",
-			Message:            fmt.Sprintf("%d namespace(s) synced", len(desiredNames)),
+			Message:            fmt.Sprintf("%d namespace(s) synced", desiredNames.Len()),
 			ObservedGeneration: nsSync.Generation,
 		})
 	}
@@ -193,43 +191,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 func (r *Reconciler) buildSecondaryClient(ctx context.Context, nsSync *kubeshardv1alpha1.NamespaceSync) (client.Client, error) {
-	conn := nsSync.Spec.SecondaryConnection
-	namespace := nsSync.Namespace
-
-	var caSecret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      conn.CASecretRef.Name,
-		Namespace: namespace,
-	}, &caSecret); err != nil {
-		return nil, fmt.Errorf("reading CA secret %s: %w", conn.CASecretRef.Name, err)
-	}
-	caCert, ok := caSecret.Data["ca.crt"]
-	if !ok {
-		return nil, fmt.Errorf("CA secret %s missing key ca.crt", conn.CASecretRef.Name)
-	}
-
-	var authSecret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      conn.AuthSecretRef.Name,
-		Namespace: namespace,
-	}, &authSecret); err != nil {
-		return nil, fmt.Errorf("reading auth secret %s: %w", conn.AuthSecretRef.Name, err)
-	}
-	token, ok := authSecret.Data["token"]
-	if !ok {
-		return nil, fmt.Errorf("auth secret %s missing key token", conn.AuthSecretRef.Name)
-	}
-
-	host := fmt.Sprintf("https://%s.%s.svc:%d",
-		conn.ServiceRef.Name, conn.ServiceRef.Namespace, conn.ServiceRef.Port)
-
-	cfg := secondary.ClientConfig{
-		Host:   host,
-		CACert: caCert,
-		Token:  string(token),
-	}
-
-	return r.ClientProvider.GetOrCreate(nsSync.Name, cfg)
+	cacheKey := fmt.Sprintf("%s/%s", nsSync.Namespace, nsSync.Name)
+	return r.ClientProvider.BuildClient(ctx, r.Client, nsSync.Spec.SecondaryConnection, nsSync.Namespace, cacheKey)
 }
 
 func (r *Reconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, ns *corev1.Namespace) error {
@@ -247,7 +210,7 @@ func (r *Reconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryCl
 }
 
 func (r *Reconciler) deleteNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, name string) error {
-	if systemNamespaces[name] {
+	if systemNamespaces.Has(name) {
 		return nil
 	}
 	ns := &corev1.Namespace{

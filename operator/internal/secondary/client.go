@@ -25,10 +25,14 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 )
 
 // ClientConfig holds the configuration needed to build a client for a secondary API server.
@@ -102,6 +106,51 @@ func (p *ClientProvider) Invalidate(shardName string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.clients, shardName)
+}
+
+// BuildClient reads connection credentials from the cluster and returns a
+// cached controller-runtime client for the secondary API server described by
+// conn. The cacheKey must be unique per logical consumer (e.g. namespace/name).
+func (p *ClientProvider) BuildClient(ctx context.Context, reader client.Reader, conn kubeshardv1alpha1.SecondaryConnectionSpec, namespace, cacheKey string) (client.Client, error) {
+	var caSecret corev1.Secret
+	if err := reader.Get(ctx, types.NamespacedName{
+		Name:      conn.CASecretRef.Name,
+		Namespace: namespace,
+	}, &caSecret); err != nil {
+		return nil, fmt.Errorf("reading CA secret %s: %w", conn.CASecretRef.Name, err)
+	}
+	caCert := caSecret.Data["ca.crt"]
+	if len(caCert) == 0 {
+		caCert = caSecret.Data["tls.crt"]
+	}
+	if len(caCert) == 0 {
+		return nil, fmt.Errorf("CA secret %s has no ca.crt or tls.crt key", conn.CASecretRef.Name)
+	}
+
+	var authSecret corev1.Secret
+	if err := reader.Get(ctx, types.NamespacedName{
+		Name:      conn.AuthSecretRef.Name,
+		Namespace: namespace,
+	}, &authSecret); err != nil {
+		return nil, fmt.Errorf("reading auth secret %s: %w", conn.AuthSecretRef.Name, err)
+	}
+	token := string(authSecret.Data["token"])
+	if token == "" {
+		return nil, fmt.Errorf("auth secret %s missing key token", conn.AuthSecretRef.Name)
+	}
+
+	port := conn.ServiceRef.Port
+	if port == 0 {
+		port = 443
+	}
+	host := fmt.Sprintf("https://%s.%s.svc:%d",
+		conn.ServiceRef.Name, conn.ServiceRef.Namespace, port)
+
+	return p.GetOrCreate(cacheKey, ClientConfig{
+		Host:   host,
+		CACert: caCert,
+		Token:  token,
+	})
 }
 
 func buildRESTConfig(cfg ClientConfig) *rest.Config {

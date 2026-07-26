@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -85,12 +86,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: errorRequeueInterval}, nil
 	}
 
-	targetGroups := toGroupSet(whSync.Spec.APIGroups)
+	targetGroups := sets.New[string](whSync.Spec.APIGroups...)
 
 	var validatingCount, mutatingCount int32
 	var syncErrors []error
-	syncedValidating := make(map[string]bool)
-	syncedMutating := make(map[string]bool)
+	syncedValidating := sets.New[string]()
+	syncedMutating := sets.New[string]()
 
 	// Sync ValidatingWebhookConfigurations
 	var vwhcList admissionregistrationv1.ValidatingWebhookConfigurationList
@@ -122,7 +123,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			continue
 		}
 
-		syncedValidating[vwhc.Name] = true
+		syncedValidating.Insert(vwhc.Name)
 		validatingCount++
 	}
 
@@ -156,7 +157,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			continue
 		}
 
-		syncedMutating[mwhc.Name] = true
+		syncedMutating.Insert(mwhc.Name)
 		mutatingCount++
 	}
 
@@ -203,50 +204,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 func (r *Reconciler) buildSecondaryClient(ctx context.Context, whSync *kubeshardv1alpha1.WebhookSync) (client.Client, error) {
-	conn := whSync.Spec.SecondaryConnection
-	ns := whSync.Namespace
-
-	// Read CA cert from caSecretRef
-	var caSecret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: conn.CASecretRef.Name, Namespace: ns}, &caSecret); err != nil {
-		return nil, fmt.Errorf("getting CA secret %s: %w", conn.CASecretRef.Name, err)
-	}
-	caCert := caSecret.Data["ca.crt"]
-	if len(caCert) == 0 {
-		caCert = caSecret.Data["tls.crt"]
-	}
-
-	// Read auth token from authSecretRef
-	var authSecret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: conn.AuthSecretRef.Name, Namespace: ns}, &authSecret); err != nil {
-		return nil, fmt.Errorf("getting auth secret %s: %w", conn.AuthSecretRef.Name, err)
-	}
-	token := string(authSecret.Data["token"])
-
-	host := fmt.Sprintf("https://%s.%s.svc:%d",
-		conn.ServiceRef.Name,
-		conn.ServiceRef.Namespace,
-		serviceRefPort(conn.ServiceRef.Port),
-	)
-
-	cfg := secondary.ClientConfig{
-		Host:   host,
-		CACert: caCert,
-		Token:  token,
-	}
-
-	key := fmt.Sprintf("%s/%s", whSync.Namespace, whSync.Name)
-	return r.ClientProvider.GetOrCreate(key, cfg)
+	cacheKey := fmt.Sprintf("%s/%s", whSync.Namespace, whSync.Name)
+	return r.ClientProvider.BuildClient(ctx, r.Client, whSync.Spec.SecondaryConnection, whSync.Namespace, cacheKey)
 }
 
-func serviceRefPort(port int32) int32 {
-	if port == 0 {
-		return 443
-	}
-	return port
-}
-
-func (r *Reconciler) deleteStaleValidating(ctx context.Context, secondaryClient client.Client, currentNames map[string]bool) error {
+func (r *Reconciler) deleteStaleValidating(ctx context.Context, secondaryClient client.Client, currentNames sets.Set[string]) error {
 	logger := log.FromContext(ctx)
 
 	var secondaryList admissionregistrationv1.ValidatingWebhookConfigurationList
@@ -256,7 +218,7 @@ func (r *Reconciler) deleteStaleValidating(ctx context.Context, secondaryClient 
 
 	for i := range secondaryList.Items {
 		item := &secondaryList.Items[i]
-		if !currentNames[item.Name] {
+		if !currentNames.Has(item.Name) {
 			if err := secondaryClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
 				logger.Error(err, "Failed to delete stale ValidatingWebhookConfiguration from secondary", "name", item.Name)
 				return fmt.Errorf("deleting stale ValidatingWebhookConfiguration %s: %w", item.Name, err)
@@ -267,7 +229,7 @@ func (r *Reconciler) deleteStaleValidating(ctx context.Context, secondaryClient 
 	return nil
 }
 
-func (r *Reconciler) deleteStaleMutating(ctx context.Context, secondaryClient client.Client, currentNames map[string]bool) error {
+func (r *Reconciler) deleteStaleMutating(ctx context.Context, secondaryClient client.Client, currentNames sets.Set[string]) error {
 	logger := log.FromContext(ctx)
 
 	var secondaryList admissionregistrationv1.MutatingWebhookConfigurationList
@@ -277,7 +239,7 @@ func (r *Reconciler) deleteStaleMutating(ctx context.Context, secondaryClient cl
 
 	for i := range secondaryList.Items {
 		item := &secondaryList.Items[i]
-		if !currentNames[item.Name] {
+		if !currentNames.Has(item.Name) {
 			if err := secondaryClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
 				logger.Error(err, "Failed to delete stale MutatingWebhookConfiguration from secondary", "name", item.Name)
 				return fmt.Errorf("deleting stale MutatingWebhookConfiguration %s: %w", item.Name, err)
@@ -288,19 +250,11 @@ func (r *Reconciler) deleteStaleMutating(ctx context.Context, secondaryClient cl
 	return nil
 }
 
-func toGroupSet(groups []string) map[string]bool {
-	set := make(map[string]bool, len(groups))
-	for _, g := range groups {
-		set[g] = true
-	}
-	return set
-}
-
-func shouldSyncValidatingWebhook(webhooks []admissionregistrationv1.ValidatingWebhook, targetGroups map[string]bool) bool {
+func shouldSyncValidatingWebhook(webhooks []admissionregistrationv1.ValidatingWebhook, targetGroups sets.Set[string]) bool {
 	for i := range webhooks {
 		for j := range webhooks[i].Rules {
 			for _, group := range webhooks[i].Rules[j].APIGroups {
-				if targetGroups[group] || group == "*" {
+				if targetGroups.Has(group) || group == "*" {
 					return true
 				}
 			}
@@ -309,11 +263,11 @@ func shouldSyncValidatingWebhook(webhooks []admissionregistrationv1.ValidatingWe
 	return false
 }
 
-func shouldSyncMutatingWebhook(webhooks []admissionregistrationv1.MutatingWebhook, targetGroups map[string]bool) bool {
+func shouldSyncMutatingWebhook(webhooks []admissionregistrationv1.MutatingWebhook, targetGroups sets.Set[string]) bool {
 	for i := range webhooks {
 		for j := range webhooks[i].Rules {
 			for _, group := range webhooks[i].Rules[j].APIGroups {
-				if targetGroups[group] || group == "*" {
+				if targetGroups.Has(group) || group == "*" {
 					return true
 				}
 			}
