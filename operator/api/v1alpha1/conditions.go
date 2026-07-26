@@ -34,10 +34,14 @@ const (
 
 	// ConditionWebhookSyncReady indicates the webhook sync controller is active.
 	ConditionWebhookSyncReady = "WebhookSyncReady"
+
+	// ConditionReconciled indicates whether the last reconcile loop completed successfully.
+	ConditionReconciled = "Reconciled"
 )
 
 const (
 	PhaseProvisioning = "Provisioning"
+	PhaseBlocked      = "Blocked"
 	PhaseReady        = "Ready"
 	PhaseDegraded     = "Degraded"
 	PhaseError        = "Error"

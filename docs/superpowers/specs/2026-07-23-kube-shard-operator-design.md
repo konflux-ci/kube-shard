@@ -209,6 +209,8 @@ Each step is idempotent. The reconciler progresses through steps in order:
 
 ```
 Reconcile(APIShard) {
+  0. Handle deletion (finalizer — see below)
+  0b. Ensure finalizer is present before any resource creation
   1. Ensure target namespace exists
   2. Ensure cert-manager Certificate resources
      → Requeue if certificate Secret not yet populated
@@ -238,6 +240,27 @@ Reconcile(APIShard) {
   11. Aggregate sub-CR statuses → update APIShard status + phase
 }
 ```
+
+#### Deletion: APIService Cleanup Finalizer
+
+The reconciler uses a finalizer (`kube-shard.konflux-ci.dev/apiservice-cleanup`)
+to ensure APIService objects are deregistered from the primary before the
+APIShard is deleted.
+
+**Why a finalizer instead of ownerReferences?**
+
+Both `APIShard` and `APIService` are cluster-scoped, so ownerReferences would
+work for garbage collection. However, GC deletes dependents concurrently and in
+no guaranteed order. When an APIShard is deleted, the namespace-scoped resources
+(secondary Deployment, Kine, Services) would be garbage-collected at the same
+time as the APIServices. This creates a race window where the APIService still
+exists and routes traffic for the aggregated API groups to a secondary that has
+already been torn down, causing 503 errors for any client hitting those groups.
+
+The finalizer gives the reconciler control over deletion order: it removes the
+APIServices **first** (stopping the aggregation proxy from routing traffic to
+the secondary), and only then allows the APIShard to be deleted — which triggers
+cleanup of the namespace-scoped resources via the tracking client's owner labels.
 
 **Requeue behavior:**
 - Steps waiting on readiness (cert, Kine, secondary): `RequeueAfter: 5s`

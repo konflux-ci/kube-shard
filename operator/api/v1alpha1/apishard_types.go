@@ -84,6 +84,7 @@ type ConnectionSecretReference struct {
 
 type APIShardStatus struct {
 	Phase                 string                     `json:"phase,omitempty"`
+	Message               string                     `json:"message,omitempty"`
 	ConnectionSecret      *ConnectionSecretReference `json:"connectionSecret,omitempty"`
 	SecondaryEndpoint     string                     `json:"secondaryEndpoint,omitempty"`
 	RegisteredAPIServices []string                   `json:"registeredAPIServices,omitempty"`
@@ -96,6 +97,7 @@ type APIShardStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.spec.targetNamespace`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`,priority=1
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.status.secondaryEndpoint`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type APIShard struct {
@@ -112,4 +114,3 @@ type APIShardList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []APIShard `json:"items"`
 }
-

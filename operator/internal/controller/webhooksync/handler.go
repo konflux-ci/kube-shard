@@ -57,7 +57,8 @@ func (h *webhookEventHandler) enqueueAll(ctx context.Context, q workqueue.TypedR
 	for i := range list.Items {
 		q.Add(reconcile.Request{
 			NamespacedName: types.NamespacedName{
-				Name: list.Items[i].Name,
+				Name:      list.Items[i].Name,
+				Namespace: list.Items[i].Namespace,
 			},
 		})
 	}

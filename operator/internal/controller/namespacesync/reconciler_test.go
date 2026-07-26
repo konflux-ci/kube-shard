@@ -19,6 +19,7 @@ package namespacesync
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -28,14 +29,36 @@ import (
 )
 
 var _ = Describe("NamespaceSync Controller", func() {
-	Context("When the referenced APIShard does not exist", func() {
-		It("should set phase to Waiting", func() {
+	const testNamespace = "test-ns-sync-ns"
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: testNamespace},
+		}
+		_ = k8sClient.Create(ctx, ns)
+	})
+
+	Context("When the auth secret does not exist", func() {
+		It("should set Ready=False with reason SecondaryUnavailable", func() {
 			nsSync := &kubeshardv1alpha1.NamespaceSync{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-ns-sync",
+					Name:      "test-ns-sync",
+					Namespace: testNamespace,
 				},
 				Spec: kubeshardv1alpha1.NamespaceSyncSpec{
-					ShardRef: "nonexistent-shard",
+					SecondaryConnection: kubeshardv1alpha1.SecondaryConnectionSpec{
+						ServiceRef: kubeshardv1alpha1.ServiceReference{
+							Name:      "secondary-apiserver",
+							Namespace: "kube-shard-system",
+							Port:      6443,
+						},
+						AuthSecretRef: kubeshardv1alpha1.LocalSecretReference{
+							Name: "nonexistent-auth-secret",
+						},
+						CASecretRef: kubeshardv1alpha1.LocalSecretReference{
+							Name: "nonexistent-ca-secret",
+						},
+					},
 					LabelSelector: metav1.LabelSelector{
 						MatchLabels: map[string]string{"type": "tenant"},
 					},
@@ -51,14 +74,35 @@ var _ = Describe("NamespaceSync Controller", func() {
 				Scheme:         k8sClient.Scheme(),
 				ClientProvider: secondary.NewClientProvider(k8sClient.Scheme()),
 			}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: nsSync.Name},
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      nsSync.Name,
+					Namespace: nsSync.Namespace,
+				},
 			})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(namespaceSyncErrorRequeue))
 
 			updated := &kubeshardv1alpha1.NamespaceSync{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nsSync.Name}, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseWaiting))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nsSync.Name,
+				Namespace: nsSync.Namespace,
+			}, updated)).To(Succeed())
+
+			Expect(updated.Status.Conditions).NotTo(BeEmpty())
+			readyCond := findCondition(updated.Status.Conditions, "Ready")
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCond.Reason).To(Equal("SecondaryUnavailable"))
 		})
 	})
 })
+
+func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == condType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}

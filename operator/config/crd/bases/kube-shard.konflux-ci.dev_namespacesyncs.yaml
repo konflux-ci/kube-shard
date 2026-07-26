@@ -12,18 +12,15 @@ spec:
     listKind: NamespaceSyncList
     plural: namespacesyncs
     singular: namespacesync
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.shardRef
-      name: Shard
-      type: string
-    - jsonPath: .status.phase
-      name: Phase
-      type: string
     - jsonPath: .status.syncedNamespaces
       name: Synced
       type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -51,14 +48,14 @@ spec:
           spec:
             properties:
               excludeNamespaces:
-                description: ExcludeNamespaces is a list of namespaces to never sync
-                  (e.g., kube-system).
                 items:
                   type: string
                 type: array
               labelSelector:
-                description: LabelSelector selects which namespaces on the primary
-                  to mirror to the secondary.
+                description: |-
+                  A label selector is a label query over a set of resources. The result of matchLabels and
+                  matchExpressions are ANDed. An empty label selector matches all objects. A null
+                  label selector matches no objects.
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.
@@ -103,13 +100,46 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
-              shardRef:
-                description: ShardRef references the parent APIShard this sync belongs
-                  to.
-                type: string
+              secondaryConnection:
+                description: SecondaryConnectionSpec defines how to connect to a secondary
+                  API server.
+                properties:
+                  authSecretRef:
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  caSecretRef:
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  serviceRef:
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - name
+                    - namespace
+                    - port
+                    type: object
+                required:
+                - authSecretRef
+                - caSecretRef
+                - serviceRef
+                type: object
             required:
             - labelSelector
-            - shardRef
+            - secondaryConnection
             type: object
           status:
             properties:
@@ -169,24 +199,15 @@ spec:
                   - type
                   type: object
                 type: array
+              lastSyncTime:
+                format: date-time
+                type: string
               observedGeneration:
                 format: int64
                 type: integer
-              phase:
-                type: string
               syncedNamespaces:
-                items:
-                  properties:
-                    name:
-                      type: string
-                    syncedAt:
-                      format: date-time
-                      type: string
-                  required:
-                  - name
-                  - syncedAt
-                  type: object
-                type: array
+                format: int32
+                type: integer
             type: object
         type: object
     served: true

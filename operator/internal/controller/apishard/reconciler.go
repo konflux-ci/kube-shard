@@ -18,11 +18,14 @@ package apishard
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"os"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,8 +33,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/konflux-ci/konflux-ci/operator/pkg/tracking"
@@ -40,12 +47,14 @@ import (
 	"github.com/konflux-ci/kube-shard/operator/internal/aggregation"
 	"github.com/konflux-ci/kube-shard/operator/internal/certs"
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
+	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
 )
 
 const (
-	requeueDelay  = 30 * time.Second
-	fieldManager  = "kube-shard-operator"
+	requeueDelay = 30 * time.Second
+	fieldManager = "kube-shard-operator"
 
+	finalizerName     = "kube-shard.konflux-ci.dev/apiservice-cleanup"
 	ownerLabelKey     = "kube-shard.konflux-ci.dev/owner"
 	componentLabelKey = "kube-shard.konflux-ci.dev/component"
 )
@@ -64,7 +73,8 @@ var managedGVKs = []schema.GroupVersionKind{
 // Reconciler reconciles an APIShard object.
 type Reconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme         *runtime.Scheme
+	ClientProvider *secondary.ClientProvider
 }
 
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards,verbs=get;list;watch;create;update;patch;delete
@@ -76,7 +86,8 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=webhooksyncs,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives the desired state for a single APIShard resource. It provisions
 // the target namespace, storage backend, TLS certificates, auth configuration, and
@@ -92,8 +103,42 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
+	// Handle deletion: remove APIServices before allowing the APIShard to be
+	// deleted. A finalizer is used instead of ownerReferences because deletion
+	// order matters: if the namespace-scoped resources (secondary Deployment,
+	// Kine) were garbage-collected concurrently with the APIServices, there
+	// would be a window where the APIService still routes traffic to a dead
+	// backend, causing 503s for clients of the aggregated API groups. The
+	// finalizer ensures APIServices are deregistered first, stopping traffic
+	// routing, before the rest of the stack is torn down.
 	if !shard.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&shard, finalizerName) {
+			for _, name := range shard.Status.RegisteredAPIServices {
+				apiSvc := &apiregistrationv1.APIService{}
+				if err := r.Get(ctx, types.NamespacedName{Name: name}, apiSvc); err != nil {
+					if apierrors.IsNotFound(err) {
+						continue
+					}
+					return ctrl.Result{}, err
+				}
+				if err := r.Delete(ctx, apiSvc); err != nil && !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			}
+			controllerutil.RemoveFinalizer(&shard, finalizerName)
+			if err := r.Update(ctx, &shard); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		return ctrl.Result{}, nil
+	}
+
+	// Ensure the finalizer is present before any resource creation
+	if !controllerutil.ContainsFinalizer(&shard, finalizerName) {
+		controllerutil.AddFinalizer(&shard, finalizerName)
+		if err := r.Update(ctx, &shard); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Ensure target namespace exists
@@ -156,28 +201,41 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
+	// Create admin kubeconfig Secret for the secondary API server
+	if err := r.reconcileAdminKubeconfig(ctx, tc, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile admin kubeconfig")
+		return r.setErrorAndRequeue(ctx, &shard, err)
+	}
+
 	// Register APIService objects on the primary cluster
 	if err := r.reconcileAPIServices(ctx, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile APIServices")
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
-	// Detect CRD conflicts — CRDs on the primary for aggregated groups will
-	// shadow the APIService registration, breaking the shard.
+	// Detect CRD conflicts and sync conflicting CRDs to the secondary.
+	// When CRDs exist on the primary for aggregated groups, they shadow
+	// the APIService registration. The operator syncs them to the secondary
+	// so they can be served there, and reports the conflict so the user
+	// can delete the CRDs from the primary.
 	conflictResult, err := aggregation.DetectCRDConflicts(ctx, r.Client, &shard)
 	if err != nil {
 		logger.Error(err, "Failed to detect CRD conflicts")
 	} else if conflictResult != nil && conflictResult.HasConflict {
+		if syncErr := r.syncCRDsToSecondary(ctx, &shard, conflictResult.ConflictingCRDs); syncErr != nil {
+			logger.Error(syncErr, "Failed to sync conflicting CRDs to secondary")
+		}
 		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               "CRDConflict",
+			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
 			Status:             metav1.ConditionTrue,
-			Reason:             "ConflictingCRDsDetected",
+			Reason:             "CRDsExistOnPrimary",
 			Message:            conflictResult.Message,
 			ObservedGeneration: shard.Generation,
 		})
+		shard.Status.Phase = kubeshardv1alpha1.PhaseBlocked
 	} else {
 		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               "CRDConflict",
+			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
 			Status:             metav1.ConditionFalse,
 			Reason:             "NoConflicts",
 			Message:            "No conflicting CRDs detected on primary",
@@ -206,6 +264,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			Message:            "Secondary API server is healthy",
 			ObservedGeneration: shard.Generation,
 		})
+
+		if err := r.reconcileNamespaceSync(ctx, &shard); err != nil {
+			logger.Error(err, "Failed to reconcile NamespaceSync")
+		}
+		if err := r.reconcileWebhookSync(ctx, &shard); err != nil {
+			logger.Error(err, "Failed to reconcile WebhookSync")
+		}
+		r.aggregateSubCRStatus(ctx, &shard)
 	} else {
 		shard.Status.Phase = kubeshardv1alpha1.PhaseProvisioning
 		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
@@ -217,7 +283,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		})
 	}
 
+	shard.Status.Message = ""
 	shard.Status.ObservedGeneration = shard.Generation
+	meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+		Type:               kubeshardv1alpha1.ConditionReconciled,
+		Status:             metav1.ConditionTrue,
+		Reason:             "ReconcileSucceeded",
+		Message:            "All resources reconciled successfully",
+		ObservedGeneration: shard.Generation,
+	})
 	if err := r.Status().Update(ctx, &shard); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -361,7 +435,7 @@ func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Clie
 // secondary API server's --authorization-webhook-config-file flag. This allows
 // the secondary to delegate SubjectAccessReview calls to the primary cluster.
 func (r *Reconciler) reconcileAuthConfig(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
-	cmName := fmt.Sprintf("%s-auth-config", shard.Name)
+	cmName := fmt.Sprintf("%s-authz-config", shard.Name)
 	webhookConfig := `apiVersion: v1
 kind: Config
 clusters:
@@ -473,6 +547,259 @@ func (r *Reconciler) reconcileAPIServices(ctx context.Context, shard *kubeshardv
 	return nil
 }
 
+// reconcileAdminKubeconfig creates a Secret containing a kubeconfig that points
+// to the secondary API server's in-cluster service endpoint. Controllers and
+// sub-CRs use this to connect to the secondary.
+func (r *Reconciler) reconcileAdminKubeconfig(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	pkiSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      certs.PKISecretName(shard),
+		Namespace: shard.Spec.TargetNamespace,
+	}, pkiSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("reading PKI secret: %w", err)
+	}
+
+	caData := pkiSecret.Data["ca.crt"]
+	if len(caData) == 0 {
+		return nil
+	}
+
+	token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	if err != nil {
+		return fmt.Errorf("reading service account token: %w", err)
+	}
+
+	serverURL := fmt.Sprintf("https://%s-apiserver.%s.svc", shard.Name, shard.Spec.TargetNamespace)
+	caBase64 := base64.StdEncoding.EncodeToString(caData)
+
+	kubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: secondary
+  cluster:
+    server: %s
+    certificate-authority-data: %s
+users:
+- name: admin
+  user:
+    token: %s
+contexts:
+- name: default
+  context:
+    cluster: secondary
+    user: admin
+current-context: default
+`, serverURL, caBase64, string(token))
+
+	secretName := fmt.Sprintf("%s-admin-kubeconfig", shard.Name)
+	secret := &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Secret",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: shard.Spec.TargetNamespace,
+		},
+		Data: map[string][]byte{
+			"kubeconfig": []byte(kubeconfig),
+			"token":      token,
+		},
+	}
+
+	if err := tc.ApplyOwned(ctx, secret); err != nil {
+		return fmt.Errorf("admin kubeconfig secret: %w", err)
+	}
+
+	shard.Status.ConnectionSecret = &kubeshardv1alpha1.ConnectionSecretReference{
+		Name:      secretName,
+		Namespace: shard.Spec.TargetNamespace,
+	}
+
+	return nil
+}
+
+// reconcileNamespaceSync creates or updates a NamespaceSync CR that mirrors
+// namespaces from the primary cluster to the secondary API server.
+func (r *Reconciler) reconcileNamespaceSync(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
+	nsSync := &kubeshardv1alpha1.NamespaceSync{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-ns-sync", shard.Name),
+			Namespace: shard.Spec.TargetNamespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, nsSync, func() error {
+		nsSync.Labels = map[string]string{
+			ownerLabelKey:                  shard.Name,
+			"app.kubernetes.io/managed-by": "kube-shard-operator",
+		}
+
+		nsSync.Spec = kubeshardv1alpha1.NamespaceSyncSpec{
+			SecondaryConnection: kubeshardv1alpha1.SecondaryConnectionSpec{
+				ServiceRef: kubeshardv1alpha1.ServiceReference{
+					Name:      fmt.Sprintf("%s-apiserver", shard.Name),
+					Namespace: shard.Spec.TargetNamespace,
+					Port:      443,
+				},
+				AuthSecretRef: kubeshardv1alpha1.LocalSecretReference{
+					Name: fmt.Sprintf("%s-admin-kubeconfig", shard.Name),
+				},
+				CASecretRef: kubeshardv1alpha1.LocalSecretReference{
+					Name: certs.PKISecretName(shard),
+				},
+			},
+			LabelSelector: shard.Spec.NamespaceSync.LabelSelector,
+		}
+
+		return nil
+	})
+
+	return err
+}
+
+// reconcileWebhookSync creates or updates a WebhookSync CR that mirrors
+// webhook configurations from the primary to the secondary API server.
+func (r *Reconciler) reconcileWebhookSync(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
+	apiGroups := make([]string, 0, len(shard.Spec.APIGroups))
+	for _, ag := range shard.Spec.APIGroups {
+		apiGroups = append(apiGroups, ag.Group)
+	}
+
+	whSync := &kubeshardv1alpha1.WebhookSync{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-webhook-sync", shard.Name),
+			Namespace: shard.Spec.TargetNamespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, whSync, func() error {
+		whSync.Labels = map[string]string{
+			ownerLabelKey:                  shard.Name,
+			"app.kubernetes.io/managed-by": "kube-shard-operator",
+		}
+
+		whSync.Spec = kubeshardv1alpha1.WebhookSyncSpec{
+			SecondaryConnection: kubeshardv1alpha1.SecondaryConnectionSpec{
+				ServiceRef: kubeshardv1alpha1.ServiceReference{
+					Name:      fmt.Sprintf("%s-apiserver", shard.Name),
+					Namespace: shard.Spec.TargetNamespace,
+					Port:      443,
+				},
+				AuthSecretRef: kubeshardv1alpha1.LocalSecretReference{
+					Name: fmt.Sprintf("%s-admin-kubeconfig", shard.Name),
+				},
+				CASecretRef: kubeshardv1alpha1.LocalSecretReference{
+					Name: certs.PKISecretName(shard),
+				},
+			},
+			APIGroups: apiGroups,
+		}
+
+		return nil
+	})
+
+	return err
+}
+
+// aggregateSubCRStatus reads the status of NamespaceSync and WebhookSync sub-CRs
+// and propagates their Ready condition onto the APIShard.
+func (r *Reconciler) aggregateSubCRStatus(ctx context.Context, shard *kubeshardv1alpha1.APIShard) {
+	nsSync := &kubeshardv1alpha1.NamespaceSync{}
+	nsSyncName := fmt.Sprintf("%s-ns-sync", shard.Name)
+	if err := r.Get(ctx, types.NamespacedName{Name: nsSyncName, Namespace: shard.Spec.TargetNamespace}, nsSync); err != nil {
+		return
+	}
+	readyCond := meta.FindStatusCondition(nsSync.Status.Conditions, "Ready")
+	if readyCond != nil {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionNamespaceSyncReady,
+			Status:             readyCond.Status,
+			Reason:             readyCond.Reason,
+			Message:            readyCond.Message,
+			ObservedGeneration: shard.Generation,
+		})
+	}
+
+	whSync := &kubeshardv1alpha1.WebhookSync{}
+	whSyncName := fmt.Sprintf("%s-webhook-sync", shard.Name)
+	if err := r.Get(ctx, types.NamespacedName{Name: whSyncName, Namespace: shard.Spec.TargetNamespace}, whSync); err != nil {
+		return
+	}
+	readyCond = meta.FindStatusCondition(whSync.Status.Conditions, "Ready")
+	if readyCond != nil {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionWebhookSyncReady,
+			Status:             readyCond.Status,
+			Reason:             readyCond.Reason,
+			Message:            readyCond.Message,
+			ObservedGeneration: shard.Generation,
+		})
+	}
+}
+
+// syncCRDsToSecondary copies CRDs from the primary to the secondary API server.
+// This allows the secondary to serve these API groups once the CRDs are removed
+// from the primary (resolving the aggregation conflict).
+func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1alpha1.APIShard, crdNames []string) error {
+	logger := log.FromContext(ctx)
+
+	if r.ClientProvider == nil {
+		return fmt.Errorf("ClientProvider not configured")
+	}
+
+	endpoint := resources.SecondaryEndpoint(shard)
+	if endpoint == "" {
+		return fmt.Errorf("secondary endpoint not available yet")
+	}
+
+	token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	if err != nil {
+		return fmt.Errorf("reading service account token: %w", err)
+	}
+
+	secondaryClient, err := r.ClientProvider.GetOrCreate(shard.Name, secondary.ClientConfig{
+		Host:  endpoint,
+		Token: string(token),
+	})
+	if err != nil {
+		return fmt.Errorf("creating secondary client: %w", err)
+	}
+
+	for _, name := range crdNames {
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := r.Get(ctx, types.NamespacedName{Name: name}, crd); err != nil {
+			logger.Error(err, "Failed to get CRD from primary", "crd", name)
+			continue
+		}
+
+		secondaryCRD := crd.DeepCopy()
+		secondaryCRD.ResourceVersion = ""
+		secondaryCRD.UID = ""
+		secondaryCRD.OwnerReferences = nil
+		secondaryCRD.ManagedFields = nil
+		secondaryCRD.Generation = 0
+		secondaryCRD.Finalizers = nil
+
+		existing := &apiextensionsv1.CustomResourceDefinition{}
+		err := secondaryClient.Get(ctx, types.NamespacedName{Name: name}, existing)
+		if apierrors.IsNotFound(err) {
+			if createErr := secondaryClient.Create(ctx, secondaryCRD); createErr != nil {
+				logger.Error(createErr, "Failed to create CRD on secondary", "crd", name)
+				continue
+			}
+			logger.Info("Synced CRD to secondary", "crd", name)
+		} else if err != nil {
+			logger.Error(err, "Failed to check CRD on secondary", "crd", name)
+		}
+	}
+
+	return nil
+}
+
 // checkDeploymentHealth returns true when both the Kine and secondary API server
 // deployments have all replicas ready.
 func (r *Reconciler) checkDeploymentHealth(ctx context.Context, shard *kubeshardv1alpha1.APIShard) (bool, error) {
@@ -500,12 +827,21 @@ func (r *Reconciler) checkDeploymentHealth(ctx context.Context, shard *kubeshard
 	return kineReady && secondaryReady, nil
 }
 
-// setErrorAndRequeue sets the APIShard phase to Error and returns a requeue
-// result along with the original error for logging by the controller runtime.
+// setErrorAndRequeue sets the APIShard phase to Error, surfaces the error
+// message in status.message, and returns a requeue result along with the
+// original error for logging by the controller runtime.
 func (r *Reconciler) setErrorAndRequeue(ctx context.Context, shard *kubeshardv1alpha1.APIShard, reconcileErr error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	shard.Status.Phase = kubeshardv1alpha1.PhaseError
+	shard.Status.Message = reconcileErr.Error()
 	shard.Status.ObservedGeneration = shard.Generation
+	meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+		Type:               kubeshardv1alpha1.ConditionReconciled,
+		Status:             metav1.ConditionFalse,
+		Reason:             "ReconcileError",
+		Message:            reconcileErr.Error(),
+		ObservedGeneration: shard.Generation,
+	})
 	if err := r.Status().Update(ctx, shard); err != nil {
 		logger.Error(err, "Failed to update APIShard status after error")
 	}
@@ -518,6 +854,51 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&kubeshardv1alpha1.APIShard{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Watches(&apiextensionsv1.CustomResourceDefinition{}, &crdEventHandler{client: r.Client}).
 		Named("apishard").
 		Complete(r)
+}
+
+// crdEventHandler maps CRD events to APIShard reconcile requests for any shard
+// whose apiGroups overlap with the CRD's group.
+type crdEventHandler struct {
+	client client.Client
+}
+
+func (h *crdEventHandler) Create(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[ctrl.Request]) {
+	h.enqueueForCRD(ctx, e.Object, q)
+}
+
+func (h *crdEventHandler) Update(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[ctrl.Request]) {
+	h.enqueueForCRD(ctx, e.ObjectNew, q)
+}
+
+func (h *crdEventHandler) Delete(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[ctrl.Request]) {
+	h.enqueueForCRD(ctx, e.Object, q)
+}
+
+func (h *crdEventHandler) Generic(ctx context.Context, e event.GenericEvent, q workqueue.TypedRateLimitingInterface[ctrl.Request]) {
+	h.enqueueForCRD(ctx, e.Object, q)
+}
+
+func (h *crdEventHandler) enqueueForCRD(ctx context.Context, obj client.Object, q workqueue.TypedRateLimitingInterface[ctrl.Request]) {
+	crd, ok := obj.(*apiextensionsv1.CustomResourceDefinition)
+	if !ok {
+		return
+	}
+
+	var shards kubeshardv1alpha1.APIShardList
+	if err := h.client.List(ctx, &shards); err != nil {
+		return
+	}
+
+	for i := range shards.Items {
+		shard := &shards.Items[i]
+		for _, ag := range shard.Spec.APIGroups {
+			if ag.Group == crd.Spec.Group {
+				q.Add(ctrl.Request{NamespacedName: types.NamespacedName{Name: shard.Name}})
+				break
+			}
+		}
+	}
 }

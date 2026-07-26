@@ -1,0 +1,24 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: e2e-widget-webhook
+  labels:
+    e2e-test: widget-webhook
+  annotations:
+    cert-manager.io/inject-ca-from: e2e-webhook/e2e-webhook-cert
+webhooks:
+  - name: widgets.example.com
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        name: e2e-webhook-server
+        namespace: e2e-webhook
+        path: /mutate
+        port: 443
+    rules:
+      - apiGroups: ["example.com"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["widgets"]

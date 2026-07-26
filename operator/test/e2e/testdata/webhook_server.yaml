@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-webhook
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: e2e-webhook-selfsigned
+  namespace: e2e-webhook
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: e2e-webhook-cert
+  namespace: e2e-webhook
+spec:
+  secretName: e2e-webhook-tls
+  issuerRef:
+    name: e2e-webhook-selfsigned
+    kind: Issuer
+  dnsNames:
+    - e2e-webhook-server.e2e-webhook.svc
+    - e2e-webhook-server.e2e-webhook.svc.cluster.local
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2e-webhook-server
+  namespace: e2e-webhook
+  labels:
+    app: e2e-webhook-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: e2e-webhook-server
+  template:
+    metadata:
+      labels:
+        app: e2e-webhook-server
+    spec:
+      containers:
+        - name: webhook
+          image: localhost/e2e-webhook-server:e2e
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8443
+              name: https
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/webhook/tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: tls
+          secret:
+            secretName: e2e-webhook-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: e2e-webhook-server
+  namespace: e2e-webhook
+  labels:
+    app: e2e-webhook-server
+spec:
+  selector:
+    app: e2e-webhook-server
+  ports:
+    - port: 443
+      targetPort: 8443
+      protocol: TCP
+      name: https

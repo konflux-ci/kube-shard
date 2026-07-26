@@ -20,43 +20,29 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type WebhookSyncSpec struct {
-	// ShardRef references the parent APIShard.
-	ShardRef string `json:"shardRef"`
-
-	// SourceLabelSelector selects webhook configurations on the primary to sync.
-	SourceLabelSelector metav1.LabelSelector `json:"sourceLabelSelector"`
-
-	// SourceNames explicitly names webhook configurations to sync (alternative to selector).
-	SourceNames []string `json:"sourceNames,omitempty"`
-
-	// SyncMutating controls whether MutatingWebhookConfigurations are synced.
-	// +kubebuilder:default=true
-	SyncMutating bool `json:"syncMutating"`
-
-	// SyncValidating controls whether ValidatingWebhookConfigurations are synced.
-	// +kubebuilder:default=true
-	SyncValidating bool `json:"syncValidating"`
+type SyncedWebhookCounts struct {
+	Validating int32 `json:"validating,omitempty"`
+	Mutating   int32 `json:"mutating,omitempty"`
 }
 
-type SyncedWebhook struct {
-	Name     string      `json:"name"`
-	Kind     string      `json:"kind"`
-	SyncedAt metav1.Time `json:"syncedAt"`
+type WebhookSyncSpec struct {
+	// SecondaryConnection specifies how to connect to the secondary API server.
+	SecondaryConnection SecondaryConnectionSpec `json:"secondaryConnection"`
+
+	// APIGroups is the list of API groups whose webhooks should be synced.
+	APIGroups []string `json:"apiGroups"`
 }
 
 type WebhookSyncStatus struct {
-	Phase              string             `json:"phase,omitempty"`
-	SyncedWebhooks     []SyncedWebhook    `json:"syncedWebhooks,omitempty"`
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition  `json:"conditions,omitempty"`
+	SyncedWebhooks     SyncedWebhookCounts `json:"syncedWebhooks,omitempty"`
+	LastSyncTime       *metav1.Time        `json:"lastSyncTime,omitempty"`
+	ObservedGeneration int64               `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
-// +kubebuilder:printcolumn:name="Shard",type=string,JSONPath=`.spec.shardRef`
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type WebhookSync struct {
 	metav1.TypeMeta   `json:",inline"`

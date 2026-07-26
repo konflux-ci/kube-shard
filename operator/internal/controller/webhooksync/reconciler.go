@@ -22,6 +22,7 @@ import (
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,7 +36,10 @@ import (
 	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
 )
 
-const webhookSyncRequeue = 60 * time.Second
+const (
+	requeueInterval      = 60 * time.Second
+	errorRequeueInterval = 30 * time.Second
+)
 
 // Reconciler reconciles a WebhookSync object.
 type Reconciler struct {
@@ -49,6 +53,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=webhooksyncs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=mutatingwebhookconfigurations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -61,80 +66,130 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	// Verify parent APIShard exists and is ready
-	var shard kubeshardv1alpha1.APIShard
-	if err := r.Get(ctx, types.NamespacedName{Name: whSync.Spec.ShardRef}, &shard); err != nil {
-		if apierrors.IsNotFound(err) {
-			logger.Info("Parent APIShard not found", "shardRef", whSync.Spec.ShardRef)
-			whSync.Status.Phase = kubeshardv1alpha1.PhaseWaiting
-			meta.SetStatusCondition(&whSync.Status.Conditions, metav1.Condition{
-				Type:    "Ready",
-				Status:  metav1.ConditionFalse,
-				Reason:  "ShardNotFound",
-				Message: fmt.Sprintf("APIShard %s not found", whSync.Spec.ShardRef),
-			})
-			if updateErr := r.Status().Update(ctx, &whSync); updateErr != nil {
-				logger.Error(updateErr, "Failed to update WebhookSync status")
-			}
-			return ctrl.Result{RequeueAfter: webhookSyncRequeue}, nil
-		}
-		return ctrl.Result{}, err
-	}
-
-	if shard.Status.Phase != kubeshardv1alpha1.PhaseReady {
-		whSync.Status.Phase = kubeshardv1alpha1.PhaseWaiting
+	secondaryClient, err := r.buildSecondaryClient(ctx, &whSync)
+	if err != nil {
+		logger.Error(err, "Failed to build secondary client")
 		meta.SetStatusCondition(&whSync.Status.Conditions, metav1.Condition{
-			Type:    "Ready",
-			Status:  metav1.ConditionFalse,
-			Reason:  "ShardNotReady",
-			Message: fmt.Sprintf("APIShard %s is in phase %s", shard.Name, shard.Status.Phase),
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "SecondaryUnavailable",
+			Message:            fmt.Sprintf("Cannot connect to secondary: %v", err),
+			ObservedGeneration: whSync.Generation,
 		})
+		whSync.Status.ObservedGeneration = whSync.Generation
 		if updateErr := r.Status().Update(ctx, &whSync); updateErr != nil {
 			logger.Error(updateErr, "Failed to update WebhookSync status")
 		}
-		return ctrl.Result{RequeueAfter: webhookSyncRequeue}, nil
+		return ctrl.Result{RequeueAfter: errorRequeueInterval}, nil
 	}
 
-	// Get secondary controller-runtime client
-	secondaryClient, err := r.getSecondaryClient(&shard)
-	if err != nil {
-		logger.Error(err, "Failed to get secondary client")
-		return ctrl.Result{RequeueAfter: webhookSyncRequeue}, nil
-	}
+	targetGroups := toGroupSet(whSync.Spec.APIGroups)
 
-	var synced []kubeshardv1alpha1.SyncedWebhook
+	var validatingCount, mutatingCount int32
 	var syncErrors []error
+	syncedValidating := make(map[string]bool)
+	syncedMutating := make(map[string]bool)
 
-	if whSync.Spec.SyncMutating {
-		syncedMutating, errs := r.syncMutatingWebhooks(ctx, &whSync, secondaryClient)
-		synced = append(synced, syncedMutating...)
-		syncErrors = append(syncErrors, errs...)
+	// Sync ValidatingWebhookConfigurations
+	var vwhcList admissionregistrationv1.ValidatingWebhookConfigurationList
+	if err := r.List(ctx, &vwhcList); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing ValidatingWebhookConfigurations: %w", err)
 	}
 
-	if whSync.Spec.SyncValidating {
-		syncedValidating, errs := r.syncValidatingWebhooks(ctx, &whSync, secondaryClient)
-		synced = append(synced, syncedValidating...)
-		syncErrors = append(syncErrors, errs...)
+	for i := range vwhcList.Items {
+		vwhc := &vwhcList.Items[i]
+		if !shouldSyncValidatingWebhook(vwhc.Webhooks, targetGroups) {
+			continue
+		}
+
+		transformed := transformValidatingWebhook(vwhc)
+		existing := &admissionregistrationv1.ValidatingWebhookConfiguration{}
+		err := secondaryClient.Get(ctx, types.NamespacedName{Name: transformed.Name}, existing)
+		if apierrors.IsNotFound(err) {
+			err = secondaryClient.Create(ctx, transformed)
+		} else if err == nil {
+			existing.Webhooks = transformed.Webhooks
+			existing.Labels = transformed.Labels
+			existing.Annotations = transformed.Annotations
+			err = secondaryClient.Update(ctx, existing)
+		}
+
+		if err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("syncing ValidatingWebhookConfiguration %s: %w", vwhc.Name, err))
+			logger.Error(err, "Failed to sync ValidatingWebhookConfiguration", "name", vwhc.Name)
+			continue
+		}
+
+		syncedValidating[vwhc.Name] = true
+		validatingCount++
 	}
 
-	whSync.Status.SyncedWebhooks = synced
+	// Sync MutatingWebhookConfigurations
+	var mwhcList admissionregistrationv1.MutatingWebhookConfigurationList
+	if err := r.List(ctx, &mwhcList); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing MutatingWebhookConfigurations: %w", err)
+	}
+
+	for i := range mwhcList.Items {
+		mwhc := &mwhcList.Items[i]
+		if !shouldSyncMutatingWebhook(mwhc.Webhooks, targetGroups) {
+			continue
+		}
+
+		transformed := transformMutatingWebhook(mwhc)
+		existing := &admissionregistrationv1.MutatingWebhookConfiguration{}
+		err := secondaryClient.Get(ctx, types.NamespacedName{Name: transformed.Name}, existing)
+		if apierrors.IsNotFound(err) {
+			err = secondaryClient.Create(ctx, transformed)
+		} else if err == nil {
+			existing.Webhooks = transformed.Webhooks
+			existing.Labels = transformed.Labels
+			existing.Annotations = transformed.Annotations
+			err = secondaryClient.Update(ctx, existing)
+		}
+
+		if err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("syncing MutatingWebhookConfiguration %s: %w", mwhc.Name, err))
+			logger.Error(err, "Failed to sync MutatingWebhookConfiguration", "name", mwhc.Name)
+			continue
+		}
+
+		syncedMutating[mwhc.Name] = true
+		mutatingCount++
+	}
+
+	// Delete stale webhooks on secondary that no longer match primary
+	if err := r.deleteStaleValidating(ctx, secondaryClient, syncedValidating); err != nil {
+		syncErrors = append(syncErrors, err)
+	}
+	if err := r.deleteStaleMutating(ctx, secondaryClient, syncedMutating); err != nil {
+		syncErrors = append(syncErrors, err)
+	}
+
+	// Update status
+	now := metav1.Now()
+	whSync.Status.SyncedWebhooks = kubeshardv1alpha1.SyncedWebhookCounts{
+		Validating: validatingCount,
+		Mutating:   mutatingCount,
+	}
+	whSync.Status.LastSyncTime = &now
 	whSync.Status.ObservedGeneration = whSync.Generation
 
 	if len(syncErrors) > 0 {
-		whSync.Status.Phase = kubeshardv1alpha1.PhaseDegraded
 		meta.SetStatusCondition(&whSync.Status.Conditions, metav1.Condition{
-			Type:    "Ready",
-			Status:  metav1.ConditionFalse,
-			Reason:  "SyncErrors",
-			Message: fmt.Sprintf("%d webhook(s) failed to sync", len(syncErrors)),
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "SyncErrors",
+			Message:            fmt.Sprintf("%d webhook(s) failed to sync", len(syncErrors)),
+			ObservedGeneration: whSync.Generation,
 		})
 	} else {
-		whSync.Status.Phase = kubeshardv1alpha1.PhaseReady
 		meta.SetStatusCondition(&whSync.Status.Conditions, metav1.Condition{
-			Type:    "Ready",
-			Status:  metav1.ConditionTrue,
-			Reason:  "SyncComplete",
-			Message: fmt.Sprintf("%d webhook(s) synced", len(synced)),
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			Reason:             "SyncComplete",
+			Message:            fmt.Sprintf("Synced %d validating and %d mutating webhook(s)", validatingCount, mutatingCount),
+			ObservedGeneration: whSync.Generation,
 		})
 	}
 
@@ -142,140 +197,124 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: webhookSyncRequeue}, nil
+	return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
-func (r *Reconciler) getSecondaryClient(shard *kubeshardv1alpha1.APIShard) (client.Client, error) {
+func (r *Reconciler) buildSecondaryClient(ctx context.Context, whSync *kubeshardv1alpha1.WebhookSync) (client.Client, error) {
+	conn := whSync.Spec.SecondaryConnection
+	ns := whSync.Namespace
+
+	// Read CA cert from caSecretRef
+	var caSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: conn.CASecretRef.Name, Namespace: ns}, &caSecret); err != nil {
+		return nil, fmt.Errorf("getting CA secret %s: %w", conn.CASecretRef.Name, err)
+	}
+	caCert := caSecret.Data["ca.crt"]
+	if len(caCert) == 0 {
+		caCert = caSecret.Data["tls.crt"]
+	}
+
+	// Read auth token from authSecretRef
+	var authSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: conn.AuthSecretRef.Name, Namespace: ns}, &authSecret); err != nil {
+		return nil, fmt.Errorf("getting auth secret %s: %w", conn.AuthSecretRef.Name, err)
+	}
+	token := string(authSecret.Data["token"])
+
+	host := fmt.Sprintf("https://%s.%s.svc:%d",
+		conn.ServiceRef.Name,
+		conn.ServiceRef.Namespace,
+		serviceRefPort(conn.ServiceRef.Port),
+	)
+
 	cfg := secondary.ClientConfig{
-		Host: shard.Status.SecondaryEndpoint,
+		Host:   host,
+		CACert: caCert,
+		Token:  token,
 	}
-	return r.ClientProvider.GetOrCreate(shard.Name, cfg)
+
+	key := fmt.Sprintf("%s/%s", whSync.Namespace, whSync.Name)
+	return r.ClientProvider.GetOrCreate(key, cfg)
 }
 
-func (r *Reconciler) syncMutatingWebhooks(
-	ctx context.Context,
-	whSync *kubeshardv1alpha1.WebhookSync,
-	secondaryClient client.Client,
-) ([]kubeshardv1alpha1.SyncedWebhook, []error) {
+func serviceRefPort(port int32) int32 {
+	if port == 0 {
+		return 443
+	}
+	return port
+}
+
+func (r *Reconciler) deleteStaleValidating(ctx context.Context, secondaryClient client.Client, currentNames map[string]bool) error {
 	logger := log.FromContext(ctx)
 
-	var mwhcList admissionregistrationv1.MutatingWebhookConfigurationList
-	opts, err := r.listOptions(whSync)
-	if err != nil {
-		return nil, []error{err}
-	}
-	if err := r.List(ctx, &mwhcList, opts...); err != nil {
-		return nil, []error{fmt.Errorf("listing MutatingWebhookConfigurations: %w", err)}
+	var secondaryList admissionregistrationv1.ValidatingWebhookConfigurationList
+	if err := secondaryClient.List(ctx, &secondaryList); err != nil {
+		return fmt.Errorf("listing ValidatingWebhookConfigurations on secondary: %w", err)
 	}
 
-	synced := make([]kubeshardv1alpha1.SyncedWebhook, 0, len(mwhcList.Items))
-	var errs []error
-
-	for i := range mwhcList.Items {
-		mwhc := &mwhcList.Items[i]
-		if !r.shouldSync(whSync, mwhc.Name) {
-			continue
+	for i := range secondaryList.Items {
+		item := &secondaryList.Items[i]
+		if !currentNames[item.Name] {
+			if err := secondaryClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
+				logger.Error(err, "Failed to delete stale ValidatingWebhookConfiguration from secondary", "name", item.Name)
+				return fmt.Errorf("deleting stale ValidatingWebhookConfiguration %s: %w", item.Name, err)
+			}
+			logger.Info("Deleted stale ValidatingWebhookConfiguration from secondary", "name", item.Name)
 		}
-
-		transformed := transformMutatingWebhook(mwhc)
-
-		existing := &admissionregistrationv1.MutatingWebhookConfiguration{}
-		err := secondaryClient.Get(ctx, types.NamespacedName{Name: transformed.Name}, existing)
-		if apierrors.IsNotFound(err) {
-			err = secondaryClient.Create(ctx, transformed)
-		} else if err == nil {
-			existing.Webhooks = transformed.Webhooks
-			err = secondaryClient.Update(ctx, existing)
-		}
-
-		if err != nil {
-			errs = append(errs, fmt.Errorf("syncing MutatingWebhookConfiguration %s: %w", mwhc.Name, err))
-			logger.Error(err, "Failed to sync MutatingWebhookConfiguration", "name", mwhc.Name)
-			continue
-		}
-
-		synced = append(synced, kubeshardv1alpha1.SyncedWebhook{
-			Name:     mwhc.Name,
-			Kind:     "MutatingWebhookConfiguration",
-			SyncedAt: metav1.Now(),
-		})
 	}
-
-	return synced, errs
+	return nil
 }
 
-func (r *Reconciler) syncValidatingWebhooks(
-	ctx context.Context,
-	whSync *kubeshardv1alpha1.WebhookSync,
-	secondaryClient client.Client,
-) ([]kubeshardv1alpha1.SyncedWebhook, []error) {
+func (r *Reconciler) deleteStaleMutating(ctx context.Context, secondaryClient client.Client, currentNames map[string]bool) error {
 	logger := log.FromContext(ctx)
 
-	var vwhcList admissionregistrationv1.ValidatingWebhookConfigurationList
-	opts, err := r.listOptions(whSync)
-	if err != nil {
-		return nil, []error{err}
-	}
-	if err := r.List(ctx, &vwhcList, opts...); err != nil {
-		return nil, []error{fmt.Errorf("listing ValidatingWebhookConfigurations: %w", err)}
+	var secondaryList admissionregistrationv1.MutatingWebhookConfigurationList
+	if err := secondaryClient.List(ctx, &secondaryList); err != nil {
+		return fmt.Errorf("listing MutatingWebhookConfigurations on secondary: %w", err)
 	}
 
-	synced := make([]kubeshardv1alpha1.SyncedWebhook, 0, len(vwhcList.Items))
-	var errs []error
-
-	for i := range vwhcList.Items {
-		vwhc := &vwhcList.Items[i]
-		if !r.shouldSync(whSync, vwhc.Name) {
-			continue
+	for i := range secondaryList.Items {
+		item := &secondaryList.Items[i]
+		if !currentNames[item.Name] {
+			if err := secondaryClient.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
+				logger.Error(err, "Failed to delete stale MutatingWebhookConfiguration from secondary", "name", item.Name)
+				return fmt.Errorf("deleting stale MutatingWebhookConfiguration %s: %w", item.Name, err)
+			}
+			logger.Info("Deleted stale MutatingWebhookConfiguration from secondary", "name", item.Name)
 		}
-
-		transformed := transformValidatingWebhook(vwhc)
-
-		existing := &admissionregistrationv1.ValidatingWebhookConfiguration{}
-		err := secondaryClient.Get(ctx, types.NamespacedName{Name: transformed.Name}, existing)
-		if apierrors.IsNotFound(err) {
-			err = secondaryClient.Create(ctx, transformed)
-		} else if err == nil {
-			existing.Webhooks = transformed.Webhooks
-			err = secondaryClient.Update(ctx, existing)
-		}
-
-		if err != nil {
-			errs = append(errs, fmt.Errorf("syncing ValidatingWebhookConfiguration %s: %w", vwhc.Name, err))
-			logger.Error(err, "Failed to sync ValidatingWebhookConfiguration", "name", vwhc.Name)
-			continue
-		}
-
-		synced = append(synced, kubeshardv1alpha1.SyncedWebhook{
-			Name:     vwhc.Name,
-			Kind:     "ValidatingWebhookConfiguration",
-			SyncedAt: metav1.Now(),
-		})
 	}
-
-	return synced, errs
+	return nil
 }
 
-func (r *Reconciler) listOptions(whSync *kubeshardv1alpha1.WebhookSync) ([]client.ListOption, error) {
-	selector, err := metav1.LabelSelectorAsSelector(&whSync.Spec.SourceLabelSelector)
-	if err != nil {
-		return nil, fmt.Errorf("invalid label selector: %w", err)
+func toGroupSet(groups []string) map[string]bool {
+	set := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		set[g] = true
 	}
-	if selector.Empty() {
-		return nil, nil
-	}
-	return []client.ListOption{
-		&client.ListOptions{LabelSelector: selector},
-	}, nil
+	return set
 }
 
-func (r *Reconciler) shouldSync(whSync *kubeshardv1alpha1.WebhookSync, name string) bool {
-	if len(whSync.Spec.SourceNames) == 0 {
-		return true
+func shouldSyncValidatingWebhook(webhooks []admissionregistrationv1.ValidatingWebhook, targetGroups map[string]bool) bool {
+	for i := range webhooks {
+		for j := range webhooks[i].Rules {
+			for _, group := range webhooks[i].Rules[j].APIGroups {
+				if targetGroups[group] || group == "*" {
+					return true
+				}
+			}
+		}
 	}
-	for _, n := range whSync.Spec.SourceNames {
-		if n == name {
-			return true
+	return false
+}
+
+func shouldSyncMutatingWebhook(webhooks []admissionregistrationv1.MutatingWebhook, targetGroups map[string]bool) bool {
+	for i := range webhooks {
+		for j := range webhooks[i].Rules {
+			for _, group := range webhooks[i].Rules[j].APIGroups {
+				if targetGroups[group] || group == "*" {
+					return true
+				}
+			}
 		}
 	}
 	return false

@@ -19,6 +19,7 @@ package webhooksync
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -28,19 +29,37 @@ import (
 )
 
 var _ = Describe("WebhookSync Controller", func() {
-	Context("When the referenced APIShard does not exist", func() {
-		It("should set phase to Waiting", func() {
+	const testNamespace = "test-webhooksync-ns"
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: testNamespace},
+		}
+		_ = k8sClient.Create(ctx, ns)
+	})
+
+	Context("When the auth secret does not exist", func() {
+		It("should set Ready=False with SecondaryUnavailable", func() {
 			whSync := &kubeshardv1alpha1.WebhookSync{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-wh-sync",
+					Name:      "test-wh-sync",
+					Namespace: testNamespace,
 				},
 				Spec: kubeshardv1alpha1.WebhookSyncSpec{
-					ShardRef: "nonexistent-shard",
-					SourceLabelSelector: metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "tekton"},
+					SecondaryConnection: kubeshardv1alpha1.SecondaryConnectionSpec{
+						ServiceRef: kubeshardv1alpha1.ServiceReference{
+							Name:      "secondary-apiserver",
+							Namespace: testNamespace,
+							Port:      443,
+						},
+						AuthSecretRef: kubeshardv1alpha1.LocalSecretReference{
+							Name: "nonexistent-auth-secret",
+						},
+						CASecretRef: kubeshardv1alpha1.LocalSecretReference{
+							Name: "nonexistent-ca-secret",
+						},
 					},
-					SyncMutating:   true,
-					SyncValidating: true,
+					APIGroups: []string{"tekton.dev"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, whSync)).To(Succeed())
@@ -53,14 +72,34 @@ var _ = Describe("WebhookSync Controller", func() {
 				Scheme:         k8sClient.Scheme(),
 				ClientProvider: secondary.NewClientProvider(k8sClient.Scheme()),
 			}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: whSync.Name},
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      whSync.Name,
+					Namespace: whSync.Namespace,
+				},
 			})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(errorRequeueInterval))
 
 			updated := &kubeshardv1alpha1.WebhookSync{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: whSync.Name}, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseWaiting))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      whSync.Name,
+				Namespace: whSync.Namespace,
+			}, updated)).To(Succeed())
+
+			readyCond := findCondition(updated.Status.Conditions, "Ready")
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCond.Reason).To(Equal("SecondaryUnavailable"))
 		})
 	})
 })
+
+func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == condType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}

@@ -42,10 +42,9 @@ func SecondaryServiceName(shard *kubeshardv1alpha1.APIShard) string {
 }
 
 func SecondaryEndpoint(shard *kubeshardv1alpha1.APIShard) string {
-	return fmt.Sprintf("https://%s.%s.svc:%d",
+	return fmt.Sprintf("https://%s.%s.svc",
 		SecondaryServiceName(shard),
 		shard.Spec.TargetNamespace,
-		SecondaryPort,
 	)
 }
 
@@ -85,8 +84,10 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 		"--requestheader-extra-headers-prefix=X-Remote-Extra-",
 		"--requestheader-group-headers=X-Remote-Group",
 		"--requestheader-username-headers=X-Remote-User",
-		"--authorization-mode=RBAC,Webhook",
+		"--authorization-mode=Webhook",
 		"--authorization-webhook-config-file=/etc/kubernetes/auth/webhook-config.yaml",
+		"--authorization-webhook-version=v1",
+		"--enable-admission-plugins=MutatingAdmissionWebhook,ValidatingAdmissionWebhook",
 	}
 
 	deployment := &appsv1.Deployment{
@@ -177,7 +178,7 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 							VolumeSource: corev1.VolumeSource{
 								ConfigMap: &corev1.ConfigMapVolumeSource{
 									LocalObjectReference: corev1.LocalObjectReference{
-										Name: fmt.Sprintf("%s-auth-config", shard.Name),
+										Name: fmt.Sprintf("%s-authz-config", shard.Name),
 									},
 								},
 							},

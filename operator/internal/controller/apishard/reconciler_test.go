@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
@@ -74,7 +75,14 @@ var _ = Describe("APIShard Controller", func() {
 		})
 
 		AfterEach(func() {
-			Expect(k8sClient.Delete(ctx, shard)).To(Succeed())
+			current := &kubeshardv1alpha1.APIShard{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, current); err == nil {
+				if controllerutil.ContainsFinalizer(current, finalizerName) {
+					controllerutil.RemoveFinalizer(current, finalizerName)
+					Expect(k8sClient.Update(ctx, current)).To(Succeed())
+				}
+				Expect(k8sClient.Delete(ctx, current)).To(Succeed())
+			}
 		})
 
 		It("should create the target namespace", func() {
@@ -82,10 +90,12 @@ var _ = Describe("APIShard Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			// Reconcile returns an error because cert-manager CRDs are not
+			// installed in envtest, but resources created before that step
+			// (namespace, Kine) are still applied.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: shard.Name},
 			})
-			Expect(err).NotTo(HaveOccurred())
 
 			ns := &corev1.Namespace{}
 			Eventually(func() error {
@@ -98,10 +108,9 @@ var _ = Describe("APIShard Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: shard.Name},
 			})
-			Expect(err).NotTo(HaveOccurred())
 
 			kineDeploy := &appsv1.Deployment{}
 			Eventually(func() error {
@@ -122,48 +131,34 @@ var _ = Describe("APIShard Controller", func() {
 			}, timeout, interval).Should(Succeed())
 		})
 
-		It("should create secondary API server deployment and service", func() {
+		It("should add the cleanup finalizer", func() {
 			reconciler := &Reconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: shard.Name},
 			})
-			Expect(err).NotTo(HaveOccurred())
-
-			secondaryDeploy := &appsv1.Deployment{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      resources.SecondaryDeploymentName(shard),
-					Namespace: "test-shard-ns",
-				}, secondaryDeploy)
-			}, timeout, interval).Should(Succeed())
-
-			Expect(secondaryDeploy.Spec.Template.Spec.Containers[0].Image).To(Equal(resources.DefaultSecondaryImage))
-
-			secondarySvc := &corev1.Service{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      resources.SecondaryServiceName(shard),
-					Namespace: "test-shard-ns",
-				}, secondarySvc)
-			}, timeout, interval).Should(Succeed())
-		})
-
-		It("should set status to Provisioning", func() {
-			reconciler := &Reconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: shard.Name},
-			})
-			Expect(err).NotTo(HaveOccurred())
 
 			updated := &kubeshardv1alpha1.APIShard{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseProvisioning))
+			Expect(controllerutil.ContainsFinalizer(updated, finalizerName)).To(BeTrue())
+		})
+
+		It("should set status phase to Error when cert-manager is unavailable", func() {
+			reconciler := &Reconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: shard.Name},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("Issuer"))
+
+			updated := &kubeshardv1alpha1.APIShard{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseError))
 		})
 	})
 
@@ -205,7 +200,14 @@ var _ = Describe("APIShard Controller", func() {
 		})
 
 		AfterEach(func() {
-			Expect(k8sClient.Delete(ctx, shard)).To(Succeed())
+			current := &kubeshardv1alpha1.APIShard{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, current); err == nil {
+				if controllerutil.ContainsFinalizer(current, finalizerName) {
+					controllerutil.RemoveFinalizer(current, finalizerName)
+					Expect(k8sClient.Update(ctx, current)).To(Succeed())
+				}
+				Expect(k8sClient.Delete(ctx, current)).To(Succeed())
+			}
 		})
 
 		It("should create PostgreSQL deployment, service, and secret", func() {
@@ -213,10 +215,9 @@ var _ = Describe("APIShard Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: shard.Name},
 			})
-			Expect(err).NotTo(HaveOccurred())
 
 			pgDeploy := &appsv1.Deployment{}
 			Eventually(func() error {

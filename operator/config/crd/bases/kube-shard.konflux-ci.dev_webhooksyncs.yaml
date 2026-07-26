@@ -12,14 +12,11 @@ spec:
     listKind: WebhookSyncList
     plural: webhooksyncs
     singular: webhooksync
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.shardRef
-      name: Shard
-      type: string
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -47,75 +44,52 @@ spec:
             type: object
           spec:
             properties:
-              shardRef:
-                description: ShardRef references the parent APIShard.
-                type: string
-              sourceLabelSelector:
-                description: SourceLabelSelector selects webhook configurations on
-                  the primary to sync.
-                properties:
-                  matchExpressions:
-                    description: matchExpressions is a list of label selector requirements.
-                      The requirements are ANDed.
-                    items:
-                      description: |-
-                        A label selector requirement is a selector that contains values, a key, and an operator that
-                        relates the key and values.
-                      properties:
-                        key:
-                          description: key is the label key that the selector applies
-                            to.
-                          type: string
-                        operator:
-                          description: |-
-                            operator represents a key's relationship to a set of values.
-                            Valid operators are In, NotIn, Exists and DoesNotExist.
-                          type: string
-                        values:
-                          description: |-
-                            values is an array of string values. If the operator is In or NotIn,
-                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                            the values array must be empty. This array is replaced during a strategic
-                            merge patch.
-                          items:
-                            type: string
-                          type: array
-                          x-kubernetes-list-type: atomic
-                      required:
-                      - key
-                      - operator
-                      type: object
-                    type: array
-                    x-kubernetes-list-type: atomic
-                  matchLabels:
-                    additionalProperties:
-                      type: string
-                    description: |-
-                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                      map is equivalent to an element of matchExpressions, whose key field is "key", the
-                      operator is "In", and the values array contains only "value". The requirements are ANDed.
-                    type: object
-                type: object
-                x-kubernetes-map-type: atomic
-              sourceNames:
-                description: SourceNames explicitly names webhook configurations to
-                  sync (alternative to selector).
+              apiGroups:
+                description: APIGroups is the list of API groups whose webhooks should
+                  be synced.
                 items:
                   type: string
                 type: array
-              syncMutating:
-                default: true
-                description: SyncMutating controls whether MutatingWebhookConfigurations
-                  are synced.
-                type: boolean
-              syncValidating:
-                default: true
-                description: SyncValidating controls whether ValidatingWebhookConfigurations
-                  are synced.
-                type: boolean
+              secondaryConnection:
+                description: SecondaryConnection specifies how to connect to the secondary
+                  API server.
+                properties:
+                  authSecretRef:
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  caSecretRef:
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  serviceRef:
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - name
+                    - namespace
+                    - port
+                    type: object
+                required:
+                - authSecretRef
+                - caSecretRef
+                - serviceRef
+                type: object
             required:
-            - shardRef
-            - sourceLabelSelector
+            - apiGroups
+            - secondaryConnection
             type: object
           status:
             properties:
@@ -175,27 +149,21 @@ spec:
                   - type
                   type: object
                 type: array
+              lastSyncTime:
+                format: date-time
+                type: string
               observedGeneration:
                 format: int64
                 type: integer
-              phase:
-                type: string
               syncedWebhooks:
-                items:
-                  properties:
-                    kind:
-                      type: string
-                    name:
-                      type: string
-                    syncedAt:
-                      format: date-time
-                      type: string
-                  required:
-                  - kind
-                  - name
-                  - syncedAt
-                  type: object
-                type: array
+                properties:
+                  mutating:
+                    format: int32
+                    type: integer
+                  validating:
+                    format: int32
+                    type: integer
+                type: object
             type: object
         type: object
     served: true

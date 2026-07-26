@@ -20,36 +20,40 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type NamespaceSyncSpec struct {
-	// ShardRef references the parent APIShard this sync belongs to.
-	ShardRef string `json:"shardRef"`
-
-	// LabelSelector selects which namespaces on the primary to mirror to the secondary.
-	LabelSelector metav1.LabelSelector `json:"labelSelector"`
-
-	// ExcludeNamespaces is a list of namespaces to never sync (e.g., kube-system).
-	ExcludeNamespaces []string `json:"excludeNamespaces,omitempty"`
+// SecondaryConnectionSpec defines how to connect to a secondary API server.
+type SecondaryConnectionSpec struct {
+	ServiceRef    ServiceReference     `json:"serviceRef"`
+	AuthSecretRef LocalSecretReference `json:"authSecretRef"`
+	CASecretRef   LocalSecretReference `json:"caSecretRef"`
 }
 
-type SyncedNamespace struct {
-	Name     string      `json:"name"`
-	SyncedAt metav1.Time `json:"syncedAt"`
+type ServiceReference struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Port      int32  `json:"port"`
+}
+
+type LocalSecretReference struct {
+	Name string `json:"name"`
+}
+
+type NamespaceSyncSpec struct {
+	SecondaryConnection SecondaryConnectionSpec `json:"secondaryConnection"`
+	LabelSelector       metav1.LabelSelector    `json:"labelSelector"`
+	ExcludeNamespaces   []string                `json:"excludeNamespaces,omitempty"`
 }
 
 type NamespaceSyncStatus struct {
-	Phase              string             `json:"phase,omitempty"`
-	SyncedCount        int32              `json:"syncedCount,omitempty"`
-	SyncedNamespaces   []SyncedNamespace  `json:"syncedNamespaces,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	SyncedNamespaces   int32              `json:"syncedNamespaces,omitempty"`
+	LastSyncTime       *metav1.Time       `json:"lastSyncTime,omitempty"`
 	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
-// +kubebuilder:printcolumn:name="Shard",type=string,JSONPath=`.spec.shardRef`
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Synced",type=integer,JSONPath=`.status.syncedCount`
+// +kubebuilder:printcolumn:name="Synced",type=integer,JSONPath=`.status.syncedNamespaces`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type NamespaceSync struct {
 	metav1.TypeMeta   `json:",inline"`

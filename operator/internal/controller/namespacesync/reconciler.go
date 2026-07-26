@@ -35,7 +35,17 @@ import (
 	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
 )
 
-const namespaceSyncRequeue = 60 * time.Second
+const (
+	namespaceSyncRequeue      = 60 * time.Second
+	namespaceSyncErrorRequeue = 30 * time.Second
+)
+
+var systemNamespaces = map[string]bool{
+	"kube-system":     true,
+	"kube-public":     true,
+	"kube-node-lease": true,
+	"default":         true,
+}
 
 // Reconciler reconciles a NamespaceSync object.
 type Reconciler struct {
@@ -48,6 +58,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=namespacesyncs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=namespacesyncs/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -60,59 +71,33 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	// Verify parent APIShard exists and is ready
-	var shard kubeshardv1alpha1.APIShard
-	if err := r.Get(ctx, types.NamespacedName{Name: nsSync.Spec.ShardRef}, &shard); err != nil {
-		if apierrors.IsNotFound(err) {
-			logger.Info("Parent APIShard not found", "shardRef", nsSync.Spec.ShardRef)
-			meta.SetStatusCondition(&nsSync.Status.Conditions, metav1.Condition{
-				Type:    "Ready",
-				Status:  metav1.ConditionFalse,
-				Reason:  "ShardNotFound",
-				Message: fmt.Sprintf("APIShard %s not found", nsSync.Spec.ShardRef),
-			})
-			nsSync.Status.Phase = kubeshardv1alpha1.PhaseWaiting
-			if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
-				logger.Error(updateErr, "Failed to update NamespaceSync status")
-			}
-			return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
-		}
-		return ctrl.Result{}, err
-	}
-
-	if shard.Status.Phase != kubeshardv1alpha1.PhaseReady {
-		logger.Info("APIShard not ready yet, requeuing", "shard", shard.Name, "phase", shard.Status.Phase)
-		nsSync.Status.Phase = kubeshardv1alpha1.PhaseWaiting
+	secondaryClient, err := r.buildSecondaryClient(ctx, &nsSync)
+	if err != nil {
+		logger.Error(err, "Failed to build secondary client")
 		meta.SetStatusCondition(&nsSync.Status.Conditions, metav1.Condition{
-			Type:    "Ready",
-			Status:  metav1.ConditionFalse,
-			Reason:  "ShardNotReady",
-			Message: fmt.Sprintf("APIShard %s is in phase %s", shard.Name, shard.Status.Phase),
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "SecondaryUnavailable",
+			Message:            err.Error(),
+			ObservedGeneration: nsSync.Generation,
 		})
+		nsSync.Status.ObservedGeneration = nsSync.Generation
 		if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
 			logger.Error(updateErr, "Failed to update NamespaceSync status")
 		}
-		return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
+		return ctrl.Result{RequeueAfter: namespaceSyncErrorRequeue}, nil
 	}
 
-	// Get secondary controller-runtime client
-	secondaryClient, err := r.getSecondaryClient(&shard)
-	if err != nil {
-		logger.Error(err, "Failed to get secondary client")
-		return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
-	}
-
-	// List namespaces on primary matching the label selector
 	selector, err := metav1.LabelSelectorAsSelector(&nsSync.Spec.LabelSelector)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("invalid label selector: %w", err)
 	}
 
-	var nsList corev1.NamespaceList
-	if err := r.List(ctx, &nsList, &client.ListOptions{
+	var primaryNamespaces corev1.NamespaceList
+	if err := r.List(ctx, &primaryNamespaces, &client.ListOptions{
 		LabelSelector: selector,
 	}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("listing namespaces: %w", err)
+		return ctrl.Result{}, fmt.Errorf("listing primary namespaces: %w", err)
 	}
 
 	excluded := make(map[string]bool, len(nsSync.Spec.ExcludeNamespaces))
@@ -120,59 +105,81 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		excluded[ns] = true
 	}
 
-	synced := make([]kubeshardv1alpha1.SyncedNamespace, 0, len(nsList.Items))
-	desiredNames := make(map[string]bool, len(nsList.Items))
-	var syncErrors []error
-
-	for i := range nsList.Items {
-		ns := &nsList.Items[i]
+	desiredNames := make(map[string]bool)
+	for i := range primaryNamespaces.Items {
+		ns := &primaryNamespaces.Items[i]
 		if excluded[ns.Name] {
 			continue
 		}
-
 		desiredNames[ns.Name] = true
+	}
 
+	var secondaryNamespaces corev1.NamespaceList
+	if err := secondaryClient.List(ctx, &secondaryNamespaces); err != nil {
+		logger.Error(err, "Failed to list secondary namespaces")
+		meta.SetStatusCondition(&nsSync.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "SecondaryUnavailable",
+			Message:            fmt.Sprintf("failed to list secondary namespaces: %v", err),
+			ObservedGeneration: nsSync.Generation,
+		})
+		nsSync.Status.ObservedGeneration = nsSync.Generation
+		if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
+			logger.Error(updateErr, "Failed to update NamespaceSync status")
+		}
+		return ctrl.Result{RequeueAfter: namespaceSyncErrorRequeue}, nil
+	}
+
+	secondaryExisting := make(map[string]bool, len(secondaryNamespaces.Items))
+	for i := range secondaryNamespaces.Items {
+		secondaryExisting[secondaryNamespaces.Items[i].Name] = true
+	}
+
+	var syncErrors []error
+
+	// Create missing namespaces on secondary
+	for i := range primaryNamespaces.Items {
+		ns := &primaryNamespaces.Items[i]
+		if excluded[ns.Name] || secondaryExisting[ns.Name] {
+			continue
+		}
 		if err := r.ensureNamespaceOnSecondary(ctx, secondaryClient, ns); err != nil {
 			syncErrors = append(syncErrors, fmt.Errorf("namespace %s: %w", ns.Name, err))
-			continue
-		}
-
-		synced = append(synced, kubeshardv1alpha1.SyncedNamespace{
-			Name:     ns.Name,
-			SyncedAt: metav1.Now(),
-		})
-	}
-
-	// Delete namespaces on secondary that are no longer desired (previously
-	// synced but now removed from primary or excluded).
-	for _, prev := range nsSync.Status.SyncedNamespaces {
-		if desiredNames[prev.Name] {
-			continue
-		}
-		if err := r.deleteNamespaceOnSecondary(ctx, secondaryClient, prev.Name); err != nil {
-			syncErrors = append(syncErrors, fmt.Errorf("deleting namespace %s: %w", prev.Name, err))
 		}
 	}
 
-	nsSync.Status.SyncedNamespaces = synced
-	nsSync.Status.SyncedCount = int32(len(synced))
+	// Delete orphaned namespaces from secondary
+	for i := range secondaryNamespaces.Items {
+		name := secondaryNamespaces.Items[i].Name
+		if desiredNames[name] || systemNamespaces[name] {
+			continue
+		}
+		if err := r.deleteNamespaceOnSecondary(ctx, secondaryClient, name); err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("deleting namespace %s: %w", name, err))
+		}
+	}
+
+	now := metav1.Now()
+	nsSync.Status.SyncedNamespaces = int32(len(desiredNames))
+	nsSync.Status.LastSyncTime = &now
 	nsSync.Status.ObservedGeneration = nsSync.Generation
 
 	if len(syncErrors) > 0 {
-		nsSync.Status.Phase = kubeshardv1alpha1.PhaseDegraded
 		meta.SetStatusCondition(&nsSync.Status.Conditions, metav1.Condition{
-			Type:    "Ready",
-			Status:  metav1.ConditionFalse,
-			Reason:  "SyncErrors",
-			Message: fmt.Sprintf("%d namespace(s) failed to sync", len(syncErrors)),
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "SyncErrors",
+			Message:            fmt.Sprintf("%d namespace(s) failed to sync", len(syncErrors)),
+			ObservedGeneration: nsSync.Generation,
 		})
 	} else {
-		nsSync.Status.Phase = kubeshardv1alpha1.PhaseReady
 		meta.SetStatusCondition(&nsSync.Status.Conditions, metav1.Condition{
-			Type:    "Ready",
-			Status:  metav1.ConditionTrue,
-			Reason:  "SyncComplete",
-			Message: fmt.Sprintf("%d namespace(s) synced", len(synced)),
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			Reason:             "SyncComplete",
+			Message:            fmt.Sprintf("%d namespace(s) synced", len(desiredNames)),
+			ObservedGeneration: nsSync.Generation,
 		})
 	}
 
@@ -183,30 +190,54 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
 }
 
-func (r *Reconciler) getSecondaryClient(shard *kubeshardv1alpha1.APIShard) (client.Client, error) {
-	cfg := secondary.ClientConfig{
-		Host: shard.Status.SecondaryEndpoint,
+func (r *Reconciler) buildSecondaryClient(ctx context.Context, nsSync *kubeshardv1alpha1.NamespaceSync) (client.Client, error) {
+	conn := nsSync.Spec.SecondaryConnection
+	namespace := nsSync.Namespace
+
+	var caSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      conn.CASecretRef.Name,
+		Namespace: namespace,
+	}, &caSecret); err != nil {
+		return nil, fmt.Errorf("reading CA secret %s: %w", conn.CASecretRef.Name, err)
 	}
-	return r.ClientProvider.GetOrCreate(shard.Name, cfg)
+	caCert, ok := caSecret.Data["ca.crt"]
+	if !ok {
+		return nil, fmt.Errorf("CA secret %s missing key ca.crt", conn.CASecretRef.Name)
+	}
+
+	var authSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      conn.AuthSecretRef.Name,
+		Namespace: namespace,
+	}, &authSecret); err != nil {
+		return nil, fmt.Errorf("reading auth secret %s: %w", conn.AuthSecretRef.Name, err)
+	}
+	token, ok := authSecret.Data["token"]
+	if !ok {
+		return nil, fmt.Errorf("auth secret %s missing key token", conn.AuthSecretRef.Name)
+	}
+
+	host := fmt.Sprintf("https://%s.%s.svc:%d",
+		conn.ServiceRef.Name, conn.ServiceRef.Namespace, conn.ServiceRef.Port)
+
+	cfg := secondary.ClientConfig{
+		Host:   host,
+		CACert: caCert,
+		Token:  string(token),
+	}
+
+	return r.ClientProvider.GetOrCreate(nsSync.Name, cfg)
 }
 
 func (r *Reconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, ns *corev1.Namespace) error {
-	existing := &corev1.Namespace{}
-	err := secondaryClient.Get(ctx, types.NamespacedName{Name: ns.Name}, existing)
-	if err == nil {
-		return nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return err
-	}
-
 	newNS := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   ns.Name,
 			Labels: filterLabels(ns.Labels),
 		},
 	}
-	err = secondaryClient.Create(ctx, newNS)
+	err := secondaryClient.Create(ctx, newNS)
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
@@ -214,6 +245,9 @@ func (r *Reconciler) ensureNamespaceOnSecondary(ctx context.Context, secondaryCl
 }
 
 func (r *Reconciler) deleteNamespaceOnSecondary(ctx context.Context, secondaryClient client.Client, name string) error {
+	if systemNamespaces[name] {
+		return nil
+	}
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}

@@ -29,17 +29,16 @@ import (
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
 )
 
-
 func IssuerName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-ca-issuer", shard.Name)
 }
 
 func CACertificateName(shard *kubeshardv1alpha1.APIShard) string {
-	return fmt.Sprintf("%s-ca", shard.Name)
+	return fmt.Sprintf("%s-front-proxy-ca", shard.Name)
 }
 
 func ServingCertificateName(shard *kubeshardv1alpha1.APIShard) string {
-	return fmt.Sprintf("%s-serving", shard.Name)
+	return fmt.Sprintf("%s-serving-cert", shard.Name)
 }
 
 // PKISecretName returns the name of the Secret that cert-manager creates for the serving cert.
@@ -155,4 +154,3 @@ func certLabels(shard *kubeshardv1alpha1.APIShard) map[string]string {
 		"app.kubernetes.io/component":  "certificates",
 	}
 }
-
