@@ -147,6 +147,54 @@ func BuildServingCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Un
 	return cert
 }
 
+// AdminClientCertificateName returns the name of the admin client Certificate resource.
+func AdminClientCertificateName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-admin-client", shard.Name)
+}
+
+// AdminClientSecretName returns the name of the Secret holding the admin client certificate.
+func AdminClientSecretName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-admin-client-cert", shard.Name)
+}
+
+// BuildAdminClientCertificate creates a client certificate for operator-to-secondary
+// authentication. The CN is set to "kube-shard-admin" and the Organization to
+// "system:masters" so that the secondary kube-apiserver treats the holder as a
+// cluster-admin via its built-in RBAC bindings.
+func BuildAdminClientCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Certificate",
+	})
+	cert.SetName(AdminClientCertificateName(shard))
+	cert.SetNamespace(shard.Spec.TargetNamespace)
+	cert.SetLabels(certLabels(shard))
+
+	cert.Object["spec"] = map[string]interface{}{
+		"secretName":  AdminClientSecretName(shard),
+		"commonName":  "kube-shard-admin",
+		"duration":    "8760h",
+		"renewBefore": "720h",
+		"usages": []interface{}{
+			"client auth",
+		},
+		"subject": map[string]interface{}{
+			"organizations": []interface{}{
+				"system:masters",
+			},
+		},
+		"issuerRef": map[string]interface{}{
+			"name":  IssuerName(shard),
+			"kind":  "Issuer",
+			"group": "cert-manager.io",
+		},
+	}
+
+	return cert
+}
+
 func certLabels(shard *kubeshardv1alpha1.APIShard) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/managed-by": "kube-shard-operator",

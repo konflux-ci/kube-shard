@@ -18,8 +18,10 @@ package secondary
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"sync"
@@ -53,9 +55,10 @@ type ClientProvider struct {
 }
 
 type clientEntry struct {
-	client    client.Client
-	host      string
-	createdAt time.Time
+	client      client.Client
+	host        string
+	fingerprint string
+	createdAt   time.Time
 }
 
 func NewClientProvider(scheme *runtime.Scheme) *ClientProvider {
@@ -66,14 +69,17 @@ func NewClientProvider(scheme *runtime.Scheme) *ClientProvider {
 }
 
 // GetOrCreate returns an existing client or creates a new one for the given shard.
-// If the endpoint (Host) has changed since the client was cached, the old client
-// is invalidated and a new one is created.
+// If the endpoint (Host) or credential material (CA cert, client cert, token)
+// has changed since the client was cached, the old client is invalidated and a
+// new one is created.
 func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client.Client, error) {
+	fp := cfg.fingerprint()
+
 	p.mu.RLock()
 	entry, exists := p.clients[shardName]
 	p.mu.RUnlock()
 
-	if exists && entry.host == cfg.Host {
+	if exists && entry.host == cfg.Host && entry.fingerprint == fp {
 		return entry.client, nil
 	}
 
@@ -81,7 +87,7 @@ func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if entry, exists = p.clients[shardName]; exists && entry.host == cfg.Host {
+	if entry, exists = p.clients[shardName]; exists && entry.host == cfg.Host && entry.fingerprint == fp {
 		return entry.client, nil
 	}
 
@@ -93,9 +99,10 @@ func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client
 	}
 
 	p.clients[shardName] = &clientEntry{
-		client:    c,
-		host:      cfg.Host,
-		createdAt: time.Now(),
+		client:      c,
+		host:        cfg.Host,
+		fingerprint: fp,
+		createdAt:   time.Now(),
 	}
 
 	return c, nil
@@ -134,23 +141,41 @@ func (p *ClientProvider) BuildClient(ctx context.Context, reader client.Reader, 
 	}, &authSecret); err != nil {
 		return nil, fmt.Errorf("reading auth secret %s: %w", conn.AuthSecretRef.Name, err)
 	}
-	token := string(authSecret.Data["token"])
-	if token == "" {
-		return nil, fmt.Errorf("auth secret %s missing key token", conn.AuthSecretRef.Name)
+
+	cfg := ClientConfig{CACert: caCert}
+
+	// Prefer client certificate auth; fall back to bearer token.
+	if len(authSecret.Data["tls.crt"]) > 0 && len(authSecret.Data["tls.key"]) > 0 {
+		cfg.ClientCert = authSecret.Data["tls.crt"]
+		cfg.ClientKey = authSecret.Data["tls.key"]
+	} else if token := string(authSecret.Data["token"]); token != "" {
+		cfg.Token = token
+	} else {
+		return nil, fmt.Errorf("auth secret %s has no client cert (tls.crt/tls.key) or bearer token", conn.AuthSecretRef.Name)
 	}
 
 	port := conn.ServiceRef.Port
 	if port == 0 {
 		port = 443
 	}
-	host := fmt.Sprintf("https://%s.%s.svc:%d",
+	cfg.Host = fmt.Sprintf("https://%s.%s.svc:%d",
 		conn.ServiceRef.Name, conn.ServiceRef.Namespace, port)
 
-	return p.GetOrCreate(cacheKey, ClientConfig{
-		Host:   host,
-		CACert: caCert,
-		Token:  token,
-	})
+	return p.GetOrCreate(cacheKey, cfg)
+}
+
+// fingerprint returns a hex-encoded SHA-256 hash of all credential material
+// so the cache can detect when certificates or tokens have rotated.
+func (c ClientConfig) fingerprint() string {
+	h := sha256.New()
+	h.Write(c.CACert)
+	h.Write([]byte{0})
+	h.Write(c.ClientCert)
+	h.Write([]byte{0})
+	h.Write(c.ClientKey)
+	h.Write([]byte{0})
+	h.Write([]byte(c.Token))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func buildRESTConfig(cfg ClientConfig) *rest.Config {

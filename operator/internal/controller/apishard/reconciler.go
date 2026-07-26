@@ -20,12 +20,13 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"os"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +37,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -48,6 +50,7 @@ import (
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 	"github.com/konflux-ci/kube-shard/operator/internal/aggregation"
 	"github.com/konflux-ci/kube-shard/operator/internal/certs"
+	shardpredicate "github.com/konflux-ci/kube-shard/operator/internal/predicate"
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
 	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
 )
@@ -68,6 +71,7 @@ var managedGVKs = []schema.GroupVersionKind{
 	{Group: "", Version: "v1", Kind: "Service"},
 	{Group: "", Version: "v1", Kind: "Secret"},
 	{Group: "", Version: "v1", Kind: "ConfigMap"},
+	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
 }
@@ -90,6 +94,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=webhooksyncs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives the desired state for a single APIShard resource. It provisions
 // the target namespace, storage backend, TLS certificates, auth configuration, and
@@ -104,6 +109,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, err
 	}
+
+	statusBefore := shard.Status.DeepCopy()
 
 	// Handle deletion: remove APIServices before allowing the APIShard to be
 	// deleted. A finalizer is used instead of ownerReferences because deletion
@@ -157,6 +164,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
+	// Fast path: when the shard is already Ready and the spec hasn't changed,
+	// skip the expensive SSA applies and only check health + aggregate sub-CR status.
+	// This avoids triggering Owns watch events from no-op SSA patches.
+	specUnchanged := shard.Status.ObservedGeneration == shard.Generation
+	alreadyReady := shard.Status.Phase == kubeshardv1alpha1.PhaseReady
+	if specUnchanged && alreadyReady {
+		return r.reconcileFastPath(ctx, &shard, statusBefore)
+	}
+
 	// Create a tracking client with ownership for SSA + orphan cleanup
 	tc := tracking.NewClientWithOwnership(r.Client, tracking.OwnershipConfig{
 		Owner:             &shard,
@@ -189,6 +205,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// Reconcile auth-config ConfigMap for webhook authorization
 	if err := r.reconcileAuthConfig(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile auth config")
+		return r.setErrorAndRequeue(ctx, &shard, err)
+	}
+
+	// Bind the secondary's ServiceAccount to system:auth-delegator
+	if err := r.reconcileAuthDelegator(ctx, tc, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile auth-delegator binding")
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
@@ -263,13 +285,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			ObservedGeneration: shard.Generation,
 		})
 
-		if err := r.reconcileNamespaceSync(ctx, tc, &shard); err != nil {
-			logger.Error(err, "Failed to reconcile NamespaceSync")
+		if r.verifySecondaryAuth(ctx, &shard) {
+			if err := r.reconcileNamespaceSync(ctx, tc, &shard); err != nil {
+				logger.Error(err, "Failed to reconcile NamespaceSync")
+			}
+			if err := r.reconcileWebhookSync(ctx, tc, &shard); err != nil {
+				logger.Error(err, "Failed to reconcile WebhookSync")
+			}
+			r.aggregateSubCRStatus(ctx, &shard)
+		} else {
+			logger.V(1).Info("Secondary auth not ready yet, deferring sub-CR creation")
 		}
-		if err := r.reconcileWebhookSync(ctx, tc, &shard); err != nil {
-			logger.Error(err, "Failed to reconcile WebhookSync")
-		}
-		r.aggregateSubCRStatus(ctx, &shard)
 	} else {
 		shard.Status.Phase = kubeshardv1alpha1.PhaseProvisioning
 		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
@@ -296,15 +322,83 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		Message:            "All resources reconciled successfully",
 		ObservedGeneration: shard.Generation,
 	})
-	if err := r.Status().Update(ctx, &shard); err != nil {
-		return ctrl.Result{}, err
+	if !equality.Semantic.DeepEqual(statusBefore, &shard.Status) {
+		if err := r.Status().Update(ctx, &shard); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if !healthy {
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// reconcileFastPath handles reconciliation when the APIShard is already Ready
+// and the spec hasn't changed. It only checks health and aggregates sub-CR
+// status, skipping the expensive SSA applies that would otherwise trigger
+// Owns watch events and create a tight reconciliation loop.
+func (r *Reconciler) reconcileFastPath(ctx context.Context, shard *kubeshardv1alpha1.APIShard, statusBefore *kubeshardv1alpha1.APIShardStatus) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.V(1).Info("Fast path: spec unchanged, skipping SSA applies")
+
+	healthy, err := r.checkDeploymentHealth(ctx, shard)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if !healthy {
+		shard.Status.Phase = kubeshardv1alpha1.PhaseProvisioning
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionSecondaryHealthy,
+			Status:             metav1.ConditionFalse,
+			Reason:             "DeploymentNotReady",
+			Message:            "Secondary API server is not yet ready",
+			ObservedGeneration: shard.Generation,
+		})
+	} else {
+		r.aggregateSubCRStatus(ctx, shard)
+	}
+
+	// CRD conflict detection runs on the fast path so that the operator
+	// reacts promptly to CRDs being created or deleted on the primary,
+	// even when no spec change has occurred.
+	conflictResult, err := aggregation.DetectCRDConflicts(ctx, r.Client, shard)
+	if err != nil {
+		logger.Error(err, "Failed to detect CRD conflicts")
+	} else if conflictResult != nil && conflictResult.HasConflict {
+		if syncErr := r.syncCRDsToSecondary(ctx, shard, conflictResult.ConflictingCRDs); syncErr != nil {
+			logger.Error(syncErr, "Failed to sync conflicting CRDs to secondary")
+		}
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
+			Status:             metav1.ConditionTrue,
+			Reason:             "CRDsExistOnPrimary",
+			Message:            conflictResult.Message,
+			ObservedGeneration: shard.Generation,
+		})
+		shard.Status.Phase = kubeshardv1alpha1.PhaseBlocked
+	} else {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
+			Status:             metav1.ConditionFalse,
+			Reason:             "NoConflicts",
+			Message:            "No conflicting CRDs detected on primary",
+			ObservedGeneration: shard.Generation,
+		})
+	}
+
+	if !equality.Semantic.DeepEqual(statusBefore, &shard.Status) {
+		if err := r.Status().Update(ctx, shard); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if !healthy {
+		return ctrl.Result{RequeueAfter: requeueDelay}, nil
+	}
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // ensureNamespace creates the target namespace if it doesn't already exist.
@@ -424,6 +518,7 @@ func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Clie
 		certs.BuildCACertificate(shard),
 		certs.BuildCAIssuer(shard),
 		certs.BuildServingCertificate(shard),
+		certs.BuildAdminClientCertificate(shard),
 	}
 
 	for _, res := range certResources {
@@ -445,7 +540,7 @@ kind: Config
 clusters:
 - name: primary
   cluster:
-    server: https://kubernetes.default.svc
+    server: https://kubernetes.default.svc/apis/authorization.k8s.io/v1/subjectaccessreviews
     certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 users:
 - name: webhook
@@ -475,6 +570,46 @@ contexts:
 
 	if err := tc.ApplyOwned(ctx, cm); err != nil {
 		return fmt.Errorf("auth config configmap: %w", err)
+	}
+
+	return nil
+}
+
+// reconcileAuthDelegator creates a ClusterRoleBinding that grants the secondary
+// API server's ServiceAccount the system:auth-delegator role. This allows the
+// secondary to delegate SubjectAccessReview calls to the primary cluster when
+// using webhook authorization.
+func (r *Reconciler) reconcileAuthDelegator(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	bindingName := fmt.Sprintf("%s-auth-delegator", shard.Name)
+
+	crb := &rbacv1.ClusterRoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "ClusterRoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: bindingName,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "ClusterRole",
+			Name:     "system:auth-delegator",
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      "default",
+				Namespace: shard.Spec.TargetNamespace,
+			},
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(shard, crb, r.Scheme); err != nil {
+		return fmt.Errorf("setting owner reference on auth-delegator CRB: %w", err)
+	}
+
+	if err := tc.ApplyOwned(ctx, crb); err != nil {
+		return fmt.Errorf("auth-delegator ClusterRoleBinding: %w", err)
 	}
 
 	return nil
@@ -542,7 +677,7 @@ func (r *Reconciler) reconcileAPIServices(ctx context.Context, shard *kubeshardv
 
 	caBundle := secret.Data["ca.crt"]
 
-	result, err := aggregation.Reconcile(ctx, r.Client, r.Scheme, shard, caBundle, shard.Status.RegisteredAPIServices)
+	result, err := aggregation.Reconcile(ctx, r.Client, r.Scheme, shard, caBundle, shard.Status.RegisteredAPIServices, fieldManager)
 	if err != nil {
 		return err
 	}
@@ -551,9 +686,11 @@ func (r *Reconciler) reconcileAPIServices(ctx context.Context, shard *kubeshardv
 	return nil
 }
 
-// reconcileAdminKubeconfig creates a Secret containing a kubeconfig that points
-// to the secondary API server's in-cluster service endpoint. Controllers and
-// sub-CRs use this to connect to the secondary.
+// reconcileAdminKubeconfig creates a Secret containing a kubeconfig and client
+// certificate credentials for connecting to the secondary API server. Sub-CRs
+// (NamespaceSync, WebhookSync) reference this secret to authenticate. The
+// secondary kAS has --client-ca-file set to the PKI CA, so client certificates
+// signed by that CA are accepted.
 func (r *Reconciler) reconcileAdminKubeconfig(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	pkiSecret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{
@@ -565,19 +702,31 @@ func (r *Reconciler) reconcileAdminKubeconfig(ctx context.Context, tc *tracking.
 		}
 		return fmt.Errorf("reading PKI secret: %w", err)
 	}
-
 	caData := pkiSecret.Data["ca.crt"]
 	if len(caData) == 0 {
 		return nil
 	}
 
-	token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	if err != nil {
-		return fmt.Errorf("reading service account token: %w", err)
+	adminSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      certs.AdminClientSecretName(shard),
+		Namespace: shard.Spec.TargetNamespace,
+	}, adminSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("reading admin client cert secret: %w", err)
+	}
+	clientCert := adminSecret.Data["tls.crt"]
+	clientKey := adminSecret.Data["tls.key"]
+	if len(clientCert) == 0 || len(clientKey) == 0 {
+		return nil
 	}
 
 	serverURL := fmt.Sprintf("https://%s-apiserver.%s.svc", shard.Name, shard.Spec.TargetNamespace)
 	caBase64 := base64.StdEncoding.EncodeToString(caData)
+	certBase64 := base64.StdEncoding.EncodeToString(clientCert)
+	keyBase64 := base64.StdEncoding.EncodeToString(clientKey)
 
 	kubeconfig := fmt.Sprintf(`apiVersion: v1
 kind: Config
@@ -589,14 +738,15 @@ clusters:
 users:
 - name: admin
   user:
-    token: %s
+    client-certificate-data: %s
+    client-key-data: %s
 contexts:
 - name: default
   context:
     cluster: secondary
     user: admin
 current-context: default
-`, serverURL, caBase64, string(token))
+`, serverURL, caBase64, certBase64, keyBase64)
 
 	secretName := fmt.Sprintf("%s-admin-kubeconfig", shard.Name)
 	secret := &corev1.Secret{
@@ -610,7 +760,8 @@ current-context: default
 		},
 		Data: map[string][]byte{
 			"kubeconfig": []byte(kubeconfig),
-			"token":      token,
+			"tls.crt":    clientCert,
+			"tls.key":    clientKey,
 		},
 	}
 
@@ -633,6 +784,10 @@ func (r *Reconciler) reconcileNamespaceSync(ctx context.Context, tc *tracking.Cl
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-ns-sync", shard.Name),
 			Namespace: shard.Spec.TargetNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/instance":   shard.Name,
+				"app.kubernetes.io/managed-by": "kube-shard-operator",
+			},
 		},
 	}
 
@@ -649,7 +804,7 @@ func (r *Reconciler) reconcileNamespaceSync(ctx context.Context, tc *tracking.Cl
 					Port:      443,
 				},
 				AuthSecretRef: kubeshardv1alpha1.LocalSecretReference{
-					Name: fmt.Sprintf("%s-admin-kubeconfig", shard.Name),
+					Name: certs.AdminClientSecretName(shard),
 				},
 				CASecretRef: kubeshardv1alpha1.LocalSecretReference{
 					Name: certs.PKISecretName(shard),
@@ -676,6 +831,10 @@ func (r *Reconciler) reconcileWebhookSync(ctx context.Context, tc *tracking.Clie
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-webhook-sync", shard.Name),
 			Namespace: shard.Spec.TargetNamespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/instance":   shard.Name,
+				"app.kubernetes.io/managed-by": "kube-shard-operator",
+			},
 		},
 	}
 
@@ -692,7 +851,7 @@ func (r *Reconciler) reconcileWebhookSync(ctx context.Context, tc *tracking.Clie
 					Port:      443,
 				},
 				AuthSecretRef: kubeshardv1alpha1.LocalSecretReference{
-					Name: fmt.Sprintf("%s-admin-kubeconfig", shard.Name),
+					Name: certs.AdminClientSecretName(shard),
 				},
 				CASecretRef: kubeshardv1alpha1.LocalSecretReference{
 					Name: certs.PKISecretName(shard),
@@ -758,14 +917,27 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 		return fmt.Errorf("secondary endpoint not available yet")
 	}
 
-	token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	if err != nil {
-		return fmt.Errorf("reading service account token: %w", err)
+	pkiSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      certs.PKISecretName(shard),
+		Namespace: shard.Spec.TargetNamespace,
+	}, pkiSecret); err != nil {
+		return fmt.Errorf("reading PKI secret for CRD sync: %w", err)
+	}
+
+	adminSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      certs.AdminClientSecretName(shard),
+		Namespace: shard.Spec.TargetNamespace,
+	}, adminSecret); err != nil {
+		return fmt.Errorf("reading admin client cert for CRD sync: %w", err)
 	}
 
 	secondaryClient, err := r.ClientProvider.GetOrCreate(shard.Name, secondary.ClientConfig{
-		Host:  endpoint,
-		Token: string(token),
+		Host:       endpoint,
+		CACert:     pkiSecret.Data["ca.crt"],
+		ClientCert: adminSecret.Data["tls.crt"],
+		ClientKey:  adminSecret.Data["tls.key"],
 	})
 	if err != nil {
 		return fmt.Errorf("creating secondary client: %w", err)
@@ -800,6 +972,57 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 	}
 
 	return nil
+}
+
+// verifySecondaryAuth builds a client for the secondary API server using the
+// admin credentials and performs a lightweight API discovery call. This gate
+// prevents sub-CR creation until the secondary actually accepts authenticated
+// requests, avoiding a flood of 401 errors when the kube-apiserver hasn't
+// finished loading its client CA file.
+func (r *Reconciler) verifySecondaryAuth(ctx context.Context, shard *kubeshardv1alpha1.APIShard) bool {
+	logger := log.FromContext(ctx)
+
+	pkiSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      certs.PKISecretName(shard),
+		Namespace: shard.Spec.TargetNamespace,
+	}, pkiSecret); err != nil {
+		return false
+	}
+
+	adminSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      certs.AdminClientSecretName(shard),
+		Namespace: shard.Spec.TargetNamespace,
+	}, adminSecret); err != nil {
+		return false
+	}
+
+	cfg := secondary.ClientConfig{
+		Host:       resources.SecondaryEndpoint(shard),
+		CACert:     pkiSecret.Data["ca.crt"],
+		ClientCert: adminSecret.Data["tls.crt"],
+		ClientKey:  adminSecret.Data["tls.key"],
+	}
+
+	if len(cfg.CACert) == 0 || len(cfg.ClientCert) == 0 || len(cfg.ClientKey) == 0 {
+		return false
+	}
+
+	c, err := r.ClientProvider.GetOrCreate(shard.Name+"-verify", cfg)
+	if err != nil {
+		logger.V(1).Info("Failed to create verification client", "error", err)
+		return false
+	}
+
+	var nsList corev1.NamespaceList
+	if err := c.List(ctx, &nsList); err != nil {
+		logger.V(1).Info("Secondary auth verification failed", "error", err)
+		r.ClientProvider.Invalidate(shard.Name + "-verify")
+		return false
+	}
+
+	return true
 }
 
 // checkDeploymentHealth returns true when both the Kine and secondary API server
@@ -854,13 +1077,14 @@ func (r *Reconciler) setErrorAndRequeue(ctx context.Context, shard *kubeshardv1a
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.APIShard{}).
-		Owns(&appsv1.Deployment{}).
+		Owns(&appsv1.Deployment{}, builder.WithPredicates(shardpredicate.DeploymentReadinessPredicate)).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ConfigMap{}).
-		Owns(&kubeshardv1alpha1.NamespaceSync{}).
-		Owns(&kubeshardv1alpha1.WebhookSync{}).
-		Owns(&apiregistrationv1.APIService{}).
+		Owns(&kubeshardv1alpha1.NamespaceSync{}, builder.WithPredicates(shardpredicate.IgnoreStatusUpdatesPredicate)).
+		Owns(&kubeshardv1alpha1.WebhookSync{}, builder.WithPredicates(shardpredicate.IgnoreStatusUpdatesPredicate)).
+		Owns(&apiregistrationv1.APIService{}, builder.WithPredicates(shardpredicate.IgnoreStatusUpdatesPredicate)).
+		Owns(&rbacv1.ClusterRoleBinding{}).
 		Watches(&apiextensionsv1.CustomResourceDefinition{}, &crdEventHandler{client: r.Client}).
 		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(
 			requestHeaderCAMapper(mgr.GetClient()),

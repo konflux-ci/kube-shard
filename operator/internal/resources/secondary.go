@@ -70,23 +70,47 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 	etcdServers := fmt.Sprintf("http://%s.%s.svc:%d", kineSvc, shard.Spec.TargetNamespace, KinePort)
 
 	args := []string{
+		// Kine endpoint emulating the etcd v3 API over SQLite/PostgreSQL.
 		"--etcd-servers=" + etcdServers,
+		// HTTPS listen port; must match the Service targetPort and APIService spec.
 		"--secure-port=" + fmt.Sprintf("%d", SecondaryPort),
+		// TLS serving certificate issued by cert-manager for the secondary's FQDN.
 		"--tls-cert-file=/etc/kubernetes/pki/tls.crt",
 		"--tls-private-key-file=/etc/kubernetes/pki/tls.key",
+		// CA used to verify client certificates (e.g. the operator's admin kubeconfig).
 		"--client-ca-file=/etc/kubernetes/pki/ca.crt",
+		// SA token verification/signing keys. Reuses the serving key because the
+		// secondary never issues tokens consumed externally; it only needs a valid
+		// key pair to satisfy the mandatory kube-apiserver flags.
 		"--service-account-key-file=/etc/kubernetes/pki/tls.key",
 		"--service-account-signing-key-file=/etc/kubernetes/pki/tls.key",
 		"--service-account-issuer=https://kubernetes.default.svc",
+		// NamespaceLifecycle is disabled because namespaces are mirrored from the
+		// primary by the NamespaceSync controller — the secondary is not the source
+		// of truth. ServiceAccount is disabled because all authentication happens on
+		// the primary; the secondary receives pre-authenticated identity via
+		// request headers.
 		"--disable-admission-plugins=NamespaceLifecycle,ServiceAccount",
+		// Request-header (front-proxy) authentication: the primary's aggregation
+		// proxy presents a client cert signed by this CA and forwards the original
+		// user identity in X-Remote-* headers.
 		"--requestheader-client-ca-file=/etc/kubernetes/requestheader/requestheader-client-ca-file",
 		"--requestheader-allowed-names=front-proxy-client",
 		"--requestheader-extra-headers-prefix=X-Remote-Extra-",
 		"--requestheader-group-headers=X-Remote-Group",
 		"--requestheader-username-headers=X-Remote-User",
+		// Webhook authorization delegates SubjectAccessReview decisions to the
+		// primary cluster, so existing RBAC policies apply transparently.
 		"--authorization-mode=Webhook",
 		"--authorization-webhook-config-file=/etc/kubernetes/auth/webhook-config.yaml",
 		"--authorization-webhook-version=v1",
+		// kube-apiserver v1.32+ disables anonymous auth by default when the
+		// AnonymousAuthConfigurableEndpoints feature gate is enabled (beta).
+		// Re-enable it so that API discovery endpoints remain accessible to
+		// unauthenticated clients during transient cert-loading windows.
+		"--anonymous-auth=true",
+		// Admission webhooks are re-enabled so that mutating/validating webhooks
+		// synced from the primary by WebhookSync are enforced on the secondary.
 		"--enable-admission-plugins=MutatingAdmissionWebhook,ValidatingAdmissionWebhook",
 	}
 

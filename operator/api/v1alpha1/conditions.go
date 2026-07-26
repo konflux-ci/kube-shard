@@ -27,7 +27,7 @@ const (
 	ConditionAPIServicesRegistered = "APIServicesRegistered"
 
 	// ConditionCRDConflictDetected indicates that conflicting CRDs exist on the primary for aggregated API groups.
-	ConditionCRDConflictDetected = "CRDConflictDetected"
+	ConditionCRDConflictDetected = "CRDConflict"
 
 	// ConditionNamespaceSyncReady indicates the namespace sync controller is active.
 	ConditionNamespaceSyncReady = "NamespaceSyncReady"

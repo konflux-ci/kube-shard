@@ -23,6 +23,7 @@ import (
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -73,6 +74,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
+	statusBefore := whSync.Status.DeepCopy()
+
 	secondaryClient, err := r.buildSecondaryClient(ctx, &whSync)
 	if err != nil {
 		logger.Error(err, "Failed to build secondary client")
@@ -84,8 +87,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			ObservedGeneration: whSync.Generation,
 		})
 		whSync.Status.ObservedGeneration = whSync.Generation
-		if updateErr := r.Status().Update(ctx, &whSync); updateErr != nil {
-			logger.Error(updateErr, "Failed to update WebhookSync status")
+		if !equality.Semantic.DeepEqual(statusBefore, &whSync.Status) {
+			if updateErr := r.Status().Update(ctx, &whSync); updateErr != nil {
+				logger.Error(updateErr, "Failed to update WebhookSync status")
+			}
 		}
 		return ctrl.Result{RequeueAfter: errorRequeueInterval}, nil
 	}
@@ -173,16 +178,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		syncErrors = append(syncErrors, err)
 	}
 
-	// Update status
-	now := metav1.Now()
 	whSync.Status.SyncedWebhooks = kubeshardv1alpha1.SyncedWebhookCounts{
 		Validating: validatingCount,
 		Mutating:   mutatingCount,
 	}
-	whSync.Status.LastSyncTime = &now
 	whSync.Status.ObservedGeneration = whSync.Generation
 
 	if len(syncErrors) > 0 {
+		r.ClientProvider.Invalidate(fmt.Sprintf("%s/%s", whSync.Namespace, whSync.Name))
 		meta.SetStatusCondition(&whSync.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
@@ -200,8 +203,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		})
 	}
 
-	if err := r.Status().Update(ctx, &whSync); err != nil {
-		return ctrl.Result{}, err
+	if !equality.Semantic.DeepEqual(statusBefore, &whSync.Status) {
+		now := metav1.Now()
+		whSync.Status.LastSyncTime = &now
+		if err := r.Status().Update(ctx, &whSync); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{RequeueAfter: requeueInterval}, nil

@@ -17,7 +17,9 @@ limitations under the License.
 package crd_sharding
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +45,30 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 	BeforeAll(func() {
 		projectDir := getProjectDir()
 		testdataDir = filepath.Join(projectDir, "test", "e2e", "testdata")
+
+		By("cleaning up resources from previous test runs")
+		for _, args := range [][]string{
+			{"delete", "widget", widgetName, "-n", widgetNamespace, "--ignore-not-found"},
+			{"delete", "mutatingwebhookconfiguration", "e2e-widget-webhook", "--ignore-not-found"},
+			{"delete", "apiservice", "v1.example.com", "--ignore-not-found"},
+			{"delete", "apishard", shardName, "--ignore-not-found", "--wait=false"},
+			{"delete", "crd", "widgets.example.com", "--ignore-not-found"},
+			{"delete", "ns", webhookNS, "--ignore-not-found", "--wait=false"},
+			{"delete", "ns", shardNamespace, "--ignore-not-found", "--wait=false"},
+		} {
+			cmd := exec.Command("kubectl", args...)
+			_, _ = run(cmd)
+		}
+
+		By("waiting for namespaces to be fully deleted")
+		Eventually(func(g Gomega) {
+			for _, ns := range []string{shardNamespace, webhookNS} {
+				cmd := exec.Command("kubectl", "get", "ns", ns, "--no-headers")
+				output, _ := run(cmd)
+				g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")),
+					fmt.Sprintf("namespace %s should be deleted", ns))
+			}
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("building the webhook server image")
 		webhookServerDir := filepath.Join(projectDir, "test", "e2e", "webhook-server")
@@ -146,24 +172,44 @@ spec:
 		_, err = run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create MutatingWebhookConfiguration")
 
-		By("waiting for cert-manager to inject CA bundle")
+		By("waiting for cert-manager to inject CA bundle matching the webhook cert")
+		var expectedCA string
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "secret", "e2e-webhook-tls",
+				"-n", webhookNS, "-o", "jsonpath={.data.ca\\.crt}")
+			output, err := run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).NotTo(BeEmpty(), "webhook cert secret not ready")
+			expectedCA = output
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "mutatingwebhookconfiguration",
 				"e2e-widget-webhook",
 				"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
 			output, err := run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).NotTo(BeEmpty(), "CA bundle not yet injected")
+			g.Expect(output).To(Equal(expectedCA), "CA bundle should match the webhook cert CA")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-		By("waiting for operator to create and reconcile WebhookSync")
+		By("waiting for operator to create and reconcile WebhookSync with synced webhooks")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "webhooksync",
+				"-n", shardNamespace,
 				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", shardName),
-				"-o", "jsonpath={.items[0].status.phase}")
+				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
 			output, err := run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("Ready"))
+			g.Expect(output).To(Equal("True"))
+
+			cmd = exec.Command("kubectl", "get", "webhooksync",
+				"-n", shardNamespace,
+				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", shardName),
+				"-o", "jsonpath={.items[0].status.syncedWebhooks.mutating}")
+			output, err = run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).NotTo(Equal("0"), "at least one mutating webhook should be synced")
+			g.Expect(output).NotTo(BeEmpty(), "at least one mutating webhook should be synced")
 		}, 3*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
@@ -237,27 +283,100 @@ spec:
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 
-	It("should persist the resource in the Kine SQLite database", func() {
-		By("finding the Kine pod")
-		cmd := exec.Command("kubectl", "get", "pods",
-			"-n", shardNamespace,
-			"-l", fmt.Sprintf("app.kubernetes.io/name=kine,app.kubernetes.io/instance=%s", shardName),
-			"-o", "jsonpath={.items[0].metadata.name}")
-		kinePod, err := run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to find Kine pod")
-		Expect(kinePod).NotTo(BeEmpty(), "No Kine pod found")
+	It("should store the resource directly on the secondary API server", func() {
+		tmpDir, err := os.MkdirTemp("", "e2e-secondary-auth-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer os.RemoveAll(tmpDir)
 
-		By("querying SQLite for the Widget resource key")
-		query := fmt.Sprintf(
-			`SELECT name FROM kine WHERE name LIKE '%%/widgets/%s/%s' AND deleted=0 LIMIT 1`,
-			widgetNamespace, widgetName)
-		cmd = exec.Command("kubectl", "exec", kinePod,
-			"-n", shardNamespace,
-			"--", "sqlite3", "/data/kine.db", query)
-		output, err := run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to query SQLite database")
-		Expect(output).To(ContainSubstring(widgetName),
-			"Widget key not found in Kine SQLite database")
+		By("extracting admin client credentials from cluster secrets")
+		for _, item := range []struct {
+			secret, key, file string
+		}{
+			{fmt.Sprintf("%s-admin-client-cert", shardName), "tls.crt", "tls.crt"},
+			{fmt.Sprintf("%s-admin-client-cert", shardName), "tls.key", "tls.key"},
+			{fmt.Sprintf("%s-pki", shardName), "ca.crt", "ca.crt"},
+		} {
+			cmd := exec.Command("kubectl", "get", "secret", item.secret,
+				"-n", shardNamespace,
+				"-o", fmt.Sprintf("jsonpath={.data.%s}", strings.ReplaceAll(item.key, ".", "\\.")))
+			b64, err := run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to read %s from %s", item.key, item.secret)
+
+			cmd = exec.Command("base64", "-d")
+			cmd.Stdin = stringReader(b64)
+			decoded, err := run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(os.WriteFile(filepath.Join(tmpDir, item.file), []byte(decoded), 0600)).To(Succeed())
+		}
+
+		By("finding a free local port for port-forward")
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		Expect(err).NotTo(HaveOccurred())
+		localPort := listener.Addr().(*net.TCPAddr).Port
+		listener.Close()
+
+		By(fmt.Sprintf("port-forwarding to secondary API server on localhost:%d", localPort))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		pfCmd := exec.CommandContext(ctx, "kubectl", "port-forward",
+			fmt.Sprintf("svc/%s-apiserver", shardName),
+			fmt.Sprintf("%d:443", localPort),
+			"-n", shardNamespace)
+		pfCmd.Stdout = GinkgoWriter
+		pfCmd.Stderr = GinkgoWriter
+		Expect(pfCmd.Start()).To(Succeed())
+		defer func() {
+			cancel()
+			_ = pfCmd.Wait()
+		}()
+
+		By("waiting for port-forward to be ready")
+		Eventually(func() error {
+			conn, err := net.DialTimeout("tcp",
+				fmt.Sprintf("127.0.0.1:%d", localPort), time.Second)
+			if err != nil {
+				return err
+			}
+			conn.Close()
+			return nil
+		}, 30*time.Second, time.Second).Should(Succeed())
+
+		By("writing a standalone kubeconfig for the secondary")
+		kubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: secondary
+  cluster:
+    server: https://127.0.0.1:%d
+    insecure-skip-tls-verify: true
+users:
+- name: admin
+  user:
+    client-certificate: %s
+    client-key: %s
+contexts:
+- name: default
+  context:
+    cluster: secondary
+    user: admin
+current-context: default
+`, localPort, filepath.Join(tmpDir, "tls.crt"), filepath.Join(tmpDir, "tls.key"))
+		kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
+		Expect(os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0600)).To(Succeed())
+
+		By("querying the Widget directly on the secondary (bypassing aggregation)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl",
+				"--kubeconfig", kubeconfigPath,
+				"get", "widget", widgetName,
+				"-n", widgetNamespace,
+				"-o", "jsonpath={.spec.message}")
+			output, err := run(cmd)
+			g.Expect(err).NotTo(HaveOccurred(),
+				"Failed to query Widget directly on secondary")
+			g.Expect(output).To(Equal("hello from e2e test"),
+				"Widget should exist directly on the secondary, proving it's stored in Kine")
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 })
 
@@ -318,3 +437,4 @@ func detectContainerRuntime() string {
 func stringReader(s string) *strings.Reader {
 	return strings.NewReader(s)
 }
+

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,6 +79,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
+	statusBefore := nsSync.Status.DeepCopy()
+
 	secondaryClient, err := r.buildSecondaryClient(ctx, &nsSync)
 	if err != nil {
 		logger.Error(err, "Failed to build secondary client")
@@ -89,8 +92,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			ObservedGeneration: nsSync.Generation,
 		})
 		nsSync.Status.ObservedGeneration = nsSync.Generation
-		if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
-			logger.Error(updateErr, "Failed to update NamespaceSync status")
+		if !equality.Semantic.DeepEqual(statusBefore, &nsSync.Status) {
+			if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
+				logger.Error(updateErr, "Failed to update NamespaceSync status")
+			}
 		}
 		return ctrl.Result{RequeueAfter: namespaceSyncErrorRequeue}, nil
 	}
@@ -121,6 +126,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	var secondaryNamespaces corev1.NamespaceList
 	if err := secondaryClient.List(ctx, &secondaryNamespaces); err != nil {
 		logger.Error(err, "Failed to list secondary namespaces")
+		r.ClientProvider.Invalidate(fmt.Sprintf("%s/%s", nsSync.Namespace, nsSync.Name))
 		meta.SetStatusCondition(&nsSync.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
@@ -129,8 +135,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			ObservedGeneration: nsSync.Generation,
 		})
 		nsSync.Status.ObservedGeneration = nsSync.Generation
-		if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
-			logger.Error(updateErr, "Failed to update NamespaceSync status")
+		if !equality.Semantic.DeepEqual(statusBefore, &nsSync.Status) {
+			if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
+				logger.Error(updateErr, "Failed to update NamespaceSync status")
+			}
 		}
 		return ctrl.Result{RequeueAfter: namespaceSyncErrorRequeue}, nil
 	}
@@ -164,9 +172,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
-	now := metav1.Now()
 	nsSync.Status.SyncedNamespaces = int32(desiredNames.Len())
-	nsSync.Status.LastSyncTime = &now
 	nsSync.Status.ObservedGeneration = nsSync.Generation
 
 	if len(syncErrors) > 0 {
@@ -187,8 +193,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		})
 	}
 
-	if err := r.Status().Update(ctx, &nsSync); err != nil {
-		return ctrl.Result{}, err
+	if !equality.Semantic.DeepEqual(statusBefore, &nsSync.Status) {
+		now := metav1.Now()
+		nsSync.Status.LastSyncTime = &now
+		if err := r.Status().Update(ctx, &nsSync); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive
@@ -165,12 +166,42 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
+// ContainerTool returns the container tool to use (docker or podman).
+// It checks the CONTAINER_TOOL env var, then probes for docker/podman on PATH.
+func ContainerTool() string {
+	if v, ok := os.LookupEnv("CONTAINER_TOOL"); ok {
+		return v
+	}
+	if _, err := exec.LookPath("docker"); err == nil {
+		return "docker"
+	}
+	return "podman"
+}
+
+// LoadImageToKindClusterWithName loads a local container image into the Kind
+// cluster. When the container runtime is podman, saves to a temporary tarball
+// and uses `kind load image-archive` because `kind load docker-image` only
+// works with the Docker daemon socket.
 func LoadImageToKindClusterWithName(name string) error {
 	cluster := "kind"
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
+
+	if ContainerTool() == "podman" {
+		archive := filepath.Join(os.TempDir(), "e2e-operator-image.tar")
+		os.Remove(archive)
+		cmd := exec.Command("podman", "save", "-o", archive, name)
+		if _, err := Run(cmd); err != nil {
+			return err
+		}
+		defer os.Remove(archive)
+
+		cmd = exec.Command("kind", "load", "image-archive", archive, "--name", cluster)
+		_, err := Run(cmd)
+		return err
+	}
+
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
 	cmd := exec.Command("kind", kindOptions...)
 	_, err := Run(cmd)

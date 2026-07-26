@@ -52,6 +52,7 @@ func Reconcile(
 	shard *kubeshardv1alpha1.APIShard,
 	caBundle []byte,
 	previouslyRegistered []string,
+	fieldManager string,
 ) (*ReconcileResult, error) {
 	logger := log.FromContext(ctx)
 
@@ -61,12 +62,19 @@ func Reconcile(
 	desired := desiredAPIServiceNames(shard)
 	desiredSet := sets.New[string](desired...)
 
-	// Create or update desired APIServices
+	// Apply desired APIServices using Server-Side Apply.
+	// SSA only sends fields we manage, avoiding spurious updates from
+	// server-defaulted fields (e.g. ServiceReference.Port) that would
+	// trigger an infinite reconcile loop via Owns() watch events.
 	for _, apiGroup := range shard.Spec.APIGroups {
 		for _, version := range apiGroup.Versions {
 			name := apiServiceName(version, apiGroup.Group)
 
 			apiSvc := &apiregistrationv1.APIService{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "apiregistration.k8s.io/v1",
+					Kind:       "APIService",
+				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name: name,
 				},
@@ -88,25 +96,10 @@ func Reconcile(
 				return nil, fmt.Errorf("setting owner reference on APIService %s: %w", name, err)
 			}
 
-			existing := &apiregistrationv1.APIService{}
-			err := c.Get(ctx, types.NamespacedName{Name: name}, existing)
-			if err != nil {
-				if client.IgnoreNotFound(err) != nil {
-					return nil, fmt.Errorf("getting APIService %s: %w", name, err)
-				}
-				if err := c.Create(ctx, apiSvc); err != nil {
-					return nil, fmt.Errorf("creating APIService %s: %w", name, err)
-				}
-				logger.Info("Created APIService", "name", name)
-				continue
+			if err := c.Patch(ctx, apiSvc, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+				return nil, fmt.Errorf("applying APIService %s: %w", name, err)
 			}
-
-			existing.Spec = apiSvc.Spec
-			existing.OwnerReferences = apiSvc.OwnerReferences
-			if err := c.Update(ctx, existing); err != nil {
-				return nil, fmt.Errorf("updating APIService %s: %w", name, err)
-			}
-			logger.Info("Updated APIService", "name", name)
+			logger.V(1).Info("Applied APIService", "name", name)
 		}
 	}
 
@@ -153,3 +146,4 @@ func desiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {
 func apiServiceName(version, group string) string {
 	return fmt.Sprintf("%s.%s", version, group)
 }
+
