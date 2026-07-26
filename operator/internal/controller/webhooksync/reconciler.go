@@ -30,7 +30,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
@@ -394,6 +396,32 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&kubeshardv1alpha1.WebhookSync{}).
 		Watches(&admissionregistrationv1.MutatingWebhookConfiguration{}, &webhookEventHandler{client: r.Client}).
 		Watches(&admissionregistrationv1.ValidatingWebhookConfiguration{}, &webhookEventHandler{client: r.Client}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
+			secretToWebhookSyncMapper(mgr.GetClient()),
+		)).
 		Named("webhooksync").
 		Complete(r)
+}
+
+func secretToWebhookSyncMapper(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var list kubeshardv1alpha1.WebhookSyncList
+		if err := c.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
+			return nil
+		}
+		var requests []reconcile.Request
+		for i := range list.Items {
+			wh := &list.Items[i]
+			if wh.Spec.SecondaryConnection.AuthSecretRef.Name == obj.GetName() ||
+				wh.Spec.SecondaryConnection.CASecretRef.Name == obj.GetName() {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      wh.Name,
+						Namespace: wh.Namespace,
+					},
+				})
+			}
+		}
+		return requests
+	}
 }

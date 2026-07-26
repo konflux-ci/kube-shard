@@ -29,7 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
@@ -277,6 +279,32 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.NamespaceSync{}).
 		Watches(&corev1.Namespace{}, &namespaceEventHandler{client: r.Client}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
+			secretToNamespaceSyncMapper(mgr.GetClient()),
+		)).
 		Named("namespacesync").
 		Complete(r)
+}
+
+func secretToNamespaceSyncMapper(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var list kubeshardv1alpha1.NamespaceSyncList
+		if err := c.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
+			return nil
+		}
+		var requests []reconcile.Request
+		for i := range list.Items {
+			ns := &list.Items[i]
+			if ns.Spec.SecondaryConnection.AuthSecretRef.Name == obj.GetName() ||
+				ns.Spec.SecondaryConnection.CASecretRef.Name == obj.GetName() {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      ns.Name,
+						Namespace: ns.Namespace,
+					},
+				})
+			}
+		}
+		return requests
+	}
 }

@@ -21,9 +21,11 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
@@ -45,6 +47,7 @@ type ReconcileResult struct {
 func Reconcile(
 	ctx context.Context,
 	c client.Client,
+	scheme *runtime.Scheme,
 	shard *kubeshardv1alpha1.APIShard,
 	caBundle []byte,
 	previouslyRegistered []string,
@@ -80,6 +83,10 @@ func Reconcile(
 				},
 			}
 
+			if err := controllerutil.SetControllerReference(shard, apiSvc, scheme); err != nil {
+				return nil, fmt.Errorf("setting owner reference on APIService %s: %w", name, err)
+			}
+
 			existing := &apiregistrationv1.APIService{}
 			err := c.Get(ctx, types.NamespacedName{Name: name}, existing)
 			if err != nil {
@@ -94,6 +101,7 @@ func Reconcile(
 			}
 
 			existing.Spec = apiSvc.Spec
+			existing.OwnerReferences = apiSvc.OwnerReferences
 			if err := c.Update(ctx, existing); err != nil {
 				return nil, fmt.Errorf("updating APIService %s: %w", name, err)
 			}

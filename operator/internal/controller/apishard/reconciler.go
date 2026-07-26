@@ -265,10 +265,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			ObservedGeneration: shard.Generation,
 		})
 
-		if err := r.reconcileNamespaceSync(ctx, &shard); err != nil {
+		if err := r.reconcileNamespaceSync(ctx, tc, &shard); err != nil {
 			logger.Error(err, "Failed to reconcile NamespaceSync")
 		}
-		if err := r.reconcileWebhookSync(ctx, &shard); err != nil {
+		if err := r.reconcileWebhookSync(ctx, tc, &shard); err != nil {
 			logger.Error(err, "Failed to reconcile WebhookSync")
 		}
 		r.aggregateSubCRStatus(ctx, &shard)
@@ -538,7 +538,7 @@ func (r *Reconciler) reconcileAPIServices(ctx context.Context, shard *kubeshardv
 
 	caBundle := secret.Data["ca.crt"]
 
-	result, err := aggregation.Reconcile(ctx, r.Client, shard, caBundle, shard.Status.RegisteredAPIServices)
+	result, err := aggregation.Reconcile(ctx, r.Client, r.Scheme, shard, caBundle, shard.Status.RegisteredAPIServices)
 	if err != nil {
 		return err
 	}
@@ -624,7 +624,7 @@ current-context: default
 
 // reconcileNamespaceSync creates or updates a NamespaceSync CR that mirrors
 // namespaces from the primary cluster to the secondary API server.
-func (r *Reconciler) reconcileNamespaceSync(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
+func (r *Reconciler) reconcileNamespaceSync(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	nsSync := &kubeshardv1alpha1.NamespaceSync{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-ns-sync", shard.Name),
@@ -633,9 +633,8 @@ func (r *Reconciler) reconcileNamespaceSync(ctx context.Context, shard *kubeshar
 	}
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, nsSync, func() error {
-		nsSync.Labels = map[string]string{
-			ownerLabelKey:                  shard.Name,
-			"app.kubernetes.io/managed-by": "kube-shard-operator",
+		if err := tc.SetOwnership(nsSync); err != nil {
+			return err
 		}
 
 		nsSync.Spec = kubeshardv1alpha1.NamespaceSyncSpec{
@@ -663,7 +662,7 @@ func (r *Reconciler) reconcileNamespaceSync(ctx context.Context, shard *kubeshar
 
 // reconcileWebhookSync creates or updates a WebhookSync CR that mirrors
 // webhook configurations from the primary to the secondary API server.
-func (r *Reconciler) reconcileWebhookSync(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
+func (r *Reconciler) reconcileWebhookSync(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	apiGroups := make([]string, 0, len(shard.Spec.APIGroups))
 	for _, ag := range shard.Spec.APIGroups {
 		apiGroups = append(apiGroups, ag.Group)
@@ -677,9 +676,8 @@ func (r *Reconciler) reconcileWebhookSync(ctx context.Context, shard *kubeshardv
 	}
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, whSync, func() error {
-		whSync.Labels = map[string]string{
-			ownerLabelKey:                  shard.Name,
-			"app.kubernetes.io/managed-by": "kube-shard-operator",
+		if err := tc.SetOwnership(whSync); err != nil {
+			return err
 		}
 
 		whSync.Spec = kubeshardv1alpha1.WebhookSyncSpec{
@@ -854,6 +852,11 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&kubeshardv1alpha1.APIShard{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.Secret{}).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&kubeshardv1alpha1.NamespaceSync{}).
+		Owns(&kubeshardv1alpha1.WebhookSync{}).
+		Owns(&apiregistrationv1.APIService{}).
 		Watches(&apiextensionsv1.CustomResourceDefinition{}, &crdEventHandler{client: r.Client}).
 		Named("apishard").
 		Complete(r)
