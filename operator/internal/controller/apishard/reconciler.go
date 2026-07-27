@@ -252,6 +252,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			Message:            "No conflicting CRDs detected on primary",
 			ObservedGeneration: shard.Generation,
 		})
+		if shard.Status.Phase == kubeshardv1alpha1.PhaseBlocked {
+			shard.Status.Phase = ""
+		}
 	}
 
 	// Check health of deployments
@@ -261,7 +264,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	if healthy {
-		shard.Status.Phase = kubeshardv1alpha1.PhaseReady
+		if shard.Status.Phase != kubeshardv1alpha1.PhaseBlocked {
+			shard.Status.Phase = kubeshardv1alpha1.PhaseReady
+		}
 		shard.Status.SecondaryEndpoint = resources.SecondaryEndpoint(&shard)
 		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
 			Type:               kubeshardv1alpha1.ConditionSecondaryHealthy,

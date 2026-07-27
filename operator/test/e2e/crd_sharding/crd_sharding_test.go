@@ -148,6 +148,15 @@ spec:
 			g.Expect(output).To(Equal("True"), "CRDConflict condition should be True")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
+		By("verifying phase is Blocked during CRD conflict")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "apishard", shardName,
+				"-o", "jsonpath={.status.phase}")
+			output, err := run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Blocked"), "Phase should be Blocked when CRDs conflict")
+		}, 30*time.Second, 5*time.Second).Should(Succeed())
+
 		By("deleting the CRD from the primary (resolving the conflict)")
 		cmd = exec.Command("kubectl", "delete", "-f", filepath.Join(testdataDir, "dummy_crd.yaml"))
 		_, err = run(cmd)
@@ -160,6 +169,15 @@ spec:
 			output, err := run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("False"), "CRDConflict condition should be False after deletion")
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying phase returns to Ready after conflict resolution")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "apishard", shardName,
+				"-o", "jsonpath={.status.phase}")
+			output, err := run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("Ready"), "Phase should return to Ready after conflict resolution")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating the workload namespace with sync label")
