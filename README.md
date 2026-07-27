@@ -8,134 +8,199 @@ kube-shard runs a secondary `kube-apiserver` on a Kubernetes cluster, backed by 
 
 Controllers and clients are unaware of the split -- they talk to the main kube-apiserver as usual, and aggregation transparently routes requests to the correct backend.
 
+**Important:** CRDs for the offloaded API groups must be removed from the main API server. A CRD and an APIService for the same group/version cannot coexist -- the main kube-apiserver will only forward traffic to the secondary when the CRD is absent and an APIService is registered in its place.
+
 ## Why
 
 Etcd has a hard 8 GB storage limit. For workloads that generate large, high-churn CRDs (e.g., Tekton PipelineRuns, TaskRuns), this becomes the primary bottleneck on cluster capacity. PostgreSQL has no practical size limit for these workloads.
 
 ## Architecture
 
+### Operator Flow
+
+The kube-shard operator watches `APIShard` custom resources and reconciles the full stack:
+
+```mermaid
+flowchart TD
+    user["User / GitOps"] -->|"creates"| cr["APIShard CR"]
+    cr --> operator["kube-shard Operator"]
+
+    operator -->|"deploys"| kine["Kine Deployment + Service"]
+    operator -->|"deploys"| secondary["Secondary kube-apiserver\nDeployment + Service"]
+    operator -->|"generates"| certs["TLS Certificates\n(Secrets)"]
+    operator -->|"registers"| apisvc["APIService Objects\n(on primary)"]
+    operator -->|"installs"| crds["CRDs\n(on secondary)"]
+    operator -->|"creates"| nssync["NamespaceSync"]
+    operator -->|"creates"| whsync["WebhookSync"]
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Client / Controller                                    │
-│  (kubectl, Tekton controller, Kueue, etc.)             │
-└──────────────────────────┬──────────────────────────────┘
-                           │ standard API calls
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  Main kube-apiserver (manages Pods, Secrets, etc.)      │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │ APIService: forward tekton.dev → kube-shard        │  │
-│  └───────────────────────────────────────────────────┘  │
-└──────────────────────────┬──────────────────────────────┘
-                           │ aggregation proxy
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  kube-shard (secondary kube-apiserver)                   │
-│  • Serves configured CRDs (e.g., tekton.dev)           │
-│  • Delegates authz to main cluster (webhook)           │
-│  • Admission webhooks registered locally               │
-└──────────────────────────┬──────────────────────────────┘
-                           │ etcd v3 gRPC
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  Kine                                                   │
-│  (translates etcd API → SQL)                           │
-└──────────────────────────┬──────────────────────────────┘
-                           │ SQL
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│  PostgreSQL / SQLite / MySQL                            │
-└─────────────────────────────────────────────────────────┘
+
+### Request Flow
+
+Once deployed, API requests are transparently routed via Kubernetes aggregation:
+
+```mermaid
+flowchart TD
+    client["Client / Controller\n(kubectl, Tekton controller, etc.)"] -->|"standard API calls"| main["Main kube-apiserver"]
+    main -->|"APIService aggregation\n(tekton.dev, resolution.tekton.dev)"| secondary["Secondary kube-apiserver"]
+    secondary -->|"authz delegation\n(SubjectAccessReview)"| main
+    secondary -->|"etcd v3 gRPC"| kine["Kine"]
+    kine -->|"SQL"| db["PostgreSQL / SQLite"]
 ```
 
 ## Status
 
-**Early development / Proof of Concept**
-
-See [docs/design.md](docs/design.md) for the full design document.
+Operator-managed deployment. See [docs/design.md](docs/design.md) for the full design document.
 
 ## Getting Started
 
 ### Prerequisites
 
-- [kind](https://kind.sigs.k8s.io/) v0.20+
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - Docker or Podman
-- openssl
-- curl
+- Access to a Kubernetes cluster
 
-### Option A: Fresh kind cluster
+### Deploy the Operator
 
-Creates a dedicated kind cluster with the full stack from scratch:
-
-```bash
-make poc       # Setup: kind + Kine + secondary apiserver + Tekton
-make test      # Validate with a PipelineRun
-make clean     # Tear down
-```
-
-### Option B: Deploy on an existing cluster
-
-Deploys the secondary API server stack onto your current kubectl context. Useful when you already have a kind cluster running Konflux:
+From the `operator/` directory:
 
 ```bash
-# Deploy on current context (assumes Tekton is already installed)
-make poc-existing
+# Install CRDs
+make install
 
-# Or with full control over options:
-USE_EXISTING_CLUSTER=true \
-  SKIP_TEKTON_INSTALL=true \
-  MIRROR_NAMESPACES="default my-tenant-ns" \
-  ./hack/setup-poc.sh
+# Build and push the operator image
+make docker-build docker-push IMG=<your-registry>/kube-shard-operator:latest
+
+# Deploy the operator
+make deploy IMG=<your-registry>/kube-shard-operator:latest
 ```
 
-If the cluster already has Tekton CRDs installed, the script removes them from the primary and registers APIService objects instead (CRDs and APIService cannot coexist for the same group/version). The existing Tekton controller is restarted to pick up the new aggregation path.
+### Create an APIShard
 
-### Common operations
+Apply an `APIShard` CR to offload API groups to a secondary server. Example with in-cluster PostgreSQL:
+
+```yaml
+apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: APIShard
+metadata:
+  name: tekton-shard
+spec:
+  targetNamespace: kube-shard-operator
+  apiGroups:
+  - group: tekton.dev
+    versions: ["v1", "v1beta1"]
+  - group: resolution.tekton.dev
+    versions: ["v1beta1"]
+  storage:
+    type: InClusterPostgreSQL
+    inCluster:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
+  namespaceSync:
+    labelSelector:
+      matchLabels:
+        konflux.dev/type: tenant
+  secondary:
+    replicas: 1
+    image: registry.k8s.io/kube-apiserver:v1.32.0
+  kine:
+    replicas: 1
+    image: rancher/kine:v0.14.14
+```
+
+For development with SQLite (no external database needed):
+
+```yaml
+apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: APIShard
+metadata:
+  name: tekton-shard-dev
+spec:
+  targetNamespace: kube-shard-operator
+  apiGroups:
+  - group: tekton.dev
+    versions: ["v1"]
+  storage:
+    type: SQLite
+  namespaceSync:
+    labelSelector:
+      matchLabels:
+        konflux.dev/type: tenant
+  secondary:
+    replicas: 1
+  kine:
+    replicas: 1
+```
+
+### Check Status
 
 ```bash
-make test              # Validate with a PipelineRun
-make logs-apiserver    # Tail secondary API server logs
-make logs-kine         # Tail Kine logs
-make secondary ARGS="get crds"  # Direct kubectl to secondary
-
-# Direct access to the secondary API server (bypasses aggregation)
-./hack/kubectl-secondary.sh get pipelineruns -A
-./hack/kubectl-secondary.sh get namespaces
+kubectl get apishards
+kubectl get apishard tekton-shard -o yaml
 ```
 
-### Configuration
-
-All configuration is via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `USE_EXISTING_CLUSTER` | `false` | Skip kind creation, deploy on current kubectl context |
-| `SKIP_TEKTON_INSTALL` | `false` | Don't install Tekton controller (use existing) |
-| `KIND_CLUSTER_NAME` | `kube-shard-poc` | Name of the kind cluster to create/use |
-| `TEKTON_VERSION` | `v0.65.2` | Tekton Pipeline release to install |
-| `FRONT_PROXY_CA` | *(auto-detected)* | Path to the cluster's front-proxy CA cert |
-| `MIRROR_NAMESPACES` | `default` | Space-separated namespaces to create on secondary |
-| `SECONDARY_PORT` | `6444` | Local port for port-forward to secondary |
-| `KEEP_PORT_FWD` | `false` | Don't kill port-forward on exit (kubectl-secondary) |
-
-Image versions are managed in `deploy/poc/kustomization.yaml`. To override:
+### Uninstall
 
 ```bash
-cd deploy/poc
-kustomize edit set image rancher/kine:v0.16.3
-kustomize edit set image registry.k8s.io/kube-apiserver:v1.36.2
+# Delete the APIShard CR (tears down the secondary stack)
+kubectl delete apishard tekton-shard
+
+# Remove operator and CRDs
+cd operator
+make undeploy
+make uninstall
 ```
 
-### Architecture
+## Custom Resources
 
-The PoC deploys:
-- A secondary `kube-apiserver` backed by Kine (SQLite)
-- Tekton CRDs installed only on the secondary
-- APIService objects routing `tekton.dev` and `resolution.tekton.dev` through API aggregation
-- The Tekton Pipeline controller reconciling PipelineRuns transparently
+The operator defines three CRDs:
 
-The manifests use [Kustomize](https://kustomize.io/) for image management and are deployed via `kubectl apply -k deploy/poc`.
+| CRD | Scope | Purpose |
+|-----|-------|---------|
+| `APIShard` | Cluster | Deploys a secondary kube-apiserver + Kine stack and registers APIService objects |
+| `NamespaceSync` | Namespaced | Syncs namespaces from primary to secondary based on a label selector |
+| `WebhookSync` | Namespaced | Mirrors admission webhooks for sharded API groups to the secondary |
+
+### APIShard Spec Fields
+
+| Field | Description |
+|-------|-------------|
+| `targetNamespace` | Namespace where the secondary stack is deployed |
+| `apiGroups` | List of API groups and versions to offload |
+| `storage.type` | Backend: `SQLite`, `InClusterPostgreSQL`, or `PostgreSQL` (external) |
+| `storage.connectionSecretRef` | Secret reference for external PostgreSQL connection string |
+| `namespaceSync.labelSelector` | Label selector for namespaces to sync to the secondary |
+| `secondary.replicas` | Replica count for the secondary kube-apiserver |
+| `secondary.image` | Container image for kube-apiserver |
+| `kine.replicas` | Replica count for Kine |
+| `kine.image` | Container image for Kine |
+
+## Development
+
+```bash
+cd operator
+
+# Run unit tests
+make test
+
+# Run e2e tests (requires a running cluster)
+make test-e2e
+
+# Generate manifests and code after API changes
+make manifests generate
+
+# Run the operator locally (outside cluster)
+make run
+```
+
+## Legacy PoC Scripts (Deprecated)
+
+The shell scripts in `hack/` and Kustomize manifests in `deploy/poc/` are the original proof-of-concept automation. They are kept for reference only. The operator supersedes them entirely.
+
+See [AGENTS.md](AGENTS.md) for details on the legacy PoC structure.
 
 ## License
 
