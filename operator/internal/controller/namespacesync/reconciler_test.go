@@ -80,8 +80,8 @@ var _ = Describe("NamespaceSync Controller", func() {
 					Namespace: nsSync.Namespace,
 				},
 			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(namespaceSyncErrorRequeue))
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			updated := &kubeshardv1alpha1.NamespaceSync{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{

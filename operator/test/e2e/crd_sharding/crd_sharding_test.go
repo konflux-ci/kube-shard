@@ -36,7 +36,7 @@ const (
 	webhookNS       = "e2e-webhook"
 	webhookImage    = "localhost/e2e-webhook-server:e2e"
 	widgetName      = "test-widget"
-	widgetNamespace = "default"
+	widgetNamespace = "e2e-widget-workload"
 )
 
 var _ = Describe("CRD Sharding", Ordered, func() {
@@ -54,6 +54,7 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 			{"delete", "apishard", shardName, "--ignore-not-found", "--wait=false"},
 			{"delete", "crd", "widgets.example.com", "--ignore-not-found"},
 			{"delete", "ns", webhookNS, "--ignore-not-found", "--wait=false"},
+			{"delete", "ns", widgetNamespace, "--ignore-not-found", "--wait=false"},
 			{"delete", "ns", shardNamespace, "--ignore-not-found", "--wait=false"},
 		} {
 			cmd := exec.Command("kubectl", args...)
@@ -62,7 +63,7 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 
 		By("waiting for namespaces to be fully deleted")
 		Eventually(func(g Gomega) {
-			for _, ns := range []string{shardNamespace, webhookNS} {
+			for _, ns := range []string{shardNamespace, webhookNS, widgetNamespace} {
 				cmd := exec.Command("kubectl", "get", "ns", ns, "--no-headers")
 				output, _ := run(cmd)
 				g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")),
@@ -161,11 +162,25 @@ spec:
 			g.Expect(output).To(Equal("False"), "CRDConflict condition should be False after deletion")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-		By("labeling default namespace to trigger namespace sync")
+		By("creating the workload namespace with sync label")
+		cmd = exec.Command("kubectl", "create", "ns", widgetNamespace)
+		_, err = run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create workload namespace")
 		cmd = exec.Command("kubectl", "label", "ns", widgetNamespace,
-			"e2e-test=widget-shard", "--overwrite")
+			"e2e-test=widget-shard")
 		_, err = run(cmd)
 		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for namespace to be synced to the secondary")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "namespacesync",
+				"-n", shardNamespace,
+				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", shardName),
+				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
+			output, err := run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("True"), "NamespaceSync should be Ready")
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating the MutatingWebhookConfiguration")
 		cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "mutating_webhook.yaml"))
@@ -214,6 +229,10 @@ spec:
 	})
 
 	AfterAll(func() {
+		if os.Getenv("SKIP_CLEANUP") == "true" {
+			By("SKIP_CLEANUP=true — leaving resources in place for inspection")
+			return
+		}
 		By("cleaning up Widget CR")
 		cmd := exec.Command("kubectl", "delete", "widget", widgetName,
 			"-n", widgetNamespace, "--ignore-not-found", "--wait=false")
@@ -240,6 +259,11 @@ spec:
 
 		By("cleaning up webhook server namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", webhookNS,
+			"--ignore-not-found", "--wait=false")
+		_, _ = run(cmd)
+
+		By("cleaning up workload namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", widgetNamespace,
 			"--ignore-not-found", "--wait=false")
 		_, _ = run(cmd)
 	})

@@ -20,13 +20,11 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -56,7 +54,6 @@ import (
 )
 
 const (
-	requeueDelay = 30 * time.Second
 	fieldManager = "kube-shard-operator"
 
 	finalizerName     = "kube-shard.konflux-ci.dev/apiservice-cleanup"
@@ -110,8 +107,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	statusBefore := shard.Status.DeepCopy()
-
 	// Handle deletion: remove APIServices before allowing the APIShard to be
 	// deleted. A finalizer is used instead of ownerReferences because deletion
 	// order matters: if the namespace-scoped resources (secondary Deployment,
@@ -162,15 +157,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err := r.Status().Update(ctx, &shard); err != nil {
 			return ctrl.Result{}, err
 		}
-	}
-
-	// Fast path: when the shard is already Ready and the spec hasn't changed,
-	// skip the expensive SSA applies and only check health + aggregate sub-CR status.
-	// This avoids triggering Owns watch events from no-op SSA patches.
-	specUnchanged := shard.Status.ObservedGeneration == shard.Generation
-	alreadyReady := shard.Status.Phase == kubeshardv1alpha1.PhaseReady
-	if specUnchanged && alreadyReady {
-		return r.reconcileFastPath(ctx, &shard, statusBefore)
 	}
 
 	// Create a tracking client with ownership for SSA + orphan cleanup
@@ -322,83 +308,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		Message:            "All resources reconciled successfully",
 		ObservedGeneration: shard.Generation,
 	})
-	if !equality.Semantic.DeepEqual(statusBefore, &shard.Status) {
-		if err := r.Status().Update(ctx, &shard); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	if !healthy {
-		return ctrl.Result{RequeueAfter: requeueDelay}, nil
-	}
-
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-}
-
-// reconcileFastPath handles reconciliation when the APIShard is already Ready
-// and the spec hasn't changed. It only checks health and aggregates sub-CR
-// status, skipping the expensive SSA applies that would otherwise trigger
-// Owns watch events and create a tight reconciliation loop.
-func (r *Reconciler) reconcileFastPath(ctx context.Context, shard *kubeshardv1alpha1.APIShard, statusBefore *kubeshardv1alpha1.APIShardStatus) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-	logger.V(1).Info("Fast path: spec unchanged, skipping SSA applies")
-
-	healthy, err := r.checkDeploymentHealth(ctx, shard)
-	if err != nil {
+	if err := r.Status().Update(ctx, &shard); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if !healthy {
-		shard.Status.Phase = kubeshardv1alpha1.PhaseProvisioning
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionSecondaryHealthy,
-			Status:             metav1.ConditionFalse,
-			Reason:             "DeploymentNotReady",
-			Message:            "Secondary API server is not yet ready",
-			ObservedGeneration: shard.Generation,
-		})
-	} else {
-		r.aggregateSubCRStatus(ctx, shard)
-	}
-
-	// CRD conflict detection runs on the fast path so that the operator
-	// reacts promptly to CRDs being created or deleted on the primary,
-	// even when no spec change has occurred.
-	conflictResult, err := aggregation.DetectCRDConflicts(ctx, r.Client, shard)
-	if err != nil {
-		logger.Error(err, "Failed to detect CRD conflicts")
-	} else if conflictResult != nil && conflictResult.HasConflict {
-		if syncErr := r.syncCRDsToSecondary(ctx, shard, conflictResult.ConflictingCRDs); syncErr != nil {
-			logger.Error(syncErr, "Failed to sync conflicting CRDs to secondary")
-		}
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
-			Status:             metav1.ConditionTrue,
-			Reason:             "CRDsExistOnPrimary",
-			Message:            conflictResult.Message,
-			ObservedGeneration: shard.Generation,
-		})
-		shard.Status.Phase = kubeshardv1alpha1.PhaseBlocked
-	} else {
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
-			Status:             metav1.ConditionFalse,
-			Reason:             "NoConflicts",
-			Message:            "No conflicting CRDs detected on primary",
-			ObservedGeneration: shard.Generation,
-		})
-	}
-
-	if !equality.Semantic.DeepEqual(statusBefore, &shard.Status) {
-		if err := r.Status().Update(ctx, shard); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	if !healthy {
-		return ctrl.Result{RequeueAfter: requeueDelay}, nil
-	}
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	return ctrl.Result{}, nil
 }
 
 // ensureNamespace creates the target namespace if it doesn't already exist.
@@ -1081,8 +995,8 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ConfigMap{}).
-		Owns(&kubeshardv1alpha1.NamespaceSync{}, builder.WithPredicates(shardpredicate.IgnoreStatusUpdatesPredicate)).
-		Owns(&kubeshardv1alpha1.WebhookSync{}, builder.WithPredicates(shardpredicate.IgnoreStatusUpdatesPredicate)).
+		Owns(&kubeshardv1alpha1.NamespaceSync{}).
+		Owns(&kubeshardv1alpha1.WebhookSync{}).
 		Owns(&apiregistrationv1.APIService{}, builder.WithPredicates(shardpredicate.IgnoreStatusUpdatesPredicate)).
 		Owns(&rbacv1.ClusterRoleBinding{}).
 		Watches(&apiextensionsv1.CustomResourceDefinition{}, &crdEventHandler{client: r.Client}).

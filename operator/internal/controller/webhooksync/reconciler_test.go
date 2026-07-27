@@ -78,8 +78,8 @@ var _ = Describe("WebhookSync Controller", func() {
 					Namespace: whSync.Namespace,
 				},
 			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(errorRequeueInterval))
+			Expect(err).To(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			updated := &kubeshardv1alpha1.WebhookSync{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{

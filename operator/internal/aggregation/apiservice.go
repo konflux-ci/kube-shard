@@ -146,4 +146,3 @@ func desiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {
 func apiServiceName(version, group string) string {
 	return fmt.Sprintf("%s.%s", version, group)
 }
-

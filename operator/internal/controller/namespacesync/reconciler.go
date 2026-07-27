@@ -22,7 +22,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,12 +35,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
+	"github.com/konflux-ci/kube-shard/operator/internal/periodic"
 	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
 )
 
 const (
-	namespaceSyncRequeue      = 60 * time.Second
-	namespaceSyncErrorRequeue = 30 * time.Second
+	namespaceSyncPeriodicInterval = 5 * time.Minute
 )
 
 var systemNamespaces = sets.New[string](
@@ -79,8 +78,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	statusBefore := nsSync.Status.DeepCopy()
-
 	secondaryClient, err := r.buildSecondaryClient(ctx, &nsSync)
 	if err != nil {
 		logger.Error(err, "Failed to build secondary client")
@@ -92,12 +89,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			ObservedGeneration: nsSync.Generation,
 		})
 		nsSync.Status.ObservedGeneration = nsSync.Generation
-		if !equality.Semantic.DeepEqual(statusBefore, &nsSync.Status) {
-			if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
-				logger.Error(updateErr, "Failed to update NamespaceSync status")
-			}
+		if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
+			logger.Error(updateErr, "Failed to update NamespaceSync status")
 		}
-		return ctrl.Result{RequeueAfter: namespaceSyncErrorRequeue}, nil
+		return ctrl.Result{}, err
 	}
 
 	selector, err := metav1.LabelSelectorAsSelector(&nsSync.Spec.LabelSelector)
@@ -135,12 +130,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			ObservedGeneration: nsSync.Generation,
 		})
 		nsSync.Status.ObservedGeneration = nsSync.Generation
-		if !equality.Semantic.DeepEqual(statusBefore, &nsSync.Status) {
-			if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
-				logger.Error(updateErr, "Failed to update NamespaceSync status")
-			}
+		if updateErr := r.Status().Update(ctx, &nsSync); updateErr != nil {
+			logger.Error(updateErr, "Failed to update NamespaceSync status")
 		}
-		return ctrl.Result{RequeueAfter: namespaceSyncErrorRequeue}, nil
+		return ctrl.Result{}, err
 	}
 
 	secondaryExisting := sets.New[string]()
@@ -193,15 +186,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		})
 	}
 
-	if !equality.Semantic.DeepEqual(statusBefore, &nsSync.Status) {
-		now := metav1.Now()
-		nsSync.Status.LastSyncTime = &now
-		if err := r.Status().Update(ctx, &nsSync); err != nil {
-			return ctrl.Result{}, err
-		}
+	now := metav1.Now()
+	nsSync.Status.LastSyncTime = &now
+	if err := r.Status().Update(ctx, &nsSync); err != nil {
+		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: namespaceSyncRequeue}, nil
+	return ctrl.Result{}, nil
 }
 
 // buildSecondaryClient returns a cached controller-runtime client for the
@@ -262,8 +253,31 @@ func filterLabels(src map[string]string) map[string]string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	periodicSrc, ticker := periodic.NewTickerSource(namespaceSyncPeriodicInterval,
+		func(ctx context.Context) []reconcile.Request {
+			var list kubeshardv1alpha1.NamespaceSyncList
+			if err := r.List(ctx, &list); err != nil {
+				return nil
+			}
+			requests := make([]reconcile.Request, len(list.Items))
+			for i := range list.Items {
+				requests[i] = reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      list.Items[i].Name,
+						Namespace: list.Items[i].Namespace,
+					},
+				}
+			}
+			return requests
+		},
+	)
+	if err := mgr.Add(ticker); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.NamespaceSync{}).
+		WatchesRawSource(periodicSrc).
 		Watches(&corev1.Namespace{}, &namespaceEventHandler{client: r.Client}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToNamespaceSyncMapper(mgr.GetClient()),
