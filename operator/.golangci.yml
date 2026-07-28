@@ -44,6 +44,9 @@ linters:
         linters:
           - dupl
           - lll
+      - path: "internal/certs/*"
+        linters:
+          - goconst
       - path: "test/*"
         linters:
           - goconst
