@@ -33,8 +33,8 @@ import (
 const (
 	shardName       = "e2e-force-agg-shard"
 	shardNamespace  = "e2e-force-agg-ns"
-	widgetName      = "force-agg-widget"
-	widgetNamespace = "e2e-force-agg-workload"
+	gadgetName      = "force-agg-gadget"
+	gadgetNamespace = "e2e-force-agg-workload"
 )
 
 var _ = Describe("Force Aggregation", Ordered, func() {
@@ -46,11 +46,11 @@ var _ = Describe("Force Aggregation", Ordered, func() {
 
 		By("cleaning up resources from previous test runs")
 		for _, args := range [][]string{
-			{"delete", "widget", widgetName, "-n", widgetNamespace, "--ignore-not-found"},
-			{"delete", "apiservice", "v1.example.com", "--ignore-not-found"},
+			{"delete", "gadget", gadgetName, "-n", gadgetNamespace, "--ignore-not-found"},
+			{"delete", "apiservice", "v1.forceagg.example.com", "--ignore-not-found"},
 			{"delete", "apishard", shardName, "--ignore-not-found", "--wait=false"},
-			{"delete", "crd", "widgets.example.com", "--ignore-not-found"},
-			{"delete", "ns", widgetNamespace, "--ignore-not-found", "--wait=false"},
+			{"delete", "crd", "gadgets.forceagg.example.com", "--ignore-not-found"},
+			{"delete", "ns", gadgetNamespace, "--ignore-not-found", "--wait=false"},
 			{"delete", "ns", shardNamespace, "--ignore-not-found", "--wait=false"},
 		} {
 			cmd := exec.Command("kubectl", args...)
@@ -59,7 +59,7 @@ var _ = Describe("Force Aggregation", Ordered, func() {
 
 		By("waiting for namespaces to be fully deleted")
 		Eventually(func(g Gomega) {
-			for _, ns := range []string{shardNamespace, widgetNamespace} {
+			for _, ns := range []string{shardNamespace, gadgetNamespace} {
 				cmd := exec.Command("kubectl", "get", "ns", ns, "--no-headers")
 				output, _ := run(cmd)
 				g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")),
@@ -76,7 +76,7 @@ spec:
   targetNamespace: %s
   forceAggregation: true
   apiGroups:
-    - group: example.com
+    - group: forceagg.example.com
       versions:
         - v1
   storage:
@@ -105,10 +105,10 @@ spec:
 		}, 5*time.Minute, 10*time.Second).Should(Succeed())
 
 		By("creating the workload namespace with sync label")
-		cmd = exec.Command("kubectl", "create", "ns", widgetNamespace)
+		cmd = exec.Command("kubectl", "create", "ns", gadgetNamespace)
 		_, err = run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create workload namespace")
-		cmd = exec.Command("kubectl", "label", "ns", widgetNamespace,
+		cmd = exec.Command("kubectl", "label", "ns", gadgetNamespace,
 			"e2e-test=force-agg-shard")
 		_, err = run(cmd)
 		Expect(err).NotTo(HaveOccurred())
@@ -130,18 +130,18 @@ spec:
 			By("SKIP_CLEANUP=true — leaving resources in place for inspection")
 			return
 		}
-		By("cleaning up Widget CR")
-		cmd := exec.Command("kubectl", "delete", "widget", widgetName,
-			"-n", widgetNamespace, "--ignore-not-found", "--wait=false")
+		By("cleaning up Gadget CR")
+		cmd := exec.Command("kubectl", "delete", "gadget", gadgetName,
+			"-n", gadgetNamespace, "--ignore-not-found", "--wait=false")
 		_, _ = run(cmd)
 
 		By("cleaning up CRD from primary if present")
-		cmd = exec.Command("kubectl", "delete", "crd", "widgets.example.com", "--ignore-not-found")
+		cmd = exec.Command("kubectl", "delete", "crd", "gadgets.forceagg.example.com", "--ignore-not-found")
 		_, _ = run(cmd)
 
 		By("cleaning up APIService")
 		cmd = exec.Command("kubectl", "delete", "apiservice",
-			"v1.example.com", "--ignore-not-found")
+			"v1.forceagg.example.com", "--ignore-not-found")
 		_, _ = run(cmd)
 
 		By("cleaning up APIShard")
@@ -150,14 +150,14 @@ spec:
 		_, _ = run(cmd)
 
 		By("cleaning up workload namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", widgetNamespace,
+		cmd = exec.Command("kubectl", "delete", "ns", gadgetNamespace,
 			"--ignore-not-found", "--wait=false")
 		_, _ = run(cmd)
 	})
 
 	It("should not block when a conflicting CRD is installed on the primary", func() {
-		By("installing the dummy CRD on the primary (simulating a pre-existing CRD)")
-		cmd := exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "dummy_crd.yaml"))
+		By("installing the Gadget CRD on the primary (simulating a pre-existing CRD)")
+		cmd := exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "gadget_crd.yaml"))
 		_, err := run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRD on primary")
 
@@ -182,7 +182,7 @@ spec:
 
 	It("should label the APIService as automanaged=false", func() {
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "apiservice", "v1.example.com",
+			cmd := exec.Command("kubectl", "get", "apiservice", "v1.forceagg.example.com",
 				"-o", "jsonpath={.metadata.labels.kube-aggregator\\.kubernetes\\.io/automanaged}")
 			output, err := run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -191,25 +191,25 @@ spec:
 		}, 30*time.Second, 5*time.Second).Should(Succeed())
 	})
 
-	It("should route Widget CRs through aggregation despite the CRD conflict", func() {
-		By("creating a Widget CR via the primary API server")
-		widgetYAML := fmt.Sprintf(`apiVersion: example.com/v1
-kind: Widget
+	It("should route Gadget CRs through aggregation despite the CRD conflict", func() {
+		By("creating a Gadget CR via the primary API server")
+		gadgetYAML := fmt.Sprintf(`apiVersion: forceagg.example.com/v1
+kind: Gadget
 metadata:
   name: %s
   namespace: %s
 spec:
   message: "hello from force-aggregation e2e"
-`, widgetName, widgetNamespace)
+`, gadgetName, gadgetNamespace)
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = stringReader(widgetYAML)
+		cmd.Stdin = stringReader(gadgetYAML)
 		_, err := run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create Widget CR")
+		Expect(err).NotTo(HaveOccurred(), "Failed to create Gadget CR")
 
-		By("verifying the Widget is retrievable via the primary API")
+		By("verifying the Gadget is retrievable via the primary API")
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "widget", widgetName,
-				"-n", widgetNamespace,
+			cmd := exec.Command("kubectl", "get", "gadget", gadgetName,
+				"-n", gadgetNamespace,
 				"-o", "jsonpath={.spec.message}")
 			output, err := run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -298,18 +298,18 @@ current-context: default
 		kubeconfigPath := filepath.Join(tmpDir, "kubeconfig")
 		Expect(os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0600)).To(Succeed())
 
-		By("querying the Widget directly on the secondary (bypassing aggregation)")
+		By("querying the Gadget directly on the secondary (bypassing aggregation)")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl",
 				"--kubeconfig", kubeconfigPath,
-				"get", "widget", widgetName,
-				"-n", widgetNamespace,
+				"get", "gadget", gadgetName,
+				"-n", gadgetNamespace,
 				"-o", "jsonpath={.spec.message}")
 			output, err := run(cmd)
 			g.Expect(err).NotTo(HaveOccurred(),
-				"Failed to query Widget directly on secondary")
+				"Failed to query Gadget directly on secondary")
 			g.Expect(output).To(Equal("hello from force-aggregation e2e"),
-				"Widget should exist directly on the secondary, proving aggregation works with forceAggregation")
+				"Gadget should exist directly on the secondary, proving aggregation works with forceAggregation")
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 })
