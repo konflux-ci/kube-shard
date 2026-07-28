@@ -228,7 +228,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// When CRDs exist on the primary for aggregated groups, they shadow
 	// the APIService registration. The operator syncs them to the secondary
 	// so they can be served there, and reports the conflict so the user
-	// can delete the CRDs from the primary.
+	// can delete the CRDs from the primary (unless forceAggregation is set).
 	conflictResult, err := aggregation.DetectCRDConflicts(ctx, r.Client, &shard)
 	if err != nil {
 		logger.Error(err, "Failed to detect CRD conflicts")
@@ -236,14 +236,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if syncErr := r.syncCRDsToSecondary(ctx, &shard, conflictResult.ConflictingCRDs); syncErr != nil {
 			logger.Error(syncErr, "Failed to sync conflicting CRDs to secondary")
 		}
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
-			Status:             metav1.ConditionTrue,
-			Reason:             "CRDsExistOnPrimary",
-			Message:            conflictResult.Message,
-			ObservedGeneration: shard.Generation,
-		})
-		shard.Status.Phase = kubeshardv1alpha1.PhaseBlocked
+		if shard.Spec.ForceAggregation {
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
+				Status:             metav1.ConditionTrue,
+				Reason:             "ForcedAggregation",
+				Message:            conflictResult.Message + "; aggregation forced via spec.forceAggregation",
+				ObservedGeneration: shard.Generation,
+			})
+		} else {
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
+				Status:             metav1.ConditionTrue,
+				Reason:             "CRDsExistOnPrimary",
+				Message:            conflictResult.Message,
+				ObservedGeneration: shard.Generation,
+			})
+			shard.Status.Phase = kubeshardv1alpha1.PhaseBlocked
+		}
 	} else {
 		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
 			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
@@ -596,7 +606,7 @@ func (r *Reconciler) reconcileAPIServices(ctx context.Context, shard *kubeshardv
 
 	caBundle := secret.Data["ca.crt"]
 
-	result, err := aggregation.Reconcile(ctx, r.Client, r.Scheme, shard, caBundle, shard.Status.RegisteredAPIServices, fieldManager)
+	result, err := aggregation.Reconcile(ctx, r.Client, r.Scheme, shard, caBundle, shard.Status.RegisteredAPIServices, fieldManager, shard.Spec.ForceAggregation)
 	if err != nil {
 		return err
 	}

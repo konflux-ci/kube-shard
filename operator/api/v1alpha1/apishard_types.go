@@ -75,6 +75,15 @@ type APIShardSpec struct {
 	NamespaceSync   NamespaceSyncConfig `json:"namespaceSync"`
 	Secondary       SecondarySpec       `json:"secondary,omitempty"`
 	Kine            KineSpec            `json:"kine,omitempty"`
+
+	// ForceAggregation, when true, causes the operator to override the
+	// kube-aggregator auto-register controller by explicitly marking
+	// APIService objects as not auto-managed. This allows aggregation
+	// to work even when CRDs exist on the primary for the same API groups.
+	// When false (default), the operator reports the conflict and sets
+	// phase to Blocked, leaving remediation to the user.
+	// +kubebuilder:default=false
+	ForceAggregation bool `json:"forceAggregation,omitempty"`
 }
 
 type ConnectionSecretReference struct {

@@ -39,8 +39,17 @@ type ReconcileResult struct {
 	Registered []string
 }
 
+// AutoManagedLabelKey is the label key used by the kube-aggregator auto-register
+// controller to track APIServices it manages.
+const AutoManagedLabelKey = "kube-aggregator.kubernetes.io/automanaged"
+
 // Reconcile creates or updates APIService objects for the desired API groups and
 // deletes any previously registered APIServices that are no longer desired.
+//
+// When forceAggregation is true, the operator explicitly sets the automanaged
+// label to "false" via SSA with ForceOwnership. This prevents the kube-aggregator
+// auto-register controller from reclaiming the APIService when CRDs exist on the
+// primary for the same API group.
 //
 // Orphan detection uses the previouslyRegistered list (from APIShard status) rather
 // than labels or owner references — this prevents an attacker with APIService write
@@ -53,6 +62,7 @@ func Reconcile(
 	caBundle []byte,
 	previouslyRegistered []string,
 	fieldManager string,
+	forceAggregation bool,
 ) (*ReconcileResult, error) {
 	logger := log.FromContext(ctx)
 
@@ -70,14 +80,21 @@ func Reconcile(
 		for _, version := range apiGroup.Versions {
 			name := apiServiceName(version, apiGroup.Group)
 
-			apiSvc := &apiregistrationv1.APIService{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: "apiregistration.k8s.io/v1",
-					Kind:       "APIService",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Name: name,
-				},
+		objMeta := metav1.ObjectMeta{
+			Name: name,
+		}
+		if forceAggregation {
+			objMeta.Labels = map[string]string{
+				AutoManagedLabelKey: "false",
+			}
+		}
+
+		apiSvc := &apiregistrationv1.APIService{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "apiregistration.k8s.io/v1",
+				Kind:       "APIService",
+			},
+			ObjectMeta: objMeta,
 				Spec: apiregistrationv1.APIServiceSpec{
 					Group:                apiGroup.Group,
 					Version:              version,
