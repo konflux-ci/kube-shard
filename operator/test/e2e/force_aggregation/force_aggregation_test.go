@@ -57,6 +57,14 @@ var _ = Describe("Force Aggregation", Ordered, func() {
 			_, _ = run(cmd)
 		}
 
+		By("waiting for stale APIShard to be fully deleted")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "apishard", shardName, "--no-headers")
+			output, _ := run(cmd)
+			g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")),
+				"stale APIShard should be fully deleted before recreating")
+		}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
 		By("waiting for namespaces to be fully deleted")
 		Eventually(func(g Gomega) {
 			for _, ns := range []string{shardNamespace, gadgetNamespace} {
@@ -66,6 +74,11 @@ var _ = Describe("Force Aggregation", Ordered, func() {
 					fmt.Sprintf("namespace %s should be deleted", ns))
 			}
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("installing the Gadget CRD on the primary before the APIShard exists")
+		cmd := exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "gadget_crd.yaml"))
+		_, err := run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRD on primary")
 
 		By("creating the APIShard with forceAggregation enabled")
 		apishardYAML := fmt.Sprintf(`apiVersion: kube-shard.konflux-ci.dev/v1alpha1
@@ -90,9 +103,9 @@ spec:
   kine:
     replicas: 1
 `, shardName, shardNamespace)
-		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd = exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = stringReader(apishardYAML)
-		_, err := run(cmd)
+		_, err = run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create APIShard")
 
 		By("waiting for APIShard to become Ready")
@@ -153,15 +166,15 @@ spec:
 		cmd = exec.Command("kubectl", "delete", "ns", gadgetNamespace,
 			"--ignore-not-found", "--wait=false")
 		_, _ = run(cmd)
+
+		By("cleaning up target namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", shardNamespace,
+			"--ignore-not-found", "--wait=false")
+		_, _ = run(cmd)
 	})
 
-	It("should not block when a conflicting CRD is installed on the primary", func() {
-		By("installing the Gadget CRD on the primary (simulating a pre-existing CRD)")
-		cmd := exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "gadget_crd.yaml"))
-		_, err := run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRD on primary")
-
-		By("waiting for CRDConflict condition with ForcedAggregation reason")
+	It("should not block when a conflicting CRD already exists on the primary", func() {
+		By("verifying CRDConflict condition with ForcedAggregation reason")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName,
 				"-o", "jsonpath={.status.conditions[?(@.type=='CRDConflict')].reason}")
@@ -172,7 +185,7 @@ spec:
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("verifying phase is NOT Blocked (forceAggregation prevents blocking)")
-		cmd = exec.Command("kubectl", "get", "apishard", shardName,
+		cmd := exec.Command("kubectl", "get", "apishard", shardName,
 			"-o", "jsonpath={.status.phase}")
 		output, err := run(cmd)
 		Expect(err).NotTo(HaveOccurred())
