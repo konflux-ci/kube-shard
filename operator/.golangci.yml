@@ -30,6 +30,8 @@ linters:
     - unparam
     - unused
   settings:
+    goconst:
+      min-occurrences: 6
     revive:
       rules:
         - name: comment-spacings
@@ -42,3 +44,6 @@ linters:
         linters:
           - dupl
           - lll
+      - path: "test/*"
+        linters:
+          - goconst
