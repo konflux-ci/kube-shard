@@ -329,7 +329,7 @@ spec:
 	It("should store the resource directly on the secondary API server", func() {
 		tmpDir, err := os.MkdirTemp("", "e2e-secondary-auth-*")
 		Expect(err).NotTo(HaveOccurred())
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		By("extracting admin client credentials from cluster secrets")
 		for _, item := range []struct {
@@ -356,7 +356,7 @@ spec:
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		Expect(err).NotTo(HaveOccurred())
 		localPort := listener.Addr().(*net.TCPAddr).Port
-		listener.Close()
+		_ = listener.Close()
 
 		By(fmt.Sprintf("port-forwarding to secondary API server on localhost:%d", localPort))
 		ctx, cancel := context.WithCancel(context.Background())
@@ -380,7 +380,7 @@ spec:
 			if err != nil {
 				return err
 			}
-			conn.Close()
+			_ = conn.Close()
 			return nil
 		}, 30*time.Second, time.Second).Should(Succeed())
 
@@ -520,12 +520,12 @@ func loadImageToKindCluster(name string) error {
 	runtime := detectContainerRuntime()
 	if runtime == "podman" {
 		archive := filepath.Join(os.TempDir(), "e2e-webhook-server.tar")
-		os.Remove(archive)
+		_ = os.Remove(archive)
 		cmd := exec.Command("podman", "save", "-o", archive, name)
 		if _, err := run(cmd); err != nil {
 			return err
 		}
-		defer os.Remove(archive)
+		defer func() { _ = os.Remove(archive) }()
 
 		cmd = exec.Command("kind", "load", "image-archive", archive, "--name", cluster)
 		_, err := run(cmd)

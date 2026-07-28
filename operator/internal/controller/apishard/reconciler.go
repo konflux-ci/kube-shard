@@ -224,88 +224,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
-	// Detect CRD conflicts and sync conflicting CRDs to the secondary.
-	// When CRDs exist on the primary for aggregated groups, they shadow
-	// the APIService registration. The operator syncs them to the secondary
-	// so they can be served there, and reports the conflict so the user
-	// can delete the CRDs from the primary (unless forceAggregation is set).
-	conflictResult, err := aggregation.DetectCRDConflicts(ctx, r.Client, &shard)
-	if err != nil {
-		logger.Error(err, "Failed to detect CRD conflicts")
-	} else if conflictResult != nil && conflictResult.HasConflict {
-		if syncErr := r.syncCRDsToSecondary(ctx, &shard, conflictResult.ConflictingCRDs); syncErr != nil {
-			logger.Error(syncErr, "Failed to sync conflicting CRDs to secondary")
-		}
-		if shard.Spec.ForceAggregation {
-			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-				Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
-				Status:             metav1.ConditionTrue,
-				Reason:             "ForcedAggregation",
-				Message:            conflictResult.Message + "; aggregation forced via spec.forceAggregation",
-				ObservedGeneration: shard.Generation,
-			})
-		} else {
-			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-				Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
-				Status:             metav1.ConditionTrue,
-				Reason:             "CRDsExistOnPrimary",
-				Message:            conflictResult.Message,
-				ObservedGeneration: shard.Generation,
-			})
-			shard.Status.Phase = kubeshardv1alpha1.PhaseBlocked
-		}
-	} else {
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
-			Status:             metav1.ConditionFalse,
-			Reason:             "NoConflicts",
-			Message:            "No conflicting CRDs detected on primary",
-			ObservedGeneration: shard.Generation,
-		})
-		if shard.Status.Phase == kubeshardv1alpha1.PhaseBlocked {
-			shard.Status.Phase = ""
-		}
-	}
+	r.reconcileCRDConflicts(ctx, &shard)
 
-	// Check health of deployments
-	healthy, err := r.checkDeploymentHealth(ctx, &shard)
-	if err != nil {
+	if err := r.updateHealthStatus(ctx, tc, &shard); err != nil {
 		return ctrl.Result{}, err
-	}
-
-	if healthy {
-		if shard.Status.Phase != kubeshardv1alpha1.PhaseBlocked {
-			shard.Status.Phase = kubeshardv1alpha1.PhaseReady
-		}
-		shard.Status.SecondaryEndpoint = resources.SecondaryEndpoint(&shard)
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionSecondaryHealthy,
-			Status:             metav1.ConditionTrue,
-			Reason:             "DeploymentAvailable",
-			Message:            "Secondary API server is healthy",
-			ObservedGeneration: shard.Generation,
-		})
-
-		if r.verifySecondaryAuth(ctx, &shard) {
-			if err := r.reconcileNamespaceSync(ctx, tc, &shard); err != nil {
-				logger.Error(err, "Failed to reconcile NamespaceSync")
-			}
-			if err := r.reconcileWebhookSync(ctx, tc, &shard); err != nil {
-				logger.Error(err, "Failed to reconcile WebhookSync")
-			}
-			r.aggregateSubCRStatus(ctx, &shard)
-		} else {
-			logger.V(1).Info("Secondary auth not ready yet, deferring sub-CR creation")
-		}
-	} else {
-		shard.Status.Phase = kubeshardv1alpha1.PhaseProvisioning
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionSecondaryHealthy,
-			Status:             metav1.ConditionFalse,
-			Reason:             "DeploymentNotReady",
-			Message:            "Secondary API server is not yet ready",
-			ObservedGeneration: shard.Generation,
-		})
 	}
 
 	// Cleanup orphaned resources only after all apply steps have completed,
@@ -952,6 +874,102 @@ func (r *Reconciler) verifySecondaryAuth(ctx context.Context, shard *kubeshardv1
 	}
 
 	return true
+}
+
+// reconcileCRDConflicts detects CRD conflicts on the primary, syncs conflicting
+// CRDs to the secondary, and sets the CRDConflict status condition accordingly.
+func (r *Reconciler) reconcileCRDConflicts(ctx context.Context, shard *kubeshardv1alpha1.APIShard) {
+	logger := log.FromContext(ctx)
+
+	conflictResult, err := aggregation.DetectCRDConflicts(ctx, r.Client, shard)
+	if err != nil {
+		logger.Error(err, "Failed to detect CRD conflicts")
+		return
+	}
+
+	if conflictResult != nil && conflictResult.HasConflict {
+		if syncErr := r.syncCRDsToSecondary(ctx, shard, conflictResult.ConflictingCRDs); syncErr != nil {
+			logger.Error(syncErr, "Failed to sync conflicting CRDs to secondary")
+		}
+		if shard.Spec.ForceAggregation {
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
+				Status:             metav1.ConditionTrue,
+				Reason:             "ForcedAggregation",
+				Message:            conflictResult.Message + "; aggregation forced via spec.forceAggregation",
+				ObservedGeneration: shard.Generation,
+			})
+		} else {
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
+				Status:             metav1.ConditionTrue,
+				Reason:             "CRDsExistOnPrimary",
+				Message:            conflictResult.Message,
+				ObservedGeneration: shard.Generation,
+			})
+			shard.Status.Phase = kubeshardv1alpha1.PhaseBlocked
+		}
+		return
+	}
+
+	meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+		Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
+		Status:             metav1.ConditionFalse,
+		Reason:             "NoConflicts",
+		Message:            "No conflicting CRDs detected on primary",
+		ObservedGeneration: shard.Generation,
+	})
+	if shard.Status.Phase == kubeshardv1alpha1.PhaseBlocked {
+		shard.Status.Phase = ""
+	}
+}
+
+// updateHealthStatus checks deployment health, reconciles sub-CRs when the
+// secondary is ready, and sets the SecondaryHealthy status condition.
+func (r *Reconciler) updateHealthStatus(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	logger := log.FromContext(ctx)
+
+	healthy, err := r.checkDeploymentHealth(ctx, shard)
+	if err != nil {
+		return err
+	}
+
+	if healthy {
+		if shard.Status.Phase != kubeshardv1alpha1.PhaseBlocked {
+			shard.Status.Phase = kubeshardv1alpha1.PhaseReady
+		}
+		shard.Status.SecondaryEndpoint = resources.SecondaryEndpoint(shard)
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionSecondaryHealthy,
+			Status:             metav1.ConditionTrue,
+			Reason:             "DeploymentAvailable",
+			Message:            "Secondary API server is healthy",
+			ObservedGeneration: shard.Generation,
+		})
+
+		if r.verifySecondaryAuth(ctx, shard) {
+			if err := r.reconcileNamespaceSync(ctx, tc, shard); err != nil {
+				logger.Error(err, "Failed to reconcile NamespaceSync")
+			}
+			if err := r.reconcileWebhookSync(ctx, tc, shard); err != nil {
+				logger.Error(err, "Failed to reconcile WebhookSync")
+			}
+			r.aggregateSubCRStatus(ctx, shard)
+		} else {
+			logger.V(1).Info("Secondary auth not ready yet, deferring sub-CR creation")
+		}
+	} else {
+		shard.Status.Phase = kubeshardv1alpha1.PhaseProvisioning
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionSecondaryHealthy,
+			Status:             metav1.ConditionFalse,
+			Reason:             "DeploymentNotReady",
+			Message:            "Secondary API server is not yet ready",
+			ObservedGeneration: shard.Generation,
+		})
+	}
+
+	return nil
 }
 
 // checkDeploymentHealth returns true when both the Kine and secondary API server

@@ -113,7 +113,7 @@ func Reconcile(
 				return nil, fmt.Errorf("setting owner reference on APIService %s: %w", name, err)
 			}
 
-			if err := c.Patch(ctx, apiSvc, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+			if err := c.Patch(ctx, apiSvc, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil { //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
 				return nil, fmt.Errorf("applying APIService %s: %w", name, err)
 			}
 			logger.V(1).Info("Applied APIService", "name", name)

@@ -170,5 +170,5 @@ func TestReconcile_ServiceFieldAlwaysSet(t *testing.T) {
 // Verify that the fake client implements SSA Patch correctly for our use case.
 // This is a regression test to ensure we can use Patch(Apply) in tests.
 func init() {
-	_ = client.Apply
+	_ = client.Apply //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
 }

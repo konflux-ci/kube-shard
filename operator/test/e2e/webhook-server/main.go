@@ -70,5 +70,7 @@ func handleMutate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(resp)
+	if _, err := w.Write(resp); err != nil {
+		log.Printf("Failed to write response: %v", err)
+	}
 }

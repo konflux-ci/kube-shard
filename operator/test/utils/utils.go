@@ -190,12 +190,12 @@ func LoadImageToKindClusterWithName(name string) error {
 
 	if ContainerTool() == "podman" {
 		archive := filepath.Join(os.TempDir(), "e2e-operator-image.tar")
-		os.Remove(archive)
+		_ = os.Remove(archive)
 		cmd := exec.Command("podman", "save", "-o", archive, name)
 		if _, err := Run(cmd); err != nil {
 			return err
 		}
-		defer os.Remove(archive)
+		defer func() { _ = os.Remove(archive) }()
 
 		cmd = exec.Command("kind", "load", "image-archive", archive, "--name", cluster)
 		_, err := Run(cmd)
