@@ -105,6 +105,7 @@ metadata:
   name: %s
 spec:
   targetNamespace: %s
+  forceAggregation: false
   apiGroups:
     - group: example.com
       versions:

@@ -69,14 +69,14 @@ spec:
                   type: object
                 type: array
               forceAggregation:
-                default: false
+                default: true
                 description: |-
                   ForceAggregation, when true, causes the operator to override the
                   kube-aggregator auto-register controller by explicitly marking
                   APIService objects as not auto-managed. This allows aggregation
                   to work even when CRDs exist on the primary for the same API groups.
-                  When false (default), the operator reports the conflict and sets
-                  phase to Blocked, leaving remediation to the user.
+                  When false, the operator reports the conflict and sets phase to
+                  Blocked, leaving remediation to the user.
                 type: boolean
               kine:
                 properties:

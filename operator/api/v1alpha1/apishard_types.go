@@ -80,9 +80,9 @@ type APIShardSpec struct {
 	// kube-aggregator auto-register controller by explicitly marking
 	// APIService objects as not auto-managed. This allows aggregation
 	// to work even when CRDs exist on the primary for the same API groups.
-	// When false (default), the operator reports the conflict and sets
-	// phase to Blocked, leaving remediation to the user.
-	// +kubebuilder:default=false
+	// When false, the operator reports the conflict and sets phase to
+	// Blocked, leaving remediation to the user.
+	// +kubebuilder:default=true
 	ForceAggregation bool `json:"forceAggregation,omitempty"`
 }
 
