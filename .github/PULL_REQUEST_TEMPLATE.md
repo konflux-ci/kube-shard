@@ -8,6 +8,6 @@
 
 ## Verification
 
-- [ ] `make lint` passes
-- [ ] `make test` passes
-- [ ] `make manifests` and `make generate` run cleanly (if API/RBAC changes)
+- [ ] `make lint` passes (in `operator/`)
+- [ ] `make test` passes (in `operator/`)
+- [ ] `make manifests` and `make generate` run cleanly (in `operator/`, if API/RBAC changes)
