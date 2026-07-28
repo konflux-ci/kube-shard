@@ -33,7 +33,7 @@ spec:
         # Phase 3: enable admission webhooks for Tekton validation/mutation
         - --enable-admission-plugins=MutatingAdmissionWebhook,ValidatingAdmissionWebhook
         # Disabled admission plugins (see deploy/poc/secondary-apiserver.yaml for rationale)
-        - --disable-admission-plugins=NamespaceLifecycle,ServiceAccount
+        - --disable-admission-plugins=NamespaceLifecycle,ServiceAccount,ResourceQuota
         volumeMounts:
         - name: pki
           mountPath: /etc/kube/pki

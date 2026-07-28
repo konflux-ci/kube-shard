@@ -47,7 +47,11 @@ spec:
         #   All authentication happens on the primary; the secondary receives
         #   pre-authenticated identity via request headers. Enabling this plugin
         #   would require syncing ServiceAccount objects to the secondary.
-        - --disable-admission-plugins=NamespaceLifecycle,ServiceAccount
+        # - ResourceQuota: Quota objects are not synced from the primary. The
+        #   secondary only stores custom resources (not compute resources), so
+        #   typical quotas don't apply. Naively syncing count quotas would
+        #   create split-brain usage tracking.
+        - --disable-admission-plugins=NamespaceLifecycle,ServiceAccount,ResourceQuota
         ports:
         - containerPort: 6443
           name: https

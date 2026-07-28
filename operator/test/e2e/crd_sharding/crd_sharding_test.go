@@ -547,4 +547,3 @@ func detectContainerRuntime() string {
 func stringReader(s string) *strings.Reader {
 	return strings.NewReader(s)
 }
-

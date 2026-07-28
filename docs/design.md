@@ -86,7 +86,7 @@ The secondary kube-apiserver runs as a Deployment in a dedicated namespace (`tek
 | `--authorization-webhook-version` | `v1` | Required for k8s 1.36+ (default is v1beta1) |
 | `--requestheader-client-ca-file` | `/etc/kube/pki/front-proxy-ca.crt` | Trust the main KAS identity headers |
 | `--requestheader-allowed-names` | `front-proxy-client` | Only accept headers from the main KAS |
-| `--disable-admission-plugins` | `NamespaceLifecycle,ServiceAccount` | Namespaces are mirrored; SA tokens handled by main |
+| `--disable-admission-plugins` | `NamespaceLifecycle,ServiceAccount,ResourceQuota` | Namespaces are mirrored; SA tokens handled by main; see [Resource Policy Enforcement](#resource-policy-enforcement) |
 | `--enable-admission-plugins` | `MutatingAdmissionWebhook,ValidatingAdmissionWebhook` | For Tekton/Kueue webhooks |
 | `--tls-cert-file` / `--tls-private-key-file` | Serving cert for the Service | TLS between main KAS and secondary |
 | `--service-account-key-file` | SA signing public key | Required by kube-apiserver binary (unused for auth) |
@@ -159,6 +159,20 @@ The Phase 3 setup disables these non-functional conversion webhooks by setting `
 When a webhook config uses `clientConfig.service`, the API server looks up the Service object in its **own** store (not via DNS). Since the secondary doesn't have `tekton-pipelines-webhook` Service in its store, service-based webhook references fail.
 
 The Phase 3 setup transforms all `clientConfig.service` references to `clientConfig.url` (e.g., `https://tekton-pipelines-webhook.tekton-pipelines.svc:443/defaulting`). URL-based references use standard DNS resolution, which works because the secondary pod is in the same cluster and can resolve cluster-internal Service names.
+
+## Resource Policy Enforcement
+
+ResourceQuota and LimitRange are **not synced** from the primary to the secondary, and ResourceQuota is explicitly disabled as an admission plugin on the secondary. This is intentional, not an oversight.
+
+**LimitRange is irrelevant.** LimitRange only applies to Pods, Containers, and PersistentVolumeClaims. The secondary stores custom resources (PipelineRuns, TaskRuns, Pipelines, etc.) -- none of which are affected by LimitRange. Syncing it would be dead weight.
+
+**ResourceQuota is explicitly disabled** (`--disable-admission-plugins` includes `ResourceQuota`) because naively syncing quota objects from the primary would give a false sense of enforcement:
+
+- **Typical quotas don't apply.** Most ResourceQuota specs constrain compute resources (`cpu`, `memory`, `pods`, `services`). The secondary doesn't host any of those.
+- **Count quotas can't be naively synced.** While ResourceQuota supports `count/<resource>.<group>` quotas (e.g., `count/pipelineruns.tekton.dev`), blindly copying the primary's quota object to the secondary would be incorrect. The quota on the primary was set with the expectation that it governs the same API server that tracks usage. Once the resource lives on the secondary, the primary's quota object becomes a stale copy with independent usage tracking -- a split-brain problem.
+- **Making it explicit avoids confusion.** Without disabling the plugin, the ResourceQuota admission controller runs but finds no quota objects (since none are synced), silently allowing everything. Disabling it makes the behavior obvious.
+
+If resource count enforcement on the secondary is ever needed, the recommended approach is a **validating admission webhook** that checks the primary's quotas on each create request, since the primary remains the source of truth for policy. A dedicated `ResourceQuotaSync` controller (following the WebhookSync pattern) is another option, but would require solving the split-brain usage tracking problem.
 
 ## Namespace Synchronization
 

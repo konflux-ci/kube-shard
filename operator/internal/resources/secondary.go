@@ -89,8 +89,11 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 		// primary by the NamespaceSync controller — the secondary is not the source
 		// of truth. ServiceAccount is disabled because all authentication happens on
 		// the primary; the secondary receives pre-authenticated identity via
-		// request headers.
-		"--disable-admission-plugins=NamespaceLifecycle,ServiceAccount",
+		// request headers. ResourceQuota is disabled because quota objects are not
+		// synced from the primary; the secondary only stores custom resources
+		// (not compute resources), so typical quotas don't apply, and naively
+		// syncing count quotas would create split-brain usage tracking.
+		"--disable-admission-plugins=NamespaceLifecycle,ServiceAccount,ResourceQuota",
 		// Request-header (front-proxy) authentication: the primary's aggregation
 		// proxy presents a client cert signed by this CA and forwards the original
 		// user identity in X-Remote-* headers.

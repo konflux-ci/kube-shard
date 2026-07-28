@@ -31,7 +31,7 @@ spec:
         - --service-account-signing-key-file=/etc/kube/pki/sa-signing.key
         - --service-account-issuer=https://kubernetes.default.svc
         # Disabled admission plugins (see deploy/poc/secondary-apiserver.yaml for rationale)
-        - --disable-admission-plugins=NamespaceLifecycle,ServiceAccount
+        - --disable-admission-plugins=NamespaceLifecycle,ServiceAccount,ResourceQuota
         volumeMounts:
         - name: pki
           mountPath: /etc/kube/pki

@@ -80,21 +80,21 @@ func Reconcile(
 		for _, version := range apiGroup.Versions {
 			name := apiServiceName(version, apiGroup.Group)
 
-		objMeta := metav1.ObjectMeta{
-			Name: name,
-		}
-		if forceAggregation {
-			objMeta.Labels = map[string]string{
-				AutoManagedLabelKey: "false",
+			objMeta := metav1.ObjectMeta{
+				Name: name,
 			}
-		}
+			if forceAggregation {
+				objMeta.Labels = map[string]string{
+					AutoManagedLabelKey: "false",
+				}
+			}
 
-		apiSvc := &apiregistrationv1.APIService{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: "apiregistration.k8s.io/v1",
-				Kind:       "APIService",
-			},
-			ObjectMeta: objMeta,
+			apiSvc := &apiregistrationv1.APIService{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "apiregistration.k8s.io/v1",
+					Kind:       "APIService",
+				},
+				ObjectMeta: objMeta,
 				Spec: apiregistrationv1.APIServiceSpec{
 					Group:                apiGroup.Group,
 					Version:              version,
