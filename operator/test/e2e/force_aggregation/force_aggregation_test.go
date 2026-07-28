@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package crd_sharding
+package force_aggregation
 
 import (
 	"context"
@@ -31,15 +31,13 @@ import (
 )
 
 const (
-	shardName       = "e2e-widget-shard"
-	shardNamespace  = "e2e-widget-shard-ns"
-	webhookNS       = "e2e-webhook"
-	webhookImage    = "localhost/e2e-webhook-server:e2e"
-	widgetName      = "test-widget"
-	widgetNamespace = "e2e-widget-workload"
+	shardName       = "e2e-force-agg-shard"
+	shardNamespace  = "e2e-force-agg-ns"
+	widgetName      = "force-agg-widget"
+	widgetNamespace = "e2e-force-agg-workload"
 )
 
-var _ = Describe("CRD Sharding", Ordered, func() {
+var _ = Describe("Force Aggregation", Ordered, func() {
 	var testdataDir string
 
 	BeforeAll(func() {
@@ -49,11 +47,9 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 		By("cleaning up resources from previous test runs")
 		for _, args := range [][]string{
 			{"delete", "widget", widgetName, "-n", widgetNamespace, "--ignore-not-found"},
-			{"delete", "mutatingwebhookconfiguration", "e2e-widget-webhook", "--ignore-not-found"},
 			{"delete", "apiservice", "v1.example.com", "--ignore-not-found"},
 			{"delete", "apishard", shardName, "--ignore-not-found", "--wait=false"},
 			{"delete", "crd", "widgets.example.com", "--ignore-not-found"},
-			{"delete", "ns", webhookNS, "--ignore-not-found", "--wait=false"},
 			{"delete", "ns", widgetNamespace, "--ignore-not-found", "--wait=false"},
 			{"delete", "ns", shardNamespace, "--ignore-not-found", "--wait=false"},
 		} {
@@ -63,7 +59,7 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 
 		By("waiting for namespaces to be fully deleted")
 		Eventually(func(g Gomega) {
-			for _, ns := range []string{shardNamespace, webhookNS, widgetNamespace} {
+			for _, ns := range []string{shardNamespace, widgetNamespace} {
 				cmd := exec.Command("kubectl", "get", "ns", ns, "--no-headers")
 				output, _ := run(cmd)
 				g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")),
@@ -71,41 +67,14 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 			}
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-		By("building the webhook server image")
-		webhookServerDir := filepath.Join(projectDir, "test", "e2e", "webhook-server")
-		containerRuntime := detectContainerRuntime()
-		cmd := exec.Command(containerRuntime, "build", "-t", webhookImage, webhookServerDir)
-		_, err := run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to build webhook server image")
-
-		By("loading webhook server image into Kind")
-		err = loadImageToKindCluster(webhookImage)
-		Expect(err).NotTo(HaveOccurred(), "Failed to load webhook server image into Kind")
-
-		By("deploying the webhook server")
-		cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "webhook_server.yaml"))
-		_, err = run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy webhook server")
-
-		By("waiting for webhook server to be ready")
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "pods",
-				"-n", webhookNS,
-				"-l", "app=e2e-webhook-server",
-				"-o", "jsonpath={.items[0].status.phase}")
-			output, err := run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("Running"))
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-		By("creating the APIShard resource")
+		By("creating the APIShard with forceAggregation enabled")
 		apishardYAML := fmt.Sprintf(`apiVersion: kube-shard.konflux-ci.dev/v1alpha1
 kind: APIShard
 metadata:
   name: %s
 spec:
   targetNamespace: %s
-  forceAggregation: false
+  forceAggregation: true
   apiGroups:
     - group: example.com
       versions:
@@ -115,15 +84,15 @@ spec:
   namespaceSync:
     labelSelector:
       matchLabels:
-        e2e-test: widget-shard
+        e2e-test: force-agg-shard
   secondary:
     replicas: 1
   kine:
     replicas: 1
 `, shardName, shardNamespace)
-		cmd = exec.Command("kubectl", "apply", "-f", "-")
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = stringReader(apishardYAML)
-		_, err = run(cmd)
+		_, err := run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create APIShard")
 
 		By("waiting for APIShard to become Ready")
@@ -135,58 +104,12 @@ spec:
 			g.Expect(output).To(Equal("Ready"))
 		}, 5*time.Minute, 10*time.Second).Should(Succeed())
 
-		By("installing the dummy CRD on the primary (triggers operator CRD sync)")
-		cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "dummy_crd.yaml"))
-		_, err = run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRD on primary")
-
-		By("waiting for CRDConflict condition to be True (operator detected the conflict)")
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "apishard", shardName,
-				"-o", "jsonpath={.status.conditions[?(@.type=='CRDConflict')].status}")
-			output, err := run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"), "CRDConflict condition should be True")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-		By("verifying phase is Blocked during CRD conflict")
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "apishard", shardName,
-				"-o", "jsonpath={.status.phase}")
-			output, err := run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("Blocked"), "Phase should be Blocked when CRDs conflict")
-		}, 30*time.Second, 5*time.Second).Should(Succeed())
-
-		By("deleting the CRD from the primary (resolving the conflict)")
-		cmd = exec.Command("kubectl", "delete", "-f", filepath.Join(testdataDir, "dummy_crd.yaml"))
-		_, err = run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to delete CRD from primary")
-
-		By("waiting for CRDConflict condition to become False")
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "apishard", shardName,
-				"-o", "jsonpath={.status.conditions[?(@.type=='CRDConflict')].status}")
-			output, err := run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("False"), "CRDConflict condition should be False after deletion")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-		By("verifying phase returns to Ready after conflict resolution")
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "apishard", shardName,
-				"-o", "jsonpath={.status.phase}")
-			output, err := run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("Ready"), "Phase should return to Ready after conflict resolution")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
 		By("creating the workload namespace with sync label")
 		cmd = exec.Command("kubectl", "create", "ns", widgetNamespace)
 		_, err = run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create workload namespace")
 		cmd = exec.Command("kubectl", "label", "ns", widgetNamespace,
-			"e2e-test=widget-shard")
+			"e2e-test=force-agg-shard")
 		_, err = run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -200,51 +123,6 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("True"), "NamespaceSync should be Ready")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-		By("creating the MutatingWebhookConfiguration")
-		cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "mutating_webhook.yaml"))
-		_, err = run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create MutatingWebhookConfiguration")
-
-		By("waiting for cert-manager to inject CA bundle matching the webhook cert")
-		var expectedCA string
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "secret", "e2e-webhook-tls",
-				"-n", webhookNS, "-o", "jsonpath={.data.ca\\.crt}")
-			output, err := run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).NotTo(BeEmpty(), "webhook cert secret not ready")
-			expectedCA = output
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "mutatingwebhookconfiguration",
-				"e2e-widget-webhook",
-				"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
-			output, err := run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal(expectedCA), "CA bundle should match the webhook cert CA")
-		}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-		By("waiting for operator to create and reconcile WebhookSync with synced webhooks")
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "webhooksync",
-				"-n", shardNamespace,
-				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", shardName),
-				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
-			output, err := run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("True"))
-
-			cmd = exec.Command("kubectl", "get", "webhooksync",
-				"-n", shardNamespace,
-				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", shardName),
-				"-o", "jsonpath={.items[0].status.syncedWebhooks.mutating}")
-			output, err = run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).NotTo(Equal("0"), "at least one mutating webhook should be synced")
-			g.Expect(output).NotTo(BeEmpty(), "at least one mutating webhook should be synced")
-		}, 3*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {
@@ -261,11 +139,6 @@ spec:
 		cmd = exec.Command("kubectl", "delete", "crd", "widgets.example.com", "--ignore-not-found")
 		_, _ = run(cmd)
 
-		By("cleaning up MutatingWebhookConfiguration")
-		cmd = exec.Command("kubectl", "delete", "mutatingwebhookconfiguration",
-			"e2e-widget-webhook", "--ignore-not-found")
-		_, _ = run(cmd)
-
 		By("cleaning up APIService")
 		cmd = exec.Command("kubectl", "delete", "apiservice",
 			"v1.example.com", "--ignore-not-found")
@@ -276,18 +149,49 @@ spec:
 			"--ignore-not-found", "--wait=false")
 		_, _ = run(cmd)
 
-		By("cleaning up webhook server namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", webhookNS,
-			"--ignore-not-found", "--wait=false")
-		_, _ = run(cmd)
-
 		By("cleaning up workload namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", widgetNamespace,
 			"--ignore-not-found", "--wait=false")
 		_, _ = run(cmd)
 	})
 
-	It("should route Widget CRs through aggregation", func() {
+	It("should not block when a conflicting CRD is installed on the primary", func() {
+		By("installing the dummy CRD on the primary (simulating a pre-existing CRD)")
+		cmd := exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "dummy_crd.yaml"))
+		_, err := run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to install CRD on primary")
+
+		By("waiting for CRDConflict condition with ForcedAggregation reason")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "apishard", shardName,
+				"-o", "jsonpath={.status.conditions[?(@.type=='CRDConflict')].reason}")
+			output, err := run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("ForcedAggregation"),
+				"CRDConflict reason should be ForcedAggregation when force is enabled")
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying phase is NOT Blocked (forceAggregation prevents blocking)")
+		cmd = exec.Command("kubectl", "get", "apishard", shardName,
+			"-o", "jsonpath={.status.phase}")
+		output, err := run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(output).NotTo(Equal("Blocked"),
+			"Phase should not be Blocked when forceAggregation is true")
+	})
+
+	It("should label the APIService as automanaged=false", func() {
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "apiservice", "v1.example.com",
+				"-o", "jsonpath={.metadata.labels.kube-aggregator\\.kubernetes\\.io/automanaged}")
+			output, err := run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("false"),
+				"APIService should have automanaged=false when forceAggregation is enabled")
+		}, 30*time.Second, 5*time.Second).Should(Succeed())
+	})
+
+	It("should route Widget CRs through aggregation despite the CRD conflict", func() {
 		By("creating a Widget CR via the primary API server")
 		widgetYAML := fmt.Sprintf(`apiVersion: example.com/v1
 kind: Widget
@@ -295,7 +199,7 @@ metadata:
   name: %s
   namespace: %s
 spec:
-  message: "hello from e2e test"
+  message: "hello from force-aggregation e2e"
 `, widgetName, widgetNamespace)
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = stringReader(widgetYAML)
@@ -309,25 +213,12 @@ spec:
 				"-o", "jsonpath={.spec.message}")
 			output, err := run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("hello from e2e test"))
+			g.Expect(output).To(Equal("hello from force-aggregation e2e"))
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 
-	It("should have the webhook annotation proving mutation occurred", func() {
-		By("checking the Widget for the webhook annotation")
-		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "get", "widget", widgetName,
-				"-n", widgetNamespace,
-				"-o", `jsonpath={.metadata.annotations.e2e-webhook\.example\.com/processed}`)
-			output, err := run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("true"),
-				"Webhook annotation not found -- webhook was not invoked on the secondary")
-		}, 30*time.Second, 2*time.Second).Should(Succeed())
-	})
-
-	It("should store the resource directly on the secondary API server", func() {
-		tmpDir, err := os.MkdirTemp("", "e2e-secondary-auth-*")
+	It("should store the resource on the secondary API server", func() {
+		tmpDir, err := os.MkdirTemp("", "e2e-force-agg-auth-*")
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
@@ -417,21 +308,18 @@ current-context: default
 			output, err := run(cmd)
 			g.Expect(err).NotTo(HaveOccurred(),
 				"Failed to query Widget directly on secondary")
-			g.Expect(output).To(Equal("hello from e2e test"),
-				"Widget should exist directly on the secondary, proving it's stored in Kine")
+			g.Expect(output).To(Equal("hello from force-aggregation e2e"),
+				"Widget should exist directly on the secondary, proving aggregation works with forceAggregation")
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
-
 })
 
-// getProjectDir returns the operator project root directory.
 func getProjectDir() string {
 	wd, err := os.Getwd()
 	Expect(err).NotTo(HaveOccurred())
 	return filepath.Join(wd, "..", "..", "..")
 }
 
-// run executes the provided command and returns its combined output.
 func run(cmd *exec.Cmd) (string, error) {
 	command := strings.Join(cmd.Args, " ")
 	_, _ = fmt.Fprintf(GinkgoWriter, "running: %s\n", command)
@@ -440,42 +328,6 @@ func run(cmd *exec.Cmd) (string, error) {
 		return string(output), fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
 	}
 	return string(output), nil
-}
-
-// loadImageToKindCluster loads a container image into the Kind cluster.
-// For podman, it saves to a tarball and uses `kind load image-archive`.
-func loadImageToKindCluster(name string) error {
-	cluster := "kind"
-	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
-		cluster = v
-	}
-
-	runtime := detectContainerRuntime()
-	if runtime == "podman" {
-		archive := filepath.Join(os.TempDir(), "e2e-webhook-server.tar")
-		_ = os.Remove(archive)
-		cmd := exec.Command("podman", "save", "-o", archive, name)
-		if _, err := run(cmd); err != nil {
-			return err
-		}
-		defer func() { _ = os.Remove(archive) }()
-
-		cmd = exec.Command("kind", "load", "image-archive", archive, "--name", cluster)
-		_, err := run(cmd)
-		return err
-	}
-
-	cmd := exec.Command("kind", "load", "docker-image", name, "--name", cluster)
-	_, err := run(cmd)
-	return err
-}
-
-// detectContainerRuntime returns "podman" if available, otherwise "docker".
-func detectContainerRuntime() string {
-	if _, err := exec.LookPath("podman"); err == nil {
-		return "podman"
-	}
-	return "docker"
 }
 
 func stringReader(s string) *strings.Reader {
