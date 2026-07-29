@@ -41,10 +41,13 @@ type StorageSpec struct {
 	InCluster           *InClusterStorage   `json:"inCluster,omitempty"`
 }
 
+// SecretKeyReference identifies a specific key within a Secret.
+// The Secret must reside in the APIShard's targetNamespace (same namespace as Kine).
 type SecretKeyReference struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
-	Key       string `json:"key"`
+	// Name of the Secret.
+	Name string `json:"name"`
+	// Key within the Secret that contains the Kine-compatible connection string.
+	Key string `json:"key"`
 }
 
 type InClusterStorage struct {

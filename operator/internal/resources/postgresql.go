@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	DefaultPostgreSQLImage = "registry.access.redhat.com/rhel9/postgresql-16:latest"
+	DefaultPostgreSQLImage = "registry.access.redhat.com/hi/postgresql:18.4"
 	PostgreSQLPort         = 5432
 )
 
@@ -95,6 +95,9 @@ func BuildPostgreSQLSecret(shard *kubeshardv1alpha1.APIShard, password string) *
 }
 
 // BuildPostgreSQLDeployment creates the in-cluster PostgreSQL deployment.
+// NOTE: Data is stored on an EmptyDir volume and is lost when the pod restarts.
+// InClusterPostgreSQL is intended for development and staging environments.
+// For production, use storage.type=PostgreSQL with a managed database.
 func BuildPostgreSQLDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	name := PostgreSQLDeploymentName(shard)
 	labels := postgresLabels(shard)

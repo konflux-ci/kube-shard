@@ -76,6 +76,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	}
 
 	var envFrom []corev1.EnvFromSource
+	var env []corev1.EnvVar
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
 
@@ -95,10 +96,14 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	switch shard.Spec.Storage.Type {
 	case kubeshardv1alpha1.StorageTypePostgreSQL:
 		if shard.Spec.Storage.ConnectionSecretRef != nil {
-			envFrom = append(envFrom, corev1.EnvFromSource{
-				SecretRef: &corev1.SecretEnvSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: shard.Spec.Storage.ConnectionSecretRef.Name,
+			env = append(env, corev1.EnvVar{
+				Name: "KINE_ENDPOINT",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: shard.Spec.Storage.ConnectionSecretRef.Name,
+						},
+						Key: shard.Spec.Storage.ConnectionSecretRef.Key,
 					},
 				},
 			})
@@ -139,6 +144,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 							Name:         "kine",
 							Image:        image,
 							Args:         args,
+							Env:          env,
 							EnvFrom:      envFrom,
 							VolumeMounts: volumeMounts,
 							Ports: []corev1.ContainerPort{
