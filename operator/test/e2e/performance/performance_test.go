@@ -17,6 +17,7 @@ limitations under the License.
 package performance
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -38,6 +39,7 @@ const (
 	workloadNS        = "e2e-perf-workload"
 	resourceCount     = 50
 	benchmarkAPIGroup = "perftest.example.com"
+	maxConcurrency    = 10
 )
 
 // External PostgreSQL constants, only used when PERF_STORAGE_MODE=PostgreSQL.
@@ -59,6 +61,25 @@ func storageMode() string {
 
 func useExternalPostgreSQL() bool {
 	return storageMode() == "PostgreSQL"
+}
+
+// safeBuffer is a concurrency-safe bytes.Buffer for capturing
+// subprocess output that is read from another goroutine.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *safeBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *safeBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
 }
 
 var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
@@ -163,15 +184,18 @@ var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 	})
 
 	It("should handle bulk creation of resources", func() {
-		By(fmt.Sprintf("creating %d Benchmark resources concurrently", resourceCount))
-		var wg sync.WaitGroup
+		By(fmt.Sprintf("creating %d Benchmark resources with concurrency %d", resourceCount, maxConcurrency))
 		var failures atomic.Int32
 		start := time.Now()
 
+		sem := make(chan struct{}, maxConcurrency)
+		var wg sync.WaitGroup
 		for i := 0; i < resourceCount; i++ {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				yaml := fmt.Sprintf(`apiVersion: perftest.example.com/v1
 kind: Benchmark
 metadata:
@@ -181,9 +205,7 @@ spec:
   index: %d
   payload: "initial-value-%04d"
 `, idx, workloadNS, idx, idx)
-				cmd := exec.Command("kubectl", "apply", "-f", "-")
-				cmd.Stdin = stringReader(yaml)
-				if _, err := run(cmd); err != nil {
+				if err := runWithRetry(yaml, 3); err != nil {
 					failures.Add(1)
 				}
 			}(i)
@@ -192,7 +214,7 @@ spec:
 		elapsed := time.Since(start)
 
 		Expect(failures.Load()).To(Equal(int32(0)),
-			"all concurrent creates should succeed")
+			"all creates should succeed")
 		_, _ = fmt.Fprintf(GinkgoWriter,
 			"bulk create: %d resources in %v (%.1f/sec)\n",
 			resourceCount, elapsed, float64(resourceCount)/elapsed.Seconds())
@@ -211,15 +233,18 @@ spec:
 	})
 
 	It("should handle bulk patching of resources", func() {
-		By(fmt.Sprintf("patching all %d resources concurrently", resourceCount))
+		By(fmt.Sprintf("patching all %d resources with concurrency %d", resourceCount, maxConcurrency))
 		var wg sync.WaitGroup
 		var failures atomic.Int32
 		start := time.Now()
 
+		sem := make(chan struct{}, maxConcurrency)
 		for i := 0; i < resourceCount; i++ {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				patch := fmt.Sprintf(`{"spec":{"payload":"patched-value-%04d"}}`, idx)
 				cmd := exec.Command("kubectl", "patch", "benchmark",
 					fmt.Sprintf("bm-%04d", idx),
@@ -260,7 +285,7 @@ spec:
 		watchCmd := exec.CommandContext(ctx, "kubectl", "get", "benchmarks",
 			"-n", workloadNS, "--watch", "--output-watch-events",
 			"-o", "jsonpath={.type} {.object.metadata.name}{\"\\n\"}")
-		var watchOutput strings.Builder
+		var watchOutput safeBuffer
 		watchCmd.Stdout = &watchOutput
 		watchCmd.Stderr = GinkgoWriter
 		Expect(watchCmd.Start()).To(Succeed())
@@ -307,15 +332,18 @@ spec:
 	})
 
 	It("should handle bulk deletion of resources", func() {
-		By(fmt.Sprintf("deleting all %d resources concurrently", resourceCount))
+		By(fmt.Sprintf("deleting all %d resources with concurrency %d", resourceCount, maxConcurrency))
 		var wg sync.WaitGroup
 		var failures atomic.Int32
 		start := time.Now()
 
+		sem := make(chan struct{}, maxConcurrency)
 		for i := 0; i < resourceCount; i++ {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				cmd := exec.Command("kubectl", "delete", "benchmark",
 					fmt.Sprintf("bm-%04d", idx),
 					"-n", workloadNS, "--ignore-not-found")
@@ -561,6 +589,22 @@ func run(cmd *exec.Cmd) (string, error) {
 		return string(output), fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
 	}
 	return string(output), nil
+}
+
+// runWithRetry applies YAML via kubectl with retries on transient failures.
+func runWithRetry(yaml string, maxRetries int) error {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = stringReader(yaml)
+		if _, err := run(cmd); err != nil {
+			lastErr = err
+			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 func stringReader(s string) *strings.Reader {

@@ -380,6 +380,13 @@ func (r *Reconciler) validateExternalPostgreSQLSecret(ctx context.Context, shard
 			})
 			return fmt.Errorf("connection secret %q not found in namespace %q", ref.Name, shard.Spec.TargetNamespace)
 		}
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionStorageReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "SecretReadError",
+			Message:            fmt.Sprintf("Failed to read Secret %q: %v", ref.Name, err),
+			ObservedGeneration: shard.Generation,
+		})
 		return fmt.Errorf("reading connection secret %q: %w", ref.Name, err)
 	}
 
@@ -1098,6 +1105,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(
 			requestHeaderCAMapper(mgr.GetClient()),
 		)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
+			connectionSecretMapper(mgr.GetClient()),
+		)).
 		Named("apishard").
 		Complete(r)
 }
@@ -1120,6 +1130,35 @@ func requestHeaderCAMapper(c client.Client) handler.MapFunc {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: shards.Items[i].Name},
 			})
+		}
+		return requests
+	}
+}
+
+// connectionSecretMapper returns a MapFunc that triggers reconciliation of
+// APIShards using external PostgreSQL when their referenced connection Secret
+// changes. This ensures StorageReady is re-evaluated on Secret updates.
+func connectionSecretMapper(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var shards kubeshardv1alpha1.APIShardList
+		if err := c.List(ctx, &shards); err != nil {
+			return nil
+		}
+		var requests []reconcile.Request
+		for i := range shards.Items {
+			shard := &shards.Items[i]
+			if shard.Spec.Storage.Type != kubeshardv1alpha1.StorageTypePostgreSQL {
+				continue
+			}
+			if shard.Spec.Storage.ConnectionSecretRef == nil {
+				continue
+			}
+			if shard.Spec.TargetNamespace == obj.GetNamespace() &&
+				shard.Spec.Storage.ConnectionSecretRef.Name == obj.GetName() {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: shard.Name},
+				})
+			}
 		}
 		return requests
 	}
