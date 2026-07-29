@@ -168,17 +168,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		FieldManager:      fieldManager,
 	})
 
-	// Reconcile in-cluster PostgreSQL if configured
-	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeInClusterPostgreSQL {
-		if err := r.reconcileInClusterPostgreSQL(ctx, tc, &shard); err != nil {
-			logger.Error(err, "Failed to reconcile in-cluster PostgreSQL")
-			return r.setErrorAndRequeue(ctx, &shard, err)
-		}
-	}
-
-	// Reconcile Kine
-	if err := r.reconcileKine(ctx, tc, &shard); err != nil {
-		logger.Error(err, "Failed to reconcile Kine")
+	// Reconcile storage backend and Kine
+	if err := r.reconcileStorage(ctx, tc, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile storage")
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
@@ -278,6 +270,21 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alph
 	return r.Create(ctx, ns)
 }
 
+// reconcileStorage validates or provisions the storage backend, then deploys Kine.
+func (r *Reconciler) reconcileStorage(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	switch shard.Spec.Storage.Type {
+	case kubeshardv1alpha1.StorageTypeInClusterPostgreSQL:
+		if err := r.reconcileInClusterPostgreSQL(ctx, tc, shard); err != nil {
+			return fmt.Errorf("in-cluster PostgreSQL: %w", err)
+		}
+	case kubeshardv1alpha1.StorageTypePostgreSQL:
+		if err := r.validateExternalPostgreSQLSecret(ctx, shard); err != nil {
+			return fmt.Errorf("external PostgreSQL: %w", err)
+		}
+	}
+	return r.reconcileKine(ctx, tc, shard)
+}
+
 // reconcileKine ensures the Kine deployment and service exist in the target namespace.
 // Kine translates etcd gRPC calls into SQL queries against the configured storage backend.
 func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
@@ -339,6 +346,68 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 		return fmt.Errorf("postgresql service: %w", err)
 	}
 
+	return nil
+}
+
+// validateExternalPostgreSQLSecret checks that the user-provided Secret exists
+// in targetNamespace and contains the key specified in connectionSecretRef.
+// Sets the StorageReady condition on the APIShard status.
+func (r *Reconciler) validateExternalPostgreSQLSecret(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
+	ref := shard.Spec.Storage.ConnectionSecretRef
+	if ref == nil {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionStorageReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "MissingConnectionSecretRef",
+			Message:            "storage.type is PostgreSQL but connectionSecretRef is not set",
+			ObservedGeneration: shard.Generation,
+		})
+		return fmt.Errorf("storage.type is PostgreSQL but connectionSecretRef is not set")
+	}
+
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      ref.Name,
+		Namespace: shard.Spec.TargetNamespace,
+	}, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:               kubeshardv1alpha1.ConditionStorageReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             "SecretNotFound",
+				Message:            fmt.Sprintf("Secret %q not found in namespace %q", ref.Name, shard.Spec.TargetNamespace),
+				ObservedGeneration: shard.Generation,
+			})
+			return fmt.Errorf("connection secret %q not found in namespace %q", ref.Name, shard.Spec.TargetNamespace)
+		}
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionStorageReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "SecretReadError",
+			Message:            fmt.Sprintf("Failed to read Secret %q: %v", ref.Name, err),
+			ObservedGeneration: shard.Generation,
+		})
+		return fmt.Errorf("reading connection secret %q: %w", ref.Name, err)
+	}
+
+	if _, ok := secret.Data[ref.Key]; !ok {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionStorageReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "KeyNotFound",
+			Message:            fmt.Sprintf("Key %q not found in Secret %q", ref.Key, ref.Name),
+			ObservedGeneration: shard.Generation,
+		})
+		return fmt.Errorf("key %q not found in secret %q", ref.Key, ref.Name)
+	}
+
+	meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+		Type:               kubeshardv1alpha1.ConditionStorageReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "SecretValid",
+		Message:            fmt.Sprintf("Connection secret %q validated", ref.Name),
+		ObservedGeneration: shard.Generation,
+	})
 	return nil
 }
 
@@ -1036,6 +1105,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(
 			requestHeaderCAMapper(mgr.GetClient()),
 		)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
+			connectionSecretMapper(mgr.GetClient()),
+		)).
 		Named("apishard").
 		Complete(r)
 }
@@ -1058,6 +1130,35 @@ func requestHeaderCAMapper(c client.Client) handler.MapFunc {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: shards.Items[i].Name},
 			})
+		}
+		return requests
+	}
+}
+
+// connectionSecretMapper returns a MapFunc that triggers reconciliation of
+// APIShards using external PostgreSQL when their referenced connection Secret
+// changes. This ensures StorageReady is re-evaluated on Secret updates.
+func connectionSecretMapper(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var shards kubeshardv1alpha1.APIShardList
+		if err := c.List(ctx, &shards); err != nil {
+			return nil
+		}
+		var requests []reconcile.Request
+		for i := range shards.Items {
+			shard := &shards.Items[i]
+			if shard.Spec.Storage.Type != kubeshardv1alpha1.StorageTypePostgreSQL {
+				continue
+			}
+			if shard.Spec.Storage.ConnectionSecretRef == nil {
+				continue
+			}
+			if shard.Spec.TargetNamespace == obj.GetNamespace() &&
+				shard.Spec.Storage.ConnectionSecretRef.Name == obj.GetName() {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: shard.Name},
+				})
+			}
 		}
 		return requests
 	}

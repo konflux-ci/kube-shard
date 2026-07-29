@@ -79,6 +79,7 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 	go test ./test/e2e/ -v -ginkgo.v
 	go test ./test/e2e/force_aggregation/ -v -ginkgo.v
 	go test ./test/e2e/crd_sharding/ -v -ginkgo.v
+	go test ./test/e2e/performance/ -v -ginkgo.v -timeout 20m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

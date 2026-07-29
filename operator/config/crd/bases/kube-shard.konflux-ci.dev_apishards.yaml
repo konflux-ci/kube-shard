@@ -213,17 +213,20 @@ spec:
               storage:
                 properties:
                   connectionSecretRef:
+                    description: |-
+                      SecretKeyReference identifies a specific key within a Secret.
+                      The Secret must reside in the APIShard's targetNamespace (same namespace as Kine).
                     properties:
                       key:
+                        description: Key within the Secret that contains the Kine-compatible
+                          connection string.
                         type: string
                       name:
-                        type: string
-                      namespace:
+                        description: Name of the Secret.
                         type: string
                     required:
                     - key
                     - name
-                    - namespace
                     type: object
                   inCluster:
                     properties:

@@ -35,6 +35,9 @@ const (
 	// ConditionWebhookSyncReady indicates the webhook sync controller is active.
 	ConditionWebhookSyncReady = "WebhookSyncReady"
 
+	// ConditionStorageReady indicates whether the storage backend is properly configured.
+	ConditionStorageReady = "StorageReady"
+
 	// ConditionReconciled indicates whether the last reconcile loop completed successfully.
 	ConditionReconciled = "Reconciled"
 )
