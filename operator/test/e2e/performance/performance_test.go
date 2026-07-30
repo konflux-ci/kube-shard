@@ -75,11 +75,25 @@ func (sb *safeBuffer) String() string {
 	return sb.buf.String()
 }
 
+// cmdLog is a file-backed log for kubectl commands. It captures every
+// command and its output without cluttering the Ginkgo console output.
+// The file is uploaded as a CI artifact for post-mortem inspection.
+var cmdLog *os.File
+
 var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 	var testdataDir string
 
 	BeforeAll(func() {
+		logDir := os.Getenv("ARTIFACT_DIR")
+		if logDir == "" {
+			logDir = os.TempDir()
+		}
+		var err error
+		cmdLog, err = os.Create(filepath.Join(logDir, "perf-kubectl.log"))
+		Expect(err).NotTo(HaveOccurred())
+
 		_, _ = fmt.Fprintf(GinkgoWriter, "Storage mode: %s\n", storageMode())
+		_, _ = fmt.Fprintf(GinkgoWriter, "kubectl log: %s\n", cmdLog.Name())
 
 		projectDir := getProjectDir()
 		testdataDir = filepath.Join(projectDir, "test", "e2e", "testdata")
@@ -119,7 +133,7 @@ var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 
 		By("installing the Benchmark CRD on the primary")
 		cmd := exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "benchmark_crd.yaml"))
-		_, err := run(cmd)
+		_, err = run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install Benchmark CRD")
 
 		By("creating the APIShard")
@@ -159,6 +173,9 @@ var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 	})
 
 	AfterAll(func() {
+		if cmdLog != nil {
+			_ = cmdLog.Close()
+		}
 		if os.Getenv("SKIP_CLEANUP") == "true" {
 			By("SKIP_CLEANUP=true — leaving resources in place for inspection")
 			return
@@ -513,6 +530,13 @@ func getProjectDir() string {
 func run(cmd *exec.Cmd) (string, error) {
 	command := strings.Join(cmd.Args, " ")
 	output, err := cmd.CombinedOutput()
+	if cmdLog != nil {
+		_, _ = fmt.Fprintf(cmdLog, "$ %s\n%s", command, string(output))
+		if err != nil {
+			_, _ = fmt.Fprintf(cmdLog, "EXIT: %v\n", err)
+		}
+		_, _ = fmt.Fprintln(cmdLog)
+	}
 	if err != nil {
 		return string(output), fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
 	}
