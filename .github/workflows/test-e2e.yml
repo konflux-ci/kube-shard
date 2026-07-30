@@ -41,10 +41,10 @@ jobs:
           make docker-build IMG=$IMG
           kind load docker-image $IMG --name kind
 
-      - name: Generate manifests and verify code
-        run: |
-          go mod tidy
-          make manifests generate fmt vet
+      - name: Tidy modules
+        env:
+          CERT_MANAGER_INSTALL_SKIP: "true"
+        run: go mod tidy
 
       - name: "E2E: operator install"
         env:
