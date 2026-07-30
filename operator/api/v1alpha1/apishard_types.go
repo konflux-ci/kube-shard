@@ -67,8 +67,9 @@ type SecondarySpec struct {
 
 type KineSpec struct {
 	// +kubebuilder:default=1
-	Replicas int32  `json:"replicas,omitempty"`
-	Image    string `json:"image,omitempty"`
+	Replicas  int32                       `json:"replicas,omitempty"`
+	Image     string                      `json:"image,omitempty"`
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 type APIShardSpec struct {

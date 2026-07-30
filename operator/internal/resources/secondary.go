@@ -140,10 +140,11 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
-							Name:    "kube-apiserver",
-							Image:   image,
-							Command: []string{"kube-apiserver"},
-							Args:    args,
+							Name:      "kube-apiserver",
+							Image:     image,
+							Command:   []string{"kube-apiserver"},
+							Args:      args,
+							Resources: shard.Spec.Secondary.Resources,
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "https",

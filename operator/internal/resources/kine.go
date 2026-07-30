@@ -146,6 +146,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 							Args:         args,
 							Env:          env,
 							EnvFrom:      envFrom,
+							Resources:    shard.Spec.Kine.Resources,
 							VolumeMounts: volumeMounts,
 							Ports: []corev1.ContainerPort{
 								{
