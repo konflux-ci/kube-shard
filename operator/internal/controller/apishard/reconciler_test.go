@@ -29,9 +29,135 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/konflux-ci/konflux-ci/operator/pkg/tracking"
+
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
 )
+
+var _ = Describe("reconcileRequestHeaderCA", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createShard := func(suffix string) *kubeshardv1alpha1.APIShard {
+		nsName := "test-rh-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-rh-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	newTrackingClient := func(shard *kubeshardv1alpha1.APIShard) *tracking.Client {
+		return tracking.NewClientWithOwnership(k8sClient, tracking.OwnershipConfig{
+			Owner:             shard,
+			OwnerLabelKey:     ownerLabelKey,
+			ComponentLabelKey: componentLabelKey,
+			Component:         "apishard",
+			FieldManager:      fieldManager,
+		})
+	}
+
+	setAuthConfigMap := func(data map[string]string) {
+		cm := &corev1.ConfigMap{}
+		err := k8sClient.Get(ctx, types.NamespacedName{
+			Name: "extension-apiserver-authentication", Namespace: "kube-system",
+		}, cm)
+		if err == nil {
+			cm.Data = data
+			Expect(k8sClient.Update(ctx, cm)).To(Succeed())
+		} else {
+			cm = &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "extension-apiserver-authentication",
+					Namespace: "kube-system",
+				},
+				Data: data,
+			}
+			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+		}
+	}
+
+	It("should return allowed names from the ConfigMap (OpenShift style)", func() {
+		shard := createShard("openshift")
+		setAuthConfigMap(map[string]string{
+			"requestheader-client-ca-file": "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
+			"requestheader-allowed-names":  `["kube-apiserver-proxy","system:kube-apiserver-proxy","system:openshift-aggregator"]`,
+		})
+
+		tc := newTrackingClient(shard)
+		allowedNames, err := reconciler.reconcileRequestHeaderCA(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(allowedNames).To(Equal([]string{
+			"kube-apiserver-proxy",
+			"system:kube-apiserver-proxy",
+			"system:openshift-aggregator",
+		}))
+	})
+
+	It("should fall back to front-proxy-client when allowed names are absent", func() {
+		shard := createShard("fallback")
+		setAuthConfigMap(map[string]string{
+			"requestheader-client-ca-file": "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
+		})
+
+		tc := newTrackingClient(shard)
+		allowedNames, err := reconciler.reconcileRequestHeaderCA(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(allowedNames).To(Equal([]string{"front-proxy-client"}))
+	})
+
+	It("should fall back to front-proxy-client when allowed names is an empty array", func() {
+		shard := createShard("empty")
+		setAuthConfigMap(map[string]string{
+			"requestheader-client-ca-file": "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
+			"requestheader-allowed-names":  `[]`,
+		})
+
+		tc := newTrackingClient(shard)
+		allowedNames, err := reconciler.reconcileRequestHeaderCA(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(allowedNames).To(Equal([]string{"front-proxy-client"}))
+	})
+
+	It("should return error when requestheader-client-ca-file is missing", func() {
+		shard := createShard("noca")
+		setAuthConfigMap(map[string]string{
+			"requestheader-allowed-names": `["front-proxy-client"]`,
+		})
+
+		tc := newTrackingClient(shard)
+		_, err := reconciler.reconcileRequestHeaderCA(ctx, tc, shard)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("requestheader-client-ca-file"))
+	})
+})
 
 var _ = Describe("APIShard Controller", func() {
 	const (

@@ -102,19 +102,20 @@ rules:
 - apiGroups:
   - kube-shard.konflux-ci.dev
   resources:
+  - apishards/finalizers
+  - namespacesyncs/finalizers
+  - webhooksyncs/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - kube-shard.konflux-ci.dev
+  resources:
   - apishards/status
   - namespacesyncs/status
   - webhooksyncs/status
   verbs:
   - get
   - patch
-  - update
-- apiGroups:
-  - kube-shard.konflux-ci.dev
-  resources:
-  - namespacesyncs/finalizers
-  - webhooksyncs/finalizers
-  verbs:
   - update
 - apiGroups:
   - rbac.authorization.k8s.io

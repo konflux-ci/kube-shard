@@ -19,6 +19,7 @@ package apishard
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -81,6 +82,7 @@ type Reconciler struct {
 }
 
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -193,7 +195,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	// Copy front-proxy CA from primary for request-header authentication
-	if err := r.reconcileRequestHeaderCA(ctx, tc, &shard); err != nil {
+	requestHeaderAllowedNames, err := r.reconcileRequestHeaderCA(ctx, tc, &shard)
+	if err != nil {
 		logger.Error(err, "Failed to reconcile requestheader CA")
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
@@ -205,7 +208,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	// Reconcile Secondary API server
-	if err := r.reconcileSecondary(ctx, tc, &shard); err != nil {
+	if err := r.reconcileSecondary(ctx, tc, &shard, requestHeaderAllowedNames); err != nil {
 		logger.Error(err, "Failed to reconcile secondary API server")
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
@@ -304,8 +307,8 @@ func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, sha
 // reconcileSecondary ensures the secondary kube-apiserver deployment and its
 // ClusterIP service exist. The secondary API server serves the aggregated API
 // groups backed by Kine.
-func (r *Reconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
-	deployment := resources.BuildSecondaryDeployment(shard)
+func (r *Reconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard, requestHeaderAllowedNames []string) error {
+	deployment := resources.BuildSecondaryDeployment(shard, requestHeaderAllowedNames)
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("secondary deployment: %w", err)
 	}
@@ -539,18 +542,28 @@ func (r *Reconciler) reconcileAuthDelegator(ctx context.Context, tc *tracking.Cl
 // extension-apiserver-authentication ConfigMap in kube-system into a ConfigMap
 // in the target namespace. The secondary API server uses this CA to verify
 // request-header identity forwarding from the primary's aggregation proxy.
-func (r *Reconciler) reconcileRequestHeaderCA(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+func (r *Reconciler) reconcileRequestHeaderCA(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) ([]string, error) {
 	sourceCM := &corev1.ConfigMap{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      "extension-apiserver-authentication",
 		Namespace: "kube-system",
 	}, sourceCM); err != nil {
-		return fmt.Errorf("reading extension-apiserver-authentication from kube-system: %w", err)
+		return nil, fmt.Errorf("reading extension-apiserver-authentication from kube-system: %w", err)
 	}
 
 	caData := sourceCM.Data["requestheader-client-ca-file"]
 	if caData == "" {
-		return fmt.Errorf("requestheader-client-ca-file not found in extension-apiserver-authentication ConfigMap")
+		return nil, fmt.Errorf("requestheader-client-ca-file not found in extension-apiserver-authentication ConfigMap")
+	}
+
+	var allowedNames []string
+	if raw := sourceCM.Data["requestheader-allowed-names"]; raw != "" {
+		if err := json.Unmarshal([]byte(raw), &allowedNames); err != nil {
+			return nil, fmt.Errorf("parsing requestheader-allowed-names: %w", err)
+		}
+	}
+	if len(allowedNames) == 0 {
+		allowedNames = []string{"front-proxy-client"}
 	}
 
 	cm := &corev1.ConfigMap{
@@ -568,10 +581,10 @@ func (r *Reconciler) reconcileRequestHeaderCA(ctx context.Context, tc *tracking.
 	}
 
 	if err := tc.ApplyOwned(ctx, cm); err != nil {
-		return fmt.Errorf("requestheader CA configmap: %w", err)
+		return nil, fmt.Errorf("requestheader CA configmap: %w", err)
 	}
 
-	return nil
+	return allowedNames, nil
 }
 
 // reconcileAPIServices registers APIService objects on the primary cluster and
