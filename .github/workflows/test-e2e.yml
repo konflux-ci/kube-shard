@@ -12,6 +12,7 @@ jobs:
         working-directory: operator
     env:
       IMG: example.com/operator:v0.0.1
+      ARTIFACT_DIR: ${{ github.workspace }}/artifacts
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
@@ -41,9 +42,32 @@ jobs:
           make docker-build IMG=$IMG
           kind load docker-image $IMG --name kind
 
-      - name: Running E2E tests
-        env:
-          CERT_MANAGER_INSTALL_SKIP: "true"
+      - name: Generate manifests and verify code
         run: |
           go mod tidy
-          make test-e2e
+          make manifests generate fmt vet
+
+      - name: Create artifact directory
+        run: mkdir -p "$ARTIFACT_DIR"
+
+      - name: "E2E: operator install"
+        env:
+          CERT_MANAGER_INSTALL_SKIP: "true"
+        run: go test ./test/e2e/ -v -ginkgo.v -ginkgo.github-output
+
+      - name: "E2E: force aggregation"
+        run: go test ./test/e2e/force_aggregation/ -v -ginkgo.v -ginkgo.github-output
+
+      - name: "E2E: CRD sharding"
+        run: go test ./test/e2e/crd_sharding/ -v -ginkgo.v -ginkgo.github-output
+
+      - name: "E2E: performance"
+        run: go test ./test/e2e/performance/ -v -ginkgo.v -ginkgo.github-output -timeout 20m
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: artifacts/
+          if-no-files-found: ignore
