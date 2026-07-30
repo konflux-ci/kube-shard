@@ -43,14 +43,7 @@ const (
 )
 
 // External PostgreSQL constants, only used when PERF_STORAGE_MODE=PostgreSQL.
-const (
-	pgServiceName = "e2e-perf-postgresql"
-	pgSecretName  = "e2e-perf-pg-credentials"
-	pgImage       = "registry.access.redhat.com/hi/postgresql:18.4"
-	pgUser        = "kine"
-	pgPassword    = "e2e-perf-test-password"
-	pgDB          = "kine"
-)
+const pgSecretName = "e2e-perf-pg-credentials"
 
 func storageMode() string {
 	if mode := os.Getenv("PERF_STORAGE_MODE"); mode != "" {
@@ -417,101 +410,37 @@ spec:
 	})
 })
 
-// setupExternalPostgreSQL creates the namespace, deploys PostgreSQL manually,
-// and waits for it to be ready. Only called when PERF_STORAGE_MODE=PostgreSQL.
+// setupExternalPostgreSQL creates the target namespace and a Secret with the
+// connection string from PERF_PG_ENDPOINT. The PostgreSQL instance must already
+// be running and reachable from the cluster.
 func setupExternalPostgreSQL() {
+	endpoint := os.Getenv("PERF_PG_ENDPOINT")
+	Expect(endpoint).NotTo(BeEmpty(),
+		"PERF_STORAGE_MODE=PostgreSQL requires PERF_PG_ENDPOINT to be set "+
+			"(e.g. postgres://user:pass@host:5432/db?sslmode=disable)")
+
 	By("creating the target namespace for external PostgreSQL")
 	cmd := exec.Command("kubectl", "create", "ns", shardNamespace)
 	_, err := run(cmd)
 	Expect(err).NotTo(HaveOccurred())
 
-	By("deploying external PostgreSQL with the specified image")
-	pgYAML := fmt.Sprintf(`apiVersion: v1
+	By("creating the connection Secret from PERF_PG_ENDPOINT")
+	secretYAML := fmt.Sprintf(`apiVersion: v1
 kind: Secret
 metadata:
-  name: %[1]s
-  namespace: %[2]s
+  name: %s
+  namespace: %s
 type: Opaque
 stringData:
-  KINE_ENDPOINT: "postgres://%[3]s:%[4]s@%[6]s.%[2]s.svc:5432/%[5]s?sslmode=disable"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: %[6]s
-  namespace: %[2]s
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: e2e-perf-postgresql
-  template:
-    metadata:
-      labels:
-        app: e2e-perf-postgresql
-    spec:
-      containers:
-      - name: postgresql
-        image: %[7]s
-        env:
-        - name: POSTGRES_USER
-          value: "%[3]s"
-        - name: POSTGRES_PASSWORD
-          value: "%[4]s"
-        - name: POSTGRES_DB
-          value: "%[5]s"
-        - name: PGDATA
-          value: /var/lib/postgresql/data/pgdata
-        ports:
-        - containerPort: 5432
-          protocol: TCP
-        volumeMounts:
-        - name: data
-          mountPath: /var/lib/postgresql/data
-        readinessProbe:
-          tcpSocket:
-            port: 5432
-          initialDelaySeconds: 10
-          periodSeconds: 5
-        resources:
-          requests:
-            cpu: 100m
-            memory: 256Mi
-          limits:
-            memory: 1Gi
-      volumes:
-      - name: data
-        emptyDir: {}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: %[6]s
-  namespace: %[2]s
-spec:
-  selector:
-    app: e2e-perf-postgresql
-  ports:
-  - port: 5432
-    targetPort: 5432
-    protocol: TCP
-`, pgSecretName, shardNamespace, pgUser, pgPassword, pgDB, pgServiceName, pgImage)
+  KINE_ENDPOINT: %q
+`, pgSecretName, shardNamespace, endpoint)
 
 	cmd = exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = stringReader(pgYAML)
-	_, err = run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to deploy external PostgreSQL")
-
-	By("waiting for external PostgreSQL to be ready")
-	Eventually(func(g Gomega) {
-		cmd := exec.Command("kubectl", "get", "pods",
-			"-n", shardNamespace,
-			"-l", "app=e2e-perf-postgresql",
-			"-o", "jsonpath={.items[0].status.phase}")
-		output, err := run(cmd)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(output).To(Equal("Running"))
-	}, 3*time.Minute, 5*time.Second).Should(Succeed())
+	cmd.Stdin = stringReader(secretYAML)
+	output, err := cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(),
+		"Failed to create PostgreSQL connection Secret (output redacted to avoid leaking credentials)")
+	_ = output
 }
 
 // buildAPIShardYAML returns the APIShard manifest configured for the active storage mode.

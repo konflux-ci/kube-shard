@@ -14,6 +14,9 @@ endif
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
 
+# Extra flags passed to ginkgo via go test (e.g. -ginkgo.github-output for CI).
+GINKGO_FLAGS ?=
+
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
@@ -76,10 +79,10 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 		echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; \
 		exit 1; \
 	}
-	go test ./test/e2e/ -v -ginkgo.v
-	go test ./test/e2e/force_aggregation/ -v -ginkgo.v
-	go test ./test/e2e/crd_sharding/ -v -ginkgo.v
-	go test ./test/e2e/performance/ -v -ginkgo.v -timeout 20m
+	go test ./test/e2e/ -v -ginkgo.v $(GINKGO_FLAGS)
+	go test ./test/e2e/force_aggregation/ -v -ginkgo.v $(GINKGO_FLAGS)
+	go test ./test/e2e/crd_sharding/ -v -ginkgo.v $(GINKGO_FLAGS)
+	go test ./test/e2e/performance/ -v -ginkgo.v $(GINKGO_FLAGS) -timeout 20m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

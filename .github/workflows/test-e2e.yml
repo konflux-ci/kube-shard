@@ -41,9 +41,21 @@ jobs:
           make docker-build IMG=$IMG
           kind load docker-image $IMG --name kind
 
-      - name: Running E2E tests
+      - name: Tidy modules
         env:
           CERT_MANAGER_INSTALL_SKIP: "true"
-        run: |
-          go mod tidy
-          make test-e2e
+        run: go mod tidy
+
+      - name: "E2E: operator install"
+        env:
+          CERT_MANAGER_INSTALL_SKIP: "true"
+        run: go test ./test/e2e/ -v -ginkgo.v -ginkgo.github-output
+
+      - name: "E2E: force aggregation"
+        run: go test ./test/e2e/force_aggregation/ -v -ginkgo.v -ginkgo.github-output
+
+      - name: "E2E: CRD sharding"
+        run: go test ./test/e2e/crd_sharding/ -v -ginkgo.v -ginkgo.github-output
+
+      - name: "E2E: performance"
+        run: go test ./test/e2e/performance/ -v -ginkgo.v -ginkgo.github-output -timeout 20m
