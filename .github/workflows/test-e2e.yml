@@ -12,6 +12,7 @@ jobs:
         working-directory: operator
     env:
       IMG: example.com/operator:v0.0.1
+      ARTIFACT_DIR: ${{ github.workspace }}/artifacts
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
@@ -46,6 +47,9 @@ jobs:
           go mod tidy
           make manifests generate fmt vet
 
+      - name: Create artifact directory
+        run: mkdir -p "$ARTIFACT_DIR"
+
       - name: "E2E: operator install"
         env:
           CERT_MANAGER_INSTALL_SKIP: "true"
@@ -58,16 +62,12 @@ jobs:
         run: go test ./test/e2e/crd_sharding/ -v -ginkgo.v -ginkgo.github-output
 
       - name: "E2E: performance"
-        env:
-          ARTIFACT_DIR: ${{ github.workspace }}/artifacts
-        run: |
-          mkdir -p "$ARTIFACT_DIR"
-          go test ./test/e2e/performance/ -v -ginkgo.v -ginkgo.github-output -timeout 20m
+        run: go test ./test/e2e/performance/ -v -ginkgo.v -ginkgo.github-output -timeout 20m
 
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-performance-logs
+          name: e2e-logs
           path: artifacts/
           if-no-files-found: ignore

@@ -28,6 +28,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/konflux-ci/kube-shard/operator/test/utils"
 )
 
 const (
@@ -39,10 +41,16 @@ const (
 	widgetNamespace = "e2e-widget-workload"
 )
 
+var logger *utils.CmdLogger
+
 var _ = Describe("CRD Sharding", Ordered, func() {
 	var testdataDir string
 
 	BeforeAll(func() {
+		var err error
+		logger, err = utils.NewCmdLogger("crd-sharding")
+		Expect(err).NotTo(HaveOccurred())
+
 		projectDir := getProjectDir()
 		testdataDir = filepath.Join(projectDir, "test", "e2e", "testdata")
 
@@ -58,14 +66,14 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 			{"delete", "ns", shardNamespace, "--ignore-not-found", "--wait=false"},
 		} {
 			cmd := exec.Command("kubectl", args...)
-			_, _ = run(cmd)
+			_, _ = logger.Run(cmd)
 		}
 
 		By("waiting for namespaces to be fully deleted")
 		Eventually(func(g Gomega) {
 			for _, ns := range []string{shardNamespace, webhookNS, widgetNamespace} {
 				cmd := exec.Command("kubectl", "get", "ns", ns, "--no-headers")
-				output, _ := run(cmd)
+				output, _ := logger.Run(cmd)
 				g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")),
 					fmt.Sprintf("namespace %s should be deleted", ns))
 			}
@@ -75,7 +83,7 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 		webhookServerDir := filepath.Join(projectDir, "test", "e2e", "webhook-server")
 		containerRuntime := detectContainerRuntime()
 		cmd := exec.Command(containerRuntime, "build", "-t", webhookImage, webhookServerDir)
-		_, err := run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to build webhook server image")
 
 		By("loading webhook server image into Kind")
@@ -84,7 +92,7 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 
 		By("deploying the webhook server")
 		cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "webhook_server.yaml"))
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy webhook server")
 
 		By("waiting for webhook server to be ready")
@@ -93,7 +101,7 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 				"-n", webhookNS,
 				"-l", "app=e2e-webhook-server",
 				"-o", "jsonpath={.items[0].status.phase}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("Running"))
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
@@ -122,29 +130,29 @@ spec:
     replicas: 1
 `, shardName, shardNamespace)
 		cmd = exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = stringReader(apishardYAML)
-		_, err = run(cmd)
+		cmd.Stdin = utils.StringReader(apishardYAML)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create APIShard")
 
 		By("waiting for APIShard to become Ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName,
 				"-o", "jsonpath={.status.phase}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("Ready"))
 		}, 5*time.Minute, 10*time.Second).Should(Succeed())
 
 		By("installing the dummy CRD on the primary (triggers operator CRD sync)")
 		cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "dummy_crd.yaml"))
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRD on primary")
 
 		By("waiting for CRDConflict condition to be True (operator detected the conflict)")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName,
 				"-o", "jsonpath={.status.conditions[?(@.type=='CRDConflict')].status}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("True"), "CRDConflict condition should be True")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
@@ -153,21 +161,21 @@ spec:
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName,
 				"-o", "jsonpath={.status.phase}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("Blocked"), "Phase should be Blocked when CRDs conflict")
 		}, 30*time.Second, 5*time.Second).Should(Succeed())
 
 		By("deleting the CRD from the primary (resolving the conflict)")
 		cmd = exec.Command("kubectl", "delete", "-f", filepath.Join(testdataDir, "dummy_crd.yaml"))
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to delete CRD from primary")
 
 		By("waiting for CRDConflict condition to become False")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName,
 				"-o", "jsonpath={.status.conditions[?(@.type=='CRDConflict')].status}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("False"), "CRDConflict condition should be False after deletion")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
@@ -176,18 +184,18 @@ spec:
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName,
 				"-o", "jsonpath={.status.phase}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("Ready"), "Phase should return to Ready after conflict resolution")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating the workload namespace with sync label")
 		cmd = exec.Command("kubectl", "create", "ns", widgetNamespace)
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create workload namespace")
 		cmd = exec.Command("kubectl", "label", "ns", widgetNamespace,
 			"e2e-test=widget-shard")
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("waiting for namespace to be synced to the secondary")
@@ -196,14 +204,14 @@ spec:
 				"-n", shardNamespace,
 				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", shardName),
 				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("True"), "NamespaceSync should be Ready")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("creating the MutatingWebhookConfiguration")
 		cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "mutating_webhook.yaml"))
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create MutatingWebhookConfiguration")
 
 		By("waiting for cert-manager to inject CA bundle matching the webhook cert")
@@ -211,7 +219,7 @@ spec:
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "secret", "e2e-webhook-tls",
 				"-n", webhookNS, "-o", "jsonpath={.data.ca\\.crt}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).NotTo(BeEmpty(), "webhook cert secret not ready")
 			expectedCA = output
@@ -221,7 +229,7 @@ spec:
 			cmd := exec.Command("kubectl", "get", "mutatingwebhookconfiguration",
 				"e2e-widget-webhook",
 				"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal(expectedCA), "CA bundle should match the webhook cert CA")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
@@ -232,7 +240,7 @@ spec:
 				"-n", shardNamespace,
 				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", shardName),
 				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("True"))
 
@@ -240,7 +248,7 @@ spec:
 				"-n", shardNamespace,
 				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", shardName),
 				"-o", "jsonpath={.items[0].status.syncedWebhooks.mutating}")
-			output, err = run(cmd)
+			output, err = logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).NotTo(Equal("0"), "at least one mutating webhook should be synced")
 			g.Expect(output).NotTo(BeEmpty(), "at least one mutating webhook should be synced")
@@ -248,6 +256,7 @@ spec:
 	})
 
 	AfterAll(func() {
+		logger.Close()
 		if os.Getenv("SKIP_CLEANUP") == "true" {
 			By("SKIP_CLEANUP=true — leaving resources in place for inspection")
 			return
@@ -255,36 +264,36 @@ spec:
 		By("cleaning up Widget CR")
 		cmd := exec.Command("kubectl", "delete", "widget", widgetName,
 			"-n", widgetNamespace, "--ignore-not-found", "--wait=false")
-		_, _ = run(cmd)
+		_, _ = logger.Run(cmd)
 
 		By("cleaning up CRD from primary if present")
 		cmd = exec.Command("kubectl", "delete", "crd", "widgets.example.com", "--ignore-not-found")
-		_, _ = run(cmd)
+		_, _ = logger.Run(cmd)
 
 		By("cleaning up MutatingWebhookConfiguration")
 		cmd = exec.Command("kubectl", "delete", "mutatingwebhookconfiguration",
 			"e2e-widget-webhook", "--ignore-not-found")
-		_, _ = run(cmd)
+		_, _ = logger.Run(cmd)
 
 		By("cleaning up APIService")
 		cmd = exec.Command("kubectl", "delete", "apiservice",
 			"v1.example.com", "--ignore-not-found")
-		_, _ = run(cmd)
+		_, _ = logger.Run(cmd)
 
 		By("cleaning up APIShard")
 		cmd = exec.Command("kubectl", "delete", "apishard", shardName,
 			"--ignore-not-found", "--wait=false")
-		_, _ = run(cmd)
+		_, _ = logger.Run(cmd)
 
 		By("cleaning up webhook server namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", webhookNS,
 			"--ignore-not-found", "--wait=false")
-		_, _ = run(cmd)
+		_, _ = logger.Run(cmd)
 
 		By("cleaning up workload namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", widgetNamespace,
 			"--ignore-not-found", "--wait=false")
-		_, _ = run(cmd)
+		_, _ = logger.Run(cmd)
 	})
 
 	It("should route Widget CRs through aggregation", func() {
@@ -298,8 +307,8 @@ spec:
   message: "hello from e2e test"
 `, widgetName, widgetNamespace)
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = stringReader(widgetYAML)
-		_, err := run(cmd)
+		cmd.Stdin = utils.StringReader(widgetYAML)
+		_, err := logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create Widget CR")
 
 		By("verifying the Widget is retrievable via the primary API")
@@ -307,7 +316,7 @@ spec:
 			cmd := exec.Command("kubectl", "get", "widget", widgetName,
 				"-n", widgetNamespace,
 				"-o", "jsonpath={.spec.message}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("hello from e2e test"))
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
@@ -319,7 +328,7 @@ spec:
 			cmd := exec.Command("kubectl", "get", "widget", widgetName,
 				"-n", widgetNamespace,
 				"-o", `jsonpath={.metadata.annotations.e2e-webhook\.example\.com/processed}`)
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("true"),
 				"Webhook annotation not found -- webhook was not invoked on the secondary")
@@ -342,12 +351,12 @@ spec:
 			cmd := exec.Command("kubectl", "get", "secret", item.secret,
 				"-n", shardNamespace,
 				"-o", fmt.Sprintf("jsonpath={.data.%s}", strings.ReplaceAll(item.key, ".", "\\.")))
-			b64, err := run(cmd)
+			b64, err := logger.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to read %s from %s", item.key, item.secret)
 
 			cmd = exec.Command("base64", "-d")
-			cmd.Stdin = stringReader(b64)
-			decoded, err := run(cmd)
+			cmd.Stdin = utils.StringReader(b64)
+			decoded, err := logger.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(os.WriteFile(filepath.Join(tmpDir, item.file), []byte(decoded), 0600)).To(Succeed())
 		}
@@ -414,7 +423,7 @@ current-context: default
 				"get", "widget", widgetName,
 				"-n", widgetNamespace,
 				"-o", "jsonpath={.spec.message}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred(),
 				"Failed to query Widget directly on secondary")
 			g.Expect(output).To(Equal("hello from e2e test"),
@@ -431,17 +440,6 @@ func getProjectDir() string {
 	return filepath.Join(wd, "..", "..", "..")
 }
 
-// run executes the provided command and returns its combined output.
-func run(cmd *exec.Cmd) (string, error) {
-	command := strings.Join(cmd.Args, " ")
-	_, _ = fmt.Fprintf(GinkgoWriter, "running: %s\n", command)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(output), fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
-	}
-	return string(output), nil
-}
-
 // loadImageToKindCluster loads a container image into the Kind cluster.
 // For podman, it saves to a tarball and uses `kind load image-archive`.
 func loadImageToKindCluster(name string) error {
@@ -455,18 +453,18 @@ func loadImageToKindCluster(name string) error {
 		archive := filepath.Join(os.TempDir(), "e2e-webhook-server.tar")
 		_ = os.Remove(archive)
 		cmd := exec.Command("podman", "save", "-o", archive, name)
-		if _, err := run(cmd); err != nil {
+		if _, err := logger.Run(cmd); err != nil {
 			return err
 		}
 		defer func() { _ = os.Remove(archive) }()
 
 		cmd = exec.Command("kind", "load", "image-archive", archive, "--name", cluster)
-		_, err := run(cmd)
+		_, err := logger.Run(cmd)
 		return err
 	}
 
 	cmd := exec.Command("kind", "load", "docker-image", name, "--name", cluster)
-	_, err := run(cmd)
+	_, err := logger.Run(cmd)
 	return err
 }
 
@@ -478,6 +476,3 @@ func detectContainerRuntime() string {
 	return "docker"
 }
 
-func stringReader(s string) *strings.Reader {
-	return strings.NewReader(s)
-}

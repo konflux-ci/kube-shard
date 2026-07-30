@@ -31,6 +31,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/konflux-ci/kube-shard/operator/test/utils"
 )
 
 const (
@@ -75,25 +77,17 @@ func (sb *safeBuffer) String() string {
 	return sb.buf.String()
 }
 
-// cmdLog is a file-backed log for kubectl commands. It captures every
-// command and its output without cluttering the Ginkgo console output.
-// The file is uploaded as a CI artifact for post-mortem inspection.
-var cmdLog *os.File
+var logger *utils.CmdLogger
 
 var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 	var testdataDir string
 
 	BeforeAll(func() {
-		logDir := os.Getenv("ARTIFACT_DIR")
-		if logDir == "" {
-			logDir = os.TempDir()
-		}
 		var err error
-		cmdLog, err = os.Create(filepath.Join(logDir, "perf-kubectl.log"))
+		logger, err = utils.NewCmdLogger("performance")
 		Expect(err).NotTo(HaveOccurred())
 
 		_, _ = fmt.Fprintf(GinkgoWriter, "Storage mode: %s\n", storageMode())
-		_, _ = fmt.Fprintf(GinkgoWriter, "kubectl log: %s\n", cmdLog.Name())
 
 		projectDir := getProjectDir()
 		testdataDir = filepath.Join(projectDir, "test", "e2e", "testdata")
@@ -107,13 +101,13 @@ var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 			{"delete", "ns", shardNamespace, "--ignore-not-found", "--wait=false"},
 		} {
 			cmd := exec.Command("kubectl", args...)
-			_, _ = run(cmd)
+			_, _ = logger.Run(cmd)
 		}
 
 		By("waiting for stale APIShard to be fully deleted")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName, "--no-headers")
-			output, _ := run(cmd)
+			output, _ := logger.Run(cmd)
 			g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")))
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
@@ -121,7 +115,7 @@ var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 		Eventually(func(g Gomega) {
 			for _, ns := range []string{shardNamespace, workloadNS} {
 				cmd := exec.Command("kubectl", "get", "ns", ns, "--no-headers")
-				output, _ := run(cmd)
+				output, _ := logger.Run(cmd)
 				g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")),
 					fmt.Sprintf("namespace %s should be deleted", ns))
 			}
@@ -133,31 +127,31 @@ var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 
 		By("installing the Benchmark CRD on the primary")
 		cmd := exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "benchmark_crd.yaml"))
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install Benchmark CRD")
 
 		By("creating the APIShard")
 		apishardYAML := buildAPIShardYAML()
 		cmd = exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = stringReader(apishardYAML)
-		_, err = run(cmd)
+		cmd.Stdin = utils.StringReader(apishardYAML)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create APIShard")
 
 		By("waiting for APIShard to become Ready")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName,
 				"-o", "jsonpath={.status.phase}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("Ready"))
 		}, 5*time.Minute, 10*time.Second).Should(Succeed())
 
 		By("creating the workload namespace with sync label")
 		cmd = exec.Command("kubectl", "create", "ns", workloadNS)
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 		cmd = exec.Command("kubectl", "label", "ns", workloadNS, "e2e-test=perf-shard")
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("waiting for namespace to be synced to the secondary")
@@ -166,16 +160,14 @@ var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 				"-n", shardNamespace,
 				"-l", fmt.Sprintf("app.kubernetes.io/instance=%s", shardName),
 				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("True"))
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {
-		if cmdLog != nil {
-			_ = cmdLog.Close()
-		}
+		logger.Close()
 		if os.Getenv("SKIP_CLEANUP") == "true" {
 			By("SKIP_CLEANUP=true — leaving resources in place for inspection")
 			return
@@ -189,7 +181,7 @@ var _ = Describe("Performance with PostgreSQL backend", Ordered, func() {
 			{"delete", "ns", shardNamespace, "--ignore-not-found", "--wait=false"},
 		} {
 			cmd := exec.Command("kubectl", args...)
-			_, _ = run(cmd)
+			_, _ = logger.Run(cmd)
 		}
 	})
 
@@ -234,7 +226,7 @@ spec:
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "benchmarks",
 				"-n", workloadNS, "-o", "jsonpath={.items[*].metadata.name}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			names := strings.Fields(output)
 			g.Expect(names).To(HaveLen(resourceCount),
@@ -260,7 +252,7 @@ spec:
 					fmt.Sprintf("bm-%04d", idx),
 					"-n", workloadNS,
 					"--type=merge", "-p", patch)
-				if _, err := run(cmd); err != nil {
+				if _, err := logger.Run(cmd); err != nil {
 					failures.Add(1)
 				}
 			}(i)
@@ -280,7 +272,7 @@ spec:
 				cmd := exec.Command("kubectl", "get", "benchmark",
 					fmt.Sprintf("bm-%04d", i), "-n", workloadNS,
 					"-o", "jsonpath={.spec.payload}")
-				output, err := run(cmd)
+				output, err := logger.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal(fmt.Sprintf("patched-value-%04d", i)))
 			}
@@ -317,15 +309,15 @@ spec:
   payload: "watch-test"
 `, workloadNS)
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = stringReader(yaml)
-		_, err := run(cmd)
+		cmd.Stdin = utils.StringReader(yaml)
+		_, err := logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("patching the resource to generate a MODIFIED event")
 		cmd = exec.Command("kubectl", "patch", "benchmark", "bm-watch-test",
 			"-n", workloadNS, "--type=merge",
 			"-p", `{"spec":{"payload":"watch-updated"}}`)
-		_, err = run(cmd)
+		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("verifying ADDED and MODIFIED events were received")
@@ -338,7 +330,7 @@ spec:
 		By("cleaning up watch test resource")
 		cmd = exec.Command("kubectl", "delete", "benchmark", "bm-watch-test",
 			"-n", workloadNS, "--ignore-not-found")
-		_, _ = run(cmd)
+		_, _ = logger.Run(cmd)
 	})
 
 	It("should handle bulk deletion of resources", func() {
@@ -357,7 +349,7 @@ spec:
 				cmd := exec.Command("kubectl", "delete", "benchmark",
 					fmt.Sprintf("bm-%04d", idx),
 					"-n", workloadNS, "--ignore-not-found")
-				if _, err := run(cmd); err != nil {
+				if _, err := logger.Run(cmd); err != nil {
 					failures.Add(1)
 				}
 			}(i)
@@ -375,7 +367,7 @@ spec:
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "benchmarks",
 				"-n", workloadNS, "-o", "jsonpath={.items}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Or(Equal("[]"), BeEmpty()))
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
@@ -398,25 +390,25 @@ spec:
   payload: "created"
 `, name, workloadNS, i)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = stringReader(yaml)
-			_, err := run(cmd)
+			cmd.Stdin = utils.StringReader(yaml)
+			_, err := logger.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "create failed at iteration %d", i)
 
 			cmd = exec.Command("kubectl", "get", "benchmark", name,
 				"-n", workloadNS, "-o", "jsonpath={.spec.index}")
-			output, err := run(cmd)
+			output, err := logger.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "read failed at iteration %d", i)
 			Expect(output).To(Equal(strconv.Itoa(i)))
 
 			cmd = exec.Command("kubectl", "patch", "benchmark", name,
 				"-n", workloadNS, "--type=merge",
 				"-p", fmt.Sprintf(`{"spec":{"payload":"updated-%d"}}`, i))
-			_, err = run(cmd)
+			_, err = logger.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "update failed at iteration %d", i)
 
 			cmd = exec.Command("kubectl", "delete", "benchmark", name,
 				"-n", workloadNS)
-			_, err = run(cmd)
+			_, err = logger.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "delete failed at iteration %d", i)
 		}
 
@@ -438,7 +430,7 @@ func setupExternalPostgreSQL() {
 
 	By("creating the target namespace for external PostgreSQL")
 	cmd := exec.Command("kubectl", "create", "ns", shardNamespace)
-	_, err := run(cmd)
+	_, err := logger.Run(cmd)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("creating the connection Secret from PERF_PG_ENDPOINT")
@@ -453,7 +445,7 @@ stringData:
 `, pgSecretName, shardNamespace, endpoint)
 
 	cmd = exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = stringReader(secretYAML)
+	cmd.Stdin = utils.StringReader(secretYAML)
 	output, err := cmd.CombinedOutput()
 	Expect(err).NotTo(HaveOccurred(),
 		"Failed to create PostgreSQL connection Secret (output redacted to avoid leaking credentials)")
@@ -527,29 +519,12 @@ func getProjectDir() string {
 	return filepath.Join(wd, "..", "..", "..")
 }
 
-func run(cmd *exec.Cmd) (string, error) {
-	command := strings.Join(cmd.Args, " ")
-	output, err := cmd.CombinedOutput()
-	if cmdLog != nil {
-		_, _ = fmt.Fprintf(cmdLog, "$ %s\n%s", command, string(output))
-		if err != nil {
-			_, _ = fmt.Fprintf(cmdLog, "EXIT: %v\n", err)
-		}
-		_, _ = fmt.Fprintln(cmdLog)
-	}
-	if err != nil {
-		return string(output), fmt.Errorf("%s failed with error: (%v) %s", command, err, string(output))
-	}
-	return string(output), nil
-}
-
-// runWithRetry applies YAML via kubectl with retries on transient failures.
 func runWithRetry(yaml string, maxRetries int) error {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = stringReader(yaml)
-		if _, err := run(cmd); err != nil {
+		cmd.Stdin = utils.StringReader(yaml)
+		if _, err := logger.Run(cmd); err != nil {
 			lastErr = err
 			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 			continue
@@ -557,8 +532,4 @@ func runWithRetry(yaml string, maxRetries int) error {
 		return nil
 	}
 	return lastErr
-}
-
-func stringReader(s string) *strings.Reader {
-	return strings.NewReader(s)
 }
