@@ -475,4 +475,3 @@ func detectContainerRuntime() string {
 	}
 	return "docker"
 }
-

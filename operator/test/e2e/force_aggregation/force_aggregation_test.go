@@ -341,4 +341,3 @@ func getProjectDir() string {
 	Expect(err).NotTo(HaveOccurred())
 	return filepath.Join(wd, "..", "..", "..")
 }
-
