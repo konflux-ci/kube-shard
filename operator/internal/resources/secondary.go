@@ -18,6 +18,7 @@ package resources
 
 import (
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -48,7 +49,7 @@ func SecondaryEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 	)
 }
 
-func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
+func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAllowedNames []string) *appsv1.Deployment {
 	name := SecondaryDeploymentName(shard)
 	image := shard.Spec.Secondary.Image
 	if image == "" {
@@ -98,7 +99,7 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploym
 		// proxy presents a client cert signed by this CA and forwards the original
 		// user identity in X-Remote-* headers.
 		"--requestheader-client-ca-file=/etc/kubernetes/requestheader/requestheader-client-ca-file",
-		"--requestheader-allowed-names=front-proxy-client",
+		"--requestheader-allowed-names=" + strings.Join(requestHeaderAllowedNames, ","),
 		"--requestheader-extra-headers-prefix=X-Remote-Extra-",
 		"--requestheader-group-headers=X-Remote-Group",
 		"--requestheader-username-headers=X-Remote-User",
