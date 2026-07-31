@@ -175,9 +175,82 @@ The operator defines three CRDs:
 | `namespaceSync.labelSelector` | Label selector for namespaces to sync to the secondary |
 | `secondary.replicas` | Replica count for the secondary kube-apiserver |
 | `secondary.image` | Container image for kube-apiserver |
+| `secondary.resources` | CPU/memory requests and limits for the kube-apiserver container |
 | `kine.replicas` | Replica count for Kine |
 | `kine.image` | Container image for Kine |
+| `kine.resources` | CPU/memory requests and limits for the Kine container |
 | `forceAggregation` | Override kube-aggregator auto-register controller to allow CRD coexistence (default: `true`) |
+
+## Resource Sizing and Kine Compaction
+
+Kine translates the Kubernetes etcd v3 API into SQL. Every object update creates a new row in the database (a "revision"). Kine runs a background **compaction** process that deletes old revisions, keeping only the latest version of each object.
+
+### Why compaction matters
+
+Without compaction, the database grows with every update -- not just every new object. A single PipelineRun that receives 5 status updates stores 5 full copies. At scale (thousands of PipelineRuns, each spawning TaskRuns), this causes:
+
+1. **Unbounded database growth** -- the DB can reach many GB even though the live object set is much smaller
+2. **Kine OOM kills** -- LIST and WATCH operations buffer results in memory; a large DB means Kine needs proportionally more RAM
+3. **A death spiral** -- Kine OOMs → restarts → compaction never completes → DB grows → worse OOMs
+
+### Sizing guidelines
+
+Configure resources via the APIShard CR:
+
+```yaml
+spec:
+  kine:
+    replicas: 3
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+  secondary:
+    replicas: 3
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+  storage:
+    type: InClusterPostgreSQL
+    inCluster:
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+```
+
+Key considerations:
+
+- **Set requests equal to limits** (Guaranteed QoS) for Kine and the apiserver to avoid OOM kills under load.
+- **Kine memory** must be large enough to buffer the largest LIST response. If your largest API group contains N objects of average size S, Kine needs at least `N * S` of headroom on top of its base usage.
+- **Multiple Kine replicas** distribute LIST/WATCH load across instances.
+- **PostgreSQL** is less memory-sensitive but benefits from enough RAM to cache the working set.
+
+### Load testing
+
+The `hack/loadtest/` directory contains scripts to stress-test storage capacity:
+
+```bash
+# Create 1000 PipelineRuns (~100KB each, 10 tasks per PR, 10 in parallel)
+./hack/loadtest/run-loadtest.sh 1000 100 10 10
+```
+
+Monitor DB size during the test:
+
+```bash
+kubectl exec deployment/<shard>-postgresql -n <namespace> -- \
+  psql -U kine -d kine -c "SELECT pg_size_pretty(pg_database_size('kine')) AS db_size, count(*) AS rows FROM kine;"
+```
 
 ## Development
 
