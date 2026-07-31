@@ -26,9 +26,6 @@ if [[ -z "$YAML" ]]; then
     -o "$YAML"
 fi
 
-SUCCESS_DIR=$(mktemp -d /tmp/loadtest-counts-XXXXXX)
-trap 'rm -rf "$SUCCESS_DIR"' EXIT
-
 START=$(date +%s)
 echo ""
 echo "=== kube-shard Load Test ==="
@@ -40,18 +37,26 @@ echo "Namespace:     $NAMESPACE"
 echo "Started:       $(date)"
 echo ""
 
-for i in $(seq 1 "$COUNT"); do
-  ( kubectl create -f "$YAML" > /dev/null 2>&1 \
-      && touch "$SUCCESS_DIR/ok.$i" \
-      || touch "$SUCCESS_DIR/fail.$i" ) &
+CREATED=0
+FAILED=0
+PIDS=()
 
-  if (( i % PARALLEL == 0 )); then
-    wait
+for i in $(seq 1 "$COUNT"); do
+  kubectl create -f "$YAML" > /dev/null 2>&1 &
+  PIDS+=($!)
+
+  if (( ${#PIDS[@]} >= PARALLEL )); then
+    for pid in "${PIDS[@]}"; do
+      if wait "$pid"; then
+        CREATED=$((CREATED + 1))
+      else
+        FAILED=$((FAILED + 1))
+      fi
+    done
+    PIDS=()
   fi
 
   if (( i % 100 == 0 )); then
-    CREATED=$(find "$SUCCESS_DIR" -name 'ok.*' 2>/dev/null | wc -l)
-    FAILED=$(find "$SUCCESS_DIR" -name 'fail.*' 2>/dev/null | wc -l)
     ELAPSED=$(( $(date +%s) - START ))
     RATE=$(echo "scale=1; $CREATED / ($ELAPSED + 1)" | bc 2>/dev/null || echo "?")
     PR_GB=$(echo "scale=2; $CREATED * $SIZE_KB / 1048576" | bc 2>/dev/null || echo "?")
@@ -60,10 +65,14 @@ for i in $(seq 1 "$COUNT"); do
     echo "[$(date +%H:%M:%S)] $i / $COUNT | created: $CREATED failed: $FAILED | ~${PR_GB} GB PRs | ~${TOTAL_GB} GB est. w/ TaskRuns | ${RATE}/s | ${ELAPSED}s"
   fi
 done
-wait
 
-CREATED=$(find "$SUCCESS_DIR" -name 'ok.*' 2>/dev/null | wc -l)
-FAILED=$(find "$SUCCESS_DIR" -name 'fail.*' 2>/dev/null | wc -l)
+for pid in "${PIDS[@]}"; do
+  if wait "$pid"; then
+    CREATED=$((CREATED + 1))
+  else
+    FAILED=$((FAILED + 1))
+  fi
+done
 ELAPSED=$(( $(date +%s) - START ))
 echo ""
 echo "=== Done ==="
