@@ -39,25 +39,40 @@ echo ""
 
 CREATED=0
 FAILED=0
+PIDS=()
 
 for i in $(seq 1 "$COUNT"); do
-  kubectl create -f "$YAML" > /dev/null 2>&1 && CREATED=$((CREATED + 1)) || FAILED=$((FAILED + 1)) &
+  kubectl create -f "$YAML" > /dev/null 2>&1 &
+  PIDS+=($!)
 
-  if (( i % PARALLEL == 0 )); then
-    wait
+  if (( ${#PIDS[@]} >= PARALLEL )); then
+    for pid in "${PIDS[@]}"; do
+      if wait "$pid"; then
+        CREATED=$((CREATED + 1))
+      else
+        FAILED=$((FAILED + 1))
+      fi
+    done
+    PIDS=()
   fi
 
   if (( i % 100 == 0 )); then
     ELAPSED=$(( $(date +%s) - START ))
-    RATE=$(echo "scale=1; $i / ($ELAPSED + 1)" | bc 2>/dev/null || echo "?")
-    PR_GB=$(echo "scale=2; $i * $SIZE_KB / 1048576" | bc 2>/dev/null || echo "?")
+    RATE=$(echo "scale=1; $CREATED / ($ELAPSED + 1)" | bc 2>/dev/null || echo "?")
+    PR_GB=$(echo "scale=2; $CREATED * $SIZE_KB / 1048576" | bc 2>/dev/null || echo "?")
     MULTIPLIER=$(echo "scale=0; $TASKS + 1" | bc 2>/dev/null || echo "?")
-    TOTAL_GB=$(echo "scale=2; $i * $SIZE_KB * $MULTIPLIER / 1048576" | bc 2>/dev/null || echo "?")
-    echo "[$(date +%H:%M:%S)] $i / $COUNT | ~${PR_GB} GB PRs | ~${TOTAL_GB} GB est. w/ TaskRuns | ${RATE}/s | ${ELAPSED}s"
+    TOTAL_GB=$(echo "scale=2; $CREATED * $SIZE_KB * $MULTIPLIER / 1048576" | bc 2>/dev/null || echo "?")
+    echo "[$(date +%H:%M:%S)] $i / $COUNT | created: $CREATED failed: $FAILED | ~${PR_GB} GB PRs | ~${TOTAL_GB} GB est. w/ TaskRuns | ${RATE}/s | ${ELAPSED}s"
   fi
 done
-wait
 
+for pid in "${PIDS[@]}"; do
+  if wait "$pid"; then
+    CREATED=$((CREATED + 1))
+  else
+    FAILED=$((FAILED + 1))
+  fi
+done
 ELAPSED=$(( $(date +%s) - START ))
 echo ""
 echo "=== Done ==="
