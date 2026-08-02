@@ -21,6 +21,13 @@ def main():
     parser.add_argument("-o", "--output", type=str, required=True, help="Output YAML file path")
     args = parser.parse_args()
 
+    if args.size_kb <= 0:
+        parser.error("--size-kb must be a positive integer")
+    if args.tasks < 0:
+        parser.error("--tasks must be non-negative")
+    if args.task_padding_kb < 0:
+        parser.error("--task-padding-kb must be non-negative")
+
     lines = [
         "apiVersion: tekton.dev/v1",
         "kind: PipelineRun",
@@ -40,6 +47,10 @@ def main():
         lines.extend([
             f"    - name: task-{t}",
             "      taskSpec:",
+            "        stepTemplate:",
+            "          env:",
+            f"          - name: DATA",
+            f"            value: \"{padding}\"",
             "        steps:",
         ])
         for s in range(num_steps):
@@ -48,7 +59,6 @@ def main():
                 f"        - name: step-{s}",
                 f"          image: {args.image}",
                 "          script: |",
-                f"            DATA=\"{padding}\"",
                 f"            echo \"task-{t} step-{s}: sleeping {sleep_secs}s with ${{#DATA}} bytes of payload\"",
                 f"            sleep {sleep_secs}",
             ])

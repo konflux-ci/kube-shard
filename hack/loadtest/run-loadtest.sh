@@ -30,7 +30,7 @@ START=$(date +%s)
 echo ""
 echo "=== kube-shard Load Test ==="
 echo "PipelineRuns:  $COUNT"
-echo "Size:          ~${SIZE_KB} KB each"
+echo "Size:          ~${SIZE_KB} KB each (minimum target)"
 echo "Tasks/PR:      $TASKS"
 echo "Parallelism:   $PARALLEL"
 echo "Namespace:     $NAMESPACE"
