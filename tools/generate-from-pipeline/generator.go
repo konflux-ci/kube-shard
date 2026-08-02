@@ -12,6 +12,10 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// taskInfo captures the metadata extracted from a single PipelineTask that is
+// needed to generate a load-test equivalent. For bundle-resolved tasks the
+// bundleRef and bundleTaskName point at the OCI image; for inline tasks the
+// inlineSteps/inlineSize describe the embedded spec directly.
 type taskInfo struct {
 	name           string
 	bundleRef      string
@@ -23,6 +27,9 @@ type taskInfo struct {
 	inlineSize     int
 }
 
+// config holds the CLI-provided settings that control the generated
+// PipelineRun's namespace, naming, container image, sleep range, and the
+// fallback task size/step count used when bundle resolution is skipped or fails.
 type config struct {
 	namespace         string
 	prefix            string
@@ -33,6 +40,9 @@ type config struct {
 	defaultSteps      int
 }
 
+// extractTaskInfos walks the PipelineRun's inline PipelineSpec and returns a
+// taskInfo for every regular and finally task. Returns nil when the
+// PipelineRun has no inline PipelineSpec.
 func extractTaskInfos(pr *pipelinev1.PipelineRun) []taskInfo {
 	var infos []taskInfo
 	if pr.Spec.PipelineSpec == nil {
@@ -47,6 +57,8 @@ func extractTaskInfos(pr *pipelinev1.PipelineRun) []taskInfo {
 	return infos
 }
 
+// extractSingleTaskInfo converts one PipelineTask into a taskInfo, extracting
+// the bundle resolver reference (if present) and inline spec metrics.
 func extractSingleTaskInfo(pt pipelinev1.PipelineTask, isFinally bool) taskInfo {
 	info := taskInfo{
 		name:          pt.Name,
@@ -77,6 +89,9 @@ func extractSingleTaskInfo(pt pipelinev1.PipelineTask, isFinally bool) taskInfo 
 	return info
 }
 
+// resolveMatrixValues substitutes $(params.<name>) references in Matrix
+// parameters with the concrete array values from the PipelineRun's params.
+// Returns nil when matrix is nil.
 func resolveMatrixValues(matrix *pipelinev1.Matrix, prParams []pipelinev1.Param) *pipelinev1.Matrix {
 	if matrix == nil {
 		return nil
@@ -115,6 +130,9 @@ func resolveMatrixValues(matrix *pipelinev1.Matrix, prParams []pipelinev1.Param)
 	return resolved
 }
 
+// matrixExpansionCount returns the number of TaskRuns that the matrix will
+// fan out into. For a nil matrix the count is 1 (no expansion). When only
+// Include entries are present the count equals len(Include).
 func matrixExpansionCount(matrix *pipelinev1.Matrix) int {
 	if matrix == nil {
 		return 1
@@ -131,6 +149,10 @@ func matrixExpansionCount(matrix *pipelinev1.Matrix) int {
 	return count
 }
 
+// generatePipelineRun assembles a complete PipelineRun with inline task specs
+// sized to match the resolved (or default) storage footprint. Each task's
+// steps contain padded sleep scripts so the Tekton controller produces
+// realistic TaskRun objects.
 func generatePipelineRun(tasks []taskInfo, resolved map[string]*resolvedTask, prParams []pipelinev1.Param, cfg config) *pipelinev1.PipelineRun {
 	pr := &pipelinev1.PipelineRun{
 		TypeMeta: metav1.TypeMeta{
@@ -158,6 +180,10 @@ func generatePipelineRun(tasks []taskInfo, resolved map[string]*resolvedTask, pr
 	return pr
 }
 
+// generatePipelineTask builds a single PipelineTask with an inline TaskSpec
+// whose step count and total serialized size approximate the original task.
+// Resolved bundle metadata takes priority, then inline spec metrics, then
+// config defaults.
 func generatePipelineTask(t taskInfo, r *resolvedTask, prParams []pipelinev1.Param, cfg config) pipelinev1.PipelineTask {
 	stepCount := cfg.defaultSteps
 	targetSize := cfg.defaultTaskSizeKB * 1024
@@ -227,6 +253,10 @@ func generatePipelineTask(t taskInfo, r *resolvedTask, prParams []pipelinev1.Par
 	return pt
 }
 
+// padScript generates a shell script that sleeps for sleepSecs and is padded
+// with random base64 data in a comment to reach approximately targetBytes in
+// total length. This ensures the serialized TaskSpec matches the real task's
+// storage footprint.
 func padScript(sleepSecs int, targetBytes int) string {
 	base := fmt.Sprintf("#!/usr/bin/env sh\nsleep %d\n", sleepSecs)
 	prefix := "# padding: "
@@ -248,6 +278,8 @@ func padScript(sleepSecs int, targetBytes int) string {
 	return base + prefix + padding + "\n"
 }
 
+// randomInt returns a cryptographically random integer in [min, max].
+// When min >= max it returns min.
 func randomInt(min, max int) int {
 	if min >= max {
 		return min

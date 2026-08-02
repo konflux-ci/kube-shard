@@ -152,6 +152,9 @@ func main() {
 		totalSize/1024)
 }
 
+// cleanupYAML removes empty/zero-value YAML fields that the Kubernetes types
+// serialize by default (e.g. "metadata: {}", "status: {}") to keep the
+// generated output clean and readable.
 func cleanupYAML(data []byte) []byte {
 	lines := strings.Split(string(data), "\n")
 	var cleaned []string

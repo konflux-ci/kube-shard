@@ -14,6 +14,10 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// resolvedTask holds the result of resolving a single Tekton bundle from an
+// OCI registry. On success StepNames and SizeBytes describe the task; on
+// failure Err is set (SizeBytes may still be populated with the compressed
+// layer size as a fallback).
 type resolvedTask struct {
 	Name      string
 	StepNames []string
@@ -21,6 +25,8 @@ type resolvedTask struct {
 	Err       error
 }
 
+// resolveBundles resolves all bundle-referenced tasks concurrently, returning
+// a map keyed by task name. Tasks without a bundleRef are skipped.
 func resolveBundles(tasks []taskInfo) map[string]*resolvedTask {
 	results := make(map[string]*resolvedTask, len(tasks))
 	var mu sync.Mutex
@@ -43,6 +49,10 @@ func resolveBundles(tasks []taskInfo) map[string]*resolvedTask {
 	return results
 }
 
+// resolveBundle pulls the OCI image for a single Tekton bundle, reads the
+// manifest to find the task layer (matched by dev.tekton.image.kind and
+// optionally dev.tekton.image.name annotations), and extracts step names and
+// the uncompressed task size.
 func resolveBundle(t taskInfo) *resolvedTask {
 	ref, err := name.ParseReference(t.bundleRef)
 	if err != nil {
@@ -97,6 +107,9 @@ func resolveBundle(t taskInfo) *resolvedTask {
 	return &resolvedTask{Name: t.name, Err: fmt.Errorf("no task layer found in bundle")}
 }
 
+// extractTask reads a single OCI layer, unpacks its tar content, and attempts
+// to deserialize the first entry that parses as a Tekton Task (trying YAML
+// then JSON). It returns the parsed Task and the raw byte size of the entry.
 func extractTask(layer ociV1.Layer) (*pipelinev1.Task, int, error) {
 	rc, err := layer.Uncompressed()
 	if err != nil {
