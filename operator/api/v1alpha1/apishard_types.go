@@ -65,11 +65,39 @@ type SecondarySpec struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+type ConnectionPoolConfig struct {
+	// MaxIdleConnections sets --datastore-max-idle-connections
+	// +optional
+	MaxIdleConnections *int `json:"maxIdleConnections,omitempty"`
+	// MaxOpenConnections sets --datastore-max-open-connections (0 = unlimited)
+	// +optional
+	MaxOpenConnections *int `json:"maxOpenConnections,omitempty"`
+	// MaxLifetime sets --datastore-connection-max-lifetime
+	// +optional
+	MaxLifetime *metav1.Duration `json:"maxLifetime,omitempty"`
+}
+
+type CompactionConfig struct {
+	// Interval sets --compact-interval (0 = disabled)
+	// +optional
+	Interval *metav1.Duration `json:"interval,omitempty"`
+	// MinRetain sets --compact-min-retain
+	// +optional
+	MinRetain *int64 `json:"minRetain,omitempty"`
+	// BatchSize sets --compact-batch-size
+	// +optional
+	BatchSize *int64 `json:"batchSize,omitempty"`
+}
+
 type KineSpec struct {
 	// +kubebuilder:default=1
-	Replicas  int32                       `json:"replicas,omitempty"`
-	Image     string                      `json:"image,omitempty"`
-	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	Replicas                    int32                       `json:"replicas,omitempty"`
+	Image                       string                      `json:"image,omitempty"`
+	Resources                   corev1.ResourceRequirements `json:"resources,omitempty"`
+	ConnectionPool              *ConnectionPoolConfig       `json:"connectionPool,omitempty"`
+	Compaction                  *CompactionConfig           `json:"compaction,omitempty"`
+	PollBatchSize               *int64                      `json:"pollBatchSize,omitempty"`
+	WatchProgressNotifyInterval *metav1.Duration            `json:"watchProgressNotifyInterval,omitempty"`
 }
 
 type APIShardSpec struct {

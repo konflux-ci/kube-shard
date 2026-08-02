@@ -18,6 +18,7 @@ package resources
 
 import (
 	"fmt"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -73,6 +74,39 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	args := []string{
 		"--endpoint", KineEndpoint(shard),
 		"--listen-address", fmt.Sprintf("tcp://0.0.0.0:%d", KinePort),
+	}
+
+	if shard.Spec.Kine.ConnectionPool != nil {
+		cp := shard.Spec.Kine.ConnectionPool
+		if cp.MaxIdleConnections != nil {
+			args = append(args, "--datastore-max-idle-connections", strconv.Itoa(*cp.MaxIdleConnections))
+		}
+		if cp.MaxOpenConnections != nil {
+			args = append(args, "--datastore-max-open-connections", strconv.Itoa(*cp.MaxOpenConnections))
+		}
+		if cp.MaxLifetime != nil {
+			args = append(args, "--datastore-connection-max-lifetime", cp.MaxLifetime.Duration.String())
+		}
+	}
+
+	if shard.Spec.Kine.Compaction != nil {
+		c := shard.Spec.Kine.Compaction
+		if c.Interval != nil {
+			args = append(args, "--compact-interval", c.Interval.Duration.String())
+		}
+		if c.MinRetain != nil {
+			args = append(args, "--compact-min-retain", strconv.FormatInt(*c.MinRetain, 10))
+		}
+		if c.BatchSize != nil {
+			args = append(args, "--compact-batch-size", strconv.FormatInt(*c.BatchSize, 10))
+		}
+	}
+
+	if shard.Spec.Kine.PollBatchSize != nil {
+		args = append(args, "--poll-batch-size", strconv.FormatInt(*shard.Spec.Kine.PollBatchSize, 10))
+	}
+	if shard.Spec.Kine.WatchProgressNotifyInterval != nil {
+		args = append(args, "--watch-progress-notify-interval", shard.Spec.Kine.WatchProgressNotifyInterval.Duration.String())
 	}
 
 	var envFrom []corev1.EnvFromSource

@@ -80,8 +80,38 @@ spec:
                 type: boolean
               kine:
                 properties:
+                  compaction:
+                    properties:
+                      batchSize:
+                        description: BatchSize sets --compact-batch-size
+                        format: int64
+                        type: integer
+                      interval:
+                        description: Interval sets --compact-interval (0 = disabled)
+                        type: string
+                      minRetain:
+                        description: MinRetain sets --compact-min-retain
+                        format: int64
+                        type: integer
+                    type: object
+                  connectionPool:
+                    properties:
+                      maxIdleConnections:
+                        description: MaxIdleConnections sets --datastore-max-idle-connections
+                        type: integer
+                      maxLifetime:
+                        description: MaxLifetime sets --datastore-connection-max-lifetime
+                        type: string
+                      maxOpenConnections:
+                        description: MaxOpenConnections sets --datastore-max-open-connections
+                          (0 = unlimited)
+                        type: integer
+                    type: object
                   image:
                     type: string
+                  pollBatchSize:
+                    format: int64
+                    type: integer
                   replicas:
                     default: 1
                     format: int32
@@ -146,6 +176,8 @@ spec:
                           More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
                     type: object
+                  watchProgressNotifyInterval:
+                    type: string
                 type: object
               namespaceSync:
                 properties:
