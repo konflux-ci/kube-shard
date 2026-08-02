@@ -85,6 +85,7 @@ spec:
                       batchSize:
                         description: BatchSize sets --compact-batch-size
                         format: int64
+                        minimum: 0
                         type: integer
                       interval:
                         description: Interval sets --compact-interval (0 = disabled)
@@ -92,12 +93,14 @@ spec:
                       minRetain:
                         description: MinRetain sets --compact-min-retain
                         format: int64
+                        minimum: 0
                         type: integer
                     type: object
                   connectionPool:
                     properties:
                       maxIdleConnections:
                         description: MaxIdleConnections sets --datastore-max-idle-connections
+                        minimum: 0
                         type: integer
                       maxLifetime:
                         description: MaxLifetime sets --datastore-connection-max-lifetime
@@ -105,12 +108,14 @@ spec:
                       maxOpenConnections:
                         description: MaxOpenConnections sets --datastore-max-open-connections
                           (0 = unlimited)
+                        minimum: 0
                         type: integer
                     type: object
                   image:
                     type: string
                   pollBatchSize:
                     format: int64
+                    minimum: 0
                     type: integer
                   replicas:
                     default: 1
