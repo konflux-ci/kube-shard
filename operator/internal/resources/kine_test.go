@@ -28,9 +28,9 @@ import (
 
 func TestBuildKineDeployment_Args(t *testing.T) {
 	tests := []struct {
-		name     string
-		kine     kubeshardv1alpha1.KineSpec
-		wantArgs map[string]string
+		name       string
+		kine       kubeshardv1alpha1.KineSpec
+		wantArgs   map[string]string
 		absentArgs []string
 	}{
 		{
@@ -132,11 +132,11 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 				"--datastore-max-idle-connections":    "2",
 				"--datastore-max-open-connections":    "20",
 				"--datastore-connection-max-lifetime": "1h0m0s",
-				"--compact-interval":                 "3m0s",
-				"--compact-min-retain":               "500",
-				"--compact-batch-size":               "100",
-				"--poll-batch-size":                  "512",
-				"--watch-progress-notify-interval":   "30s",
+				"--compact-interval":                  "3m0s",
+				"--compact-min-retain":                "500",
+				"--compact-batch-size":                "100",
+				"--poll-batch-size":                   "512",
+				"--watch-progress-notify-interval":    "30s",
 			},
 		},
 	}
