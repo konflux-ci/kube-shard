@@ -65,46 +65,74 @@ type SecondarySpec struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// ConnectionPoolConfig tunes the SQL connection pool that Kine maintains
+// against the backing database (SQLite or PostgreSQL).
 type ConnectionPoolConfig struct {
-	// MaxIdleConnections sets --datastore-max-idle-connections
+	// MaxIdleConnections is the maximum number of idle (kept-alive but unused)
+	// connections in the pool. Higher values reduce connection setup latency
+	// under bursty workloads at the cost of memory.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	MaxIdleConnections *int `json:"maxIdleConnections,omitempty"`
-	// MaxOpenConnections sets --datastore-max-open-connections (0 = unlimited)
+	// MaxOpenConnections is the maximum number of concurrent open connections
+	// to the database (both active and idle). Set to 0 for unlimited.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	MaxOpenConnections *int `json:"maxOpenConnections,omitempty"`
-	// MaxLifetime sets --datastore-connection-max-lifetime
+	// MaxLifetime is the maximum duration a connection may be reused before
+	// being closed and replaced. Helps balance load across database replicas
+	// and recover from transient network issues.
+	// Value is a Go duration string (e.g. "30m", "1h").
 	// +optional
 	MaxLifetime *metav1.Duration `json:"maxLifetime,omitempty"`
 }
 
+// CompactionConfig controls Kine's background compaction, which removes
+// obsolete key revisions from the database to keep storage size bounded.
 type CompactionConfig struct {
-	// Interval sets --compact-interval (0 = disabled)
+	// Interval is how often Kine runs a compaction cycle. Each cycle deletes
+	// obsolete revisions older than the most recent one per key (subject to
+	// MinRetain). Set to 0 to disable compaction entirely.
+	// Value is a Go duration string (e.g. "5m", "1h").
 	// +optional
 	Interval *metav1.Duration `json:"interval,omitempty"`
-	// MinRetain sets --compact-min-retain
+	// MinRetain is the minimum number of historical revisions to preserve
+	// per key during compaction. Higher values allow longer watch histories
+	// at the cost of storage.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	MinRetain *int64 `json:"minRetain,omitempty"`
-	// BatchSize sets --compact-batch-size
+	// BatchSize is the number of obsolete revisions to delete per compaction
+	// cycle. Larger batches compact faster but may increase database lock
+	// contention.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	BatchSize *int64 `json:"batchSize,omitempty"`
 }
 
+// KineSpec configures the Kine deployment that translates etcd gRPC calls
+// into SQL queries against the backing database.
 type KineSpec struct {
 	// +kubebuilder:default=1
 	Replicas  int32                       `json:"replicas,omitempty"`
 	Image     string                      `json:"image,omitempty"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	// ConnectionPool tunes the SQL connection pool parameters.
 	// +optional
 	ConnectionPool *ConnectionPoolConfig `json:"connectionPool,omitempty"`
+	// Compaction controls the background revision cleanup process.
 	// +optional
 	Compaction *CompactionConfig `json:"compaction,omitempty"`
+	// PollBatchSize is the maximum number of events Kine fetches per database
+	// poll cycle. Larger values improve throughput for high-change-rate
+	// workloads at the cost of per-poll latency.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	PollBatchSize *int64 `json:"pollBatchSize,omitempty"`
+	// WatchProgressNotifyInterval controls how often Kine sends bookmark
+	// (progress notification) events to active watchers, allowing them to
+	// advance their resource version even when no real changes occur.
+	// Value is a Go duration string (e.g. "10s", "1m").
 	// +optional
 	WatchProgressNotifyInterval *metav1.Duration `json:"watchProgressNotifyInterval,omitempty"`
 }
