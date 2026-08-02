@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -85,10 +86,13 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update
@@ -835,19 +839,16 @@ func (r *Reconciler) aggregateSubCRStatus(ctx context.Context, shard *kubeshardv
 	}
 }
 
-// syncCRDsToSecondary copies CRDs from the primary to the secondary API server.
-// This allows the secondary to serve these API groups once the CRDs are removed
-// from the primary (resolving the aggregation conflict).
-func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1alpha1.APIShard, crdNames []string) error {
-	logger := log.FromContext(ctx)
-
+// getSecondaryClient builds a controller-runtime client for the secondary API server
+// using the PKI and admin client cert secrets.
+func (r *Reconciler) getSecondaryClient(ctx context.Context, shard *kubeshardv1alpha1.APIShard) (client.Client, error) {
 	if r.ClientProvider == nil {
-		return fmt.Errorf("ClientProvider not configured")
+		return nil, fmt.Errorf("ClientProvider not configured")
 	}
 
 	endpoint := resources.SecondaryEndpoint(shard)
 	if endpoint == "" {
-		return fmt.Errorf("secondary endpoint not available yet")
+		return nil, fmt.Errorf("secondary endpoint not available yet")
 	}
 
 	pkiSecret := &corev1.Secret{}
@@ -855,7 +856,7 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 		Name:      certs.PKISecretName(shard),
 		Namespace: shard.Spec.TargetNamespace,
 	}, pkiSecret); err != nil {
-		return fmt.Errorf("reading PKI secret for CRD sync: %w", err)
+		return nil, fmt.Errorf("reading PKI secret for CRD sync: %w", err)
 	}
 
 	adminSecret := &corev1.Secret{}
@@ -863,19 +864,43 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 		Name:      certs.AdminClientSecretName(shard),
 		Namespace: shard.Spec.TargetNamespace,
 	}, adminSecret); err != nil {
-		return fmt.Errorf("reading admin client cert for CRD sync: %w", err)
+		return nil, fmt.Errorf("reading admin client cert for CRD sync: %w", err)
 	}
 
-	secondaryClient, err := r.ClientProvider.GetOrCreate(shard.Name, secondary.ClientConfig{
+	return r.ClientProvider.GetOrCreate(shard.Name, secondary.ClientConfig{
 		Host:       endpoint,
 		CACert:     pkiSecret.Data["ca.crt"],
 		ClientCert: adminSecret.Data["tls.crt"],
 		ClientKey:  adminSecret.Data["tls.key"],
 	})
+}
+
+// prepareCRDForSync strips cluster-specific metadata from a CRD so it can be
+// applied to the secondary API server.
+func prepareCRDForSync(crd *apiextensionsv1.CustomResourceDefinition) *apiextensionsv1.CustomResourceDefinition {
+	clean := crd.DeepCopy()
+	clean.ResourceVersion = ""
+	clean.UID = ""
+	clean.OwnerReferences = nil
+	clean.ManagedFields = nil
+	clean.Generation = 0
+	clean.Finalizers = nil
+	return clean
+}
+
+// syncCRDsToSecondary copies CRDs from the primary to the secondary API server.
+// If a CRD already exists on the secondary but differs from the primary (e.g.
+// after a storage loss), it is updated. Returns true if any CRD was created or
+// updated.
+func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1alpha1.APIShard, crdNames []string) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	secondaryClient, err := r.getSecondaryClient(ctx, shard)
 	if err != nil {
-		return fmt.Errorf("creating secondary client: %w", err)
+		return false, err
 	}
 
+	changed := false
 	for _, name := range crdNames {
 		crd := &apiextensionsv1.CustomResourceDefinition{}
 		if err := r.Get(ctx, types.NamespacedName{Name: name}, crd); err != nil {
@@ -883,13 +908,7 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 			continue
 		}
 
-		secondaryCRD := crd.DeepCopy()
-		secondaryCRD.ResourceVersion = ""
-		secondaryCRD.UID = ""
-		secondaryCRD.OwnerReferences = nil
-		secondaryCRD.ManagedFields = nil
-		secondaryCRD.Generation = 0
-		secondaryCRD.Finalizers = nil
+		secondaryCRD := prepareCRDForSync(crd)
 
 		existing := &apiextensionsv1.CustomResourceDefinition{}
 		err := secondaryClient.Get(ctx, types.NamespacedName{Name: name}, existing)
@@ -898,13 +917,46 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 				logger.Error(createErr, "Failed to create CRD on secondary", "crd", name)
 				continue
 			}
-			logger.Info("Synced CRD to secondary", "crd", name)
+			logger.Info("Created CRD on secondary", "crd", name)
+			changed = true
 		} else if err != nil {
 			logger.Error(err, "Failed to check CRD on secondary", "crd", name)
+		} else if !crdSpecEqual(existing, crd) {
+			secondaryCRD.ResourceVersion = existing.ResourceVersion
+			if updateErr := secondaryClient.Update(ctx, secondaryCRD); updateErr != nil {
+				logger.Error(updateErr, "Failed to update CRD on secondary", "crd", name)
+				continue
+			}
+			logger.Info("Updated CRD on secondary", "crd", name)
+			changed = true
 		}
 	}
 
-	return nil
+	return changed, nil
+}
+
+// crdSpecEqual returns true if the served versions in two CRDs match. A full
+// DeepEqual on the Spec is too noisy because server-defaulted fields differ
+// between the primary and secondary. Comparing served version names is a
+// lightweight proxy that catches storage-loss scenarios (CRD completely missing
+// or reinstalled with different versions).
+func crdSpecEqual(a, b *apiextensionsv1.CustomResourceDefinition) bool {
+	if a.Spec.Group != b.Spec.Group {
+		return false
+	}
+	if len(a.Spec.Versions) != len(b.Spec.Versions) {
+		return false
+	}
+	aVersions := make(map[string]bool, len(a.Spec.Versions))
+	for _, v := range a.Spec.Versions {
+		aVersions[v.Name] = v.Served
+	}
+	for _, v := range b.Spec.Versions {
+		if aVersions[v.Name] != v.Served {
+			return false
+		}
+	}
+	return true
 }
 
 // verifySecondaryAuth builds a client for the secondary API server using the
@@ -970,8 +1022,10 @@ func (r *Reconciler) reconcileCRDConflicts(ctx context.Context, shard *kubeshard
 	}
 
 	if conflictResult != nil && conflictResult.HasConflict {
-		if syncErr := r.syncCRDsToSecondary(ctx, shard, conflictResult.ConflictingCRDs); syncErr != nil {
+		if changed, syncErr := r.syncCRDsToSecondary(ctx, shard, conflictResult.ConflictingCRDs); syncErr != nil {
 			logger.Error(syncErr, "Failed to sync conflicting CRDs to secondary")
+		} else if changed {
+			r.touchAPIServiceAnnotations(ctx, shard)
 		}
 		if shard.Spec.ForceAggregation {
 			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
@@ -1006,6 +1060,94 @@ func (r *Reconciler) reconcileCRDConflicts(ctx context.Context, shard *kubeshard
 	}
 }
 
+// verifyCRDsOnSecondary checks that all CRDs for the shard's API groups exist
+// on the secondary. If any are missing (e.g. after a storage loss), it re-syncs
+// them and annotates the APIServices to trigger immediate re-discovery.
+func (r *Reconciler) verifyCRDsOnSecondary(ctx context.Context, shard *kubeshardv1alpha1.APIShard) {
+	logger := log.FromContext(ctx)
+
+	secondaryClient, err := r.getSecondaryClient(ctx, shard)
+	if err != nil {
+		logger.V(1).Info("Cannot verify CRDs on secondary", "error", err)
+		return
+	}
+
+	aggregatedGroups := make(map[string]bool, len(shard.Spec.APIGroups))
+	for _, ag := range shard.Spec.APIGroups {
+		aggregatedGroups[ag.Group] = true
+	}
+
+	var crdList apiextensionsv1.CustomResourceDefinitionList
+	if err := secondaryClient.List(ctx, &crdList); err != nil {
+		logger.Error(err, "Failed to list CRDs on secondary for health check")
+		return
+	}
+
+	presentGroups := make(map[string]bool, len(crdList.Items))
+	for i := range crdList.Items {
+		presentGroups[crdList.Items[i].Spec.Group] = true
+	}
+
+	var missingCRDNames []string
+	for group := range aggregatedGroups {
+		if !presentGroups[group] {
+			primaryCRDs := &apiextensionsv1.CustomResourceDefinitionList{}
+			if err := r.List(ctx, primaryCRDs); err != nil {
+				logger.Error(err, "Failed to list CRDs on primary")
+				return
+			}
+			for i := range primaryCRDs.Items {
+				if primaryCRDs.Items[i].Spec.Group == group {
+					missingCRDNames = append(missingCRDNames, primaryCRDs.Items[i].Name)
+				}
+			}
+		}
+	}
+
+	if len(missingCRDNames) == 0 {
+		return
+	}
+
+	logger.Info("Detected missing CRDs on secondary, re-syncing", "crds", missingCRDNames)
+	changed, err := r.syncCRDsToSecondary(ctx, shard, missingCRDNames)
+	if err != nil {
+		logger.Error(err, "Failed to re-sync missing CRDs to secondary")
+		return
+	}
+	if changed {
+		r.touchAPIServiceAnnotations(ctx, shard)
+	}
+}
+
+// touchAPIServiceAnnotations adds or updates a timestamp annotation on all
+// APIServices owned by this shard, forcing the kube-aggregator to re-run its
+// availability check immediately instead of waiting for the next probe cycle.
+func (r *Reconciler) touchAPIServiceAnnotations(ctx context.Context, shard *kubeshardv1alpha1.APIShard) {
+	logger := log.FromContext(ctx)
+
+	ts := time.Now().UTC().Format(time.RFC3339)
+	for _, name := range shard.Status.RegisteredAPIServices {
+		apiSvc := &apiregistrationv1.APIService{}
+		if err := r.Get(ctx, types.NamespacedName{Name: name}, apiSvc); err != nil {
+			if !apierrors.IsNotFound(err) {
+				logger.Error(err, "Failed to get APIService for annotation touch", "apiservice", name)
+			}
+			continue
+		}
+
+		base := apiSvc.DeepCopy()
+		if apiSvc.Annotations == nil {
+			apiSvc.Annotations = make(map[string]string)
+		}
+		apiSvc.Annotations["kube-shard.konflux-ci.dev/last-crd-sync"] = ts
+		if err := r.Patch(ctx, apiSvc, client.MergeFrom(base)); err != nil {
+			logger.Error(err, "Failed to annotate APIService after CRD re-sync", "apiservice", name)
+			continue
+		}
+		logger.V(1).Info("Annotated APIService to trigger re-discovery", "apiservice", name, "timestamp", ts)
+	}
+}
+
 // updateHealthStatus checks deployment health, reconciles sub-CRs when the
 // secondary is ready, and sets the SecondaryHealthy status condition.
 func (r *Reconciler) updateHealthStatus(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
@@ -1030,6 +1172,8 @@ func (r *Reconciler) updateHealthStatus(ctx context.Context, tc *tracking.Client
 		})
 
 		if r.verifySecondaryAuth(ctx, shard) {
+			r.verifyCRDsOnSecondary(ctx, shard)
+
 			if err := r.reconcileNamespaceSync(ctx, tc, shard); err != nil {
 				logger.Error(err, "Failed to reconcile NamespaceSync")
 			}
