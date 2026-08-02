@@ -64,10 +64,10 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	}
 
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kine",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "storage",
+		LabelName:      "kine",
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: "storage",
 	}
 
 	args := []string{
@@ -187,10 +187,10 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	name := KineServiceName(shard)
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kine",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "storage",
+		LabelName:      "kine",
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: "storage",
 	}
 
 	return &corev1.Service{

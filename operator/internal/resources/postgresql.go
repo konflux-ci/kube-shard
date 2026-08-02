@@ -227,9 +227,9 @@ func BuildPostgreSQLService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 
 func postgresLabels(shard *kubeshardv1alpha1.APIShard) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "postgresql",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "database",
+		LabelName:      "postgresql",
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: "database",
 	}
 }

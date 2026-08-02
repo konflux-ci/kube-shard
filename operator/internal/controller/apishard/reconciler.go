@@ -24,6 +24,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -69,6 +70,7 @@ var managedGVKs = []schema.GroupVersionKind{
 	{Group: "", Version: "v1", Kind: "Service"},
 	{Group: "", Version: "v1", Kind: "Secret"},
 	{Group: "", Version: "v1", Kind: "ConfigMap"},
+	{Group: "policy", Version: "v1", Kind: "PodDisruptionBudget"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
@@ -93,6 +95,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=webhooksyncs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives the desired state for a single APIShard resource. It provisions
@@ -301,6 +304,11 @@ func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, sha
 		return fmt.Errorf("kine service: %w", err)
 	}
 
+	pdb := resources.BuildKinePDB(shard)
+	if err := tc.ApplyOwned(ctx, pdb); err != nil {
+		return fmt.Errorf("kine pdb: %w", err)
+	}
+
 	return nil
 }
 
@@ -316,6 +324,11 @@ func (r *Reconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client
 	svc := resources.BuildSecondaryService(shard)
 	if err := tc.ApplyOwned(ctx, svc); err != nil {
 		return fmt.Errorf("secondary service: %w", err)
+	}
+
+	pdb := resources.BuildSecondaryPDB(shard)
+	if err := tc.ApplyOwned(ctx, pdb); err != nil {
+		return fmt.Errorf("secondary pdb: %w", err)
 	}
 
 	return nil
@@ -1110,6 +1123,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&kubeshardv1alpha1.NamespaceSync{}).
 		Owns(&kubeshardv1alpha1.WebhookSync{}).
 		Owns(&apiregistrationv1.APIService{}, builder.WithPredicates(shardpredicate.IgnoreStatusUpdatesPredicate)).
