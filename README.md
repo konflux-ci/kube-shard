@@ -252,6 +252,49 @@ kubectl exec deployment/<shard>-postgresql -n <namespace> -- \
   psql -U kine -d kine -c "SELECT pg_size_pretty(pg_database_size('kine')) AS db_size, count(*) AS rows FROM kine;"
 ```
 
+### Load test results
+
+**Test configuration:** 1000 PipelineRuns (~100 KB each, 10 tasks per PR, 1-5 steps per task with random sleep 20-300s). Cluster: OpenShift 4.21, 3 masters (4 CPU / 16 GB), 8 workers. Shard: 3 Kine replicas (24 Gi / 6 CPU), 3 secondary apiservers (24 Gi / 6 CPU), PostgreSQL (2 Gi / 2 CPU). `event-ttl=5m` configured on the primary API server.
+
+#### Storage timeline
+
+| Phase | PostgreSQL | Live rows | etcd (primary) | Notes |
+|-------|-----------|-----------|----------------|-------|
+| Baseline | 3,960 MB | 35,692 | 155 MB | Pre-test (includes TOAST bloat from prior cleanup) |
+| +4 min (1000 PRs created) | 4,568 MB | 42,535 | 370 MB | All PipelineRuns submitted, 4.4/s create rate |
+| +12 min | 5,072 MB | 48,801 | 610 MB | Tekton expanding TaskRuns + pods |
+| +27 min | 6,651 MB | 71,067 | 740 MB | Near peak -- most TaskRuns created |
+| +35 min (peak) | 6,911 MB | 73,693 | 771 MB | etcd plateaus as event-ttl prunes old events |
+| +38 min (outage) | -- | -- | -- | Master node NotReady (CPU starvation, see below) |
+| +60 min (recovery) | 6,946 MB | 77,058 | 553 MB | etcd compacted; system recovering |
+| +90 min (peak rows) | 7,918 MB | 86,542 | 638 MB | Compaction starts catching up |
+| +3 hours | 7,918 MB | 55,000 | 582 MB | Compaction actively cleaning |
+| +5 hours (steady) | 7,837 MB | 12,200 | 150 MB | Fully compacted |
+
+#### Key findings
+
+**etcd impact (primary cluster):**
+- **Without event-ttl tuning** (previous test): etcd peaked at **~2 GB** from TaskRun pods + events
+- **With event-ttl=5m**: etcd peaked at **771 MB** (62% reduction) and returned to 150 MB baseline
+- Pods and their events are the primary etcd consumers; PipelineRuns/TaskRuns are offloaded to PostgreSQL
+
+**PostgreSQL (shard storage):**
+- DB size reached 7.9 GB but this is misleading -- **6.6 GB is TOAST bloat** from prior test cleanup (dead rows that `VACUUM FULL` would reclaim but regular autovacuum does not)
+- Actual live data: ~21 MB heap + TOAST for ~12,000 live objects
+- Compaction reduced rows from 86,542 (peak) to ~12,200 (steady state) within ~4 hours
+- `VACUUM FULL` or `pg_repack` recommended for production to reclaim TOAST space
+
+**Incident: master node CPU starvation:**
+- One master (4 CPU / 16 GB) became NotReady at ~35 min into the test
+- Root cause: CPU load average hit **101** on 4 CPUs. etcd (1.3 GB RSS) + kube-apiserver (2.6 GB RSS) + event-ttl GC consumed all CPU
+- CRI-O and kubelet froze (futex_wait), PLEG went unhealthy, node marked NotReady
+- Cluster survived on remaining 2 masters; node self-recovered after ~15 min
+- **Takeaway**: `event-ttl=5m` is too aggressive for 4-CPU masters under burst load. Consider 15-30m, or use larger masters
+
+**PipelineRun outcomes:**
+- 42/1000 succeeded (completed within default 1h timeout)
+- 958/1000 timed out (sequential steps with random 20-300s sleep exceeded the 1h default)
+
 ## Development
 
 ```bash
