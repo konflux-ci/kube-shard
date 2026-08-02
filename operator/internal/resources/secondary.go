@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	DefaultSecondaryImage = "registry.k8s.io/kube-apiserver:v1.32.0"
+	DefaultSecondaryImage = "registry.k8s.io/kube-apiserver:v1.36.2"
 	SecondaryPort         = 6443
 )
 

@@ -105,7 +105,7 @@ spec:
         konflux.dev/type: tenant
   secondary:
     replicas: 1
-    image: registry.k8s.io/kube-apiserver:v1.32.0
+    image: registry.k8s.io/kube-apiserver:v1.36.2
   kine:
     replicas: 1
     image: rancher/kine:v0.14.14
