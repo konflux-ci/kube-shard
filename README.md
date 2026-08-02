@@ -244,15 +244,15 @@ The `tools/generate-from-pipeline/` tool takes a real Tekton PipelineRun YAML (e
 
 ```bash
 # Build the tool
-cd tools/generate-from-pipeline && go build -o /tmp/generate-from-pipeline .
+cd tools/generate-from-pipeline && go build -o ../../_output/generate-from-pipeline .
 
 # Generate a load test PipelineRun from a real Konflux build pipeline
-/tmp/generate-from-pipeline \
+_output/generate-from-pipeline \
   -input .tekton/my-component-pull-request.yaml \
-  -output /tmp/loadtest.yaml
+  -output _output/loadtest.yaml
 
 # Run 1000 copies in parallel
-PIPELINERUN_YAML=/tmp/loadtest.yaml ./hack/loadtest/run-loadtest.sh 1000
+PIPELINERUN_YAML=_output/loadtest.yaml ./hack/loadtest/run-loadtest.sh 1000
 ```
 
 The tool resolves all task bundles concurrently, then generates a PipelineRun where each task has:

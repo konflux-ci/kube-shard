@@ -125,6 +125,9 @@ func matrixExpansionCount(matrix *pipelinev1.Matrix) int {
 			count *= n
 		}
 	}
+	if count == 1 && len(matrix.Params) == 0 && len(matrix.Include) > 0 {
+		return len(matrix.Include)
+	}
 	return count
 }
 
@@ -179,6 +182,9 @@ func generatePipelineTask(t taskInfo, r *resolvedTask, prParams []pipelinev1.Par
 		}
 	}
 
+	if stepCount < 1 {
+		stepCount = 1
+	}
 	steps := make([]pipelinev1.Step, stepCount)
 	perStepSize := targetSize / stepCount
 	if perStepSize < 100 {
