@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -51,7 +52,22 @@ type SecretKeyReference struct {
 }
 
 type InClusterStorage struct {
-	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources   corev1.ResourceRequirements `json:"resources,omitempty"`
+	Persistence *PersistenceSpec            `json:"persistence,omitempty"`
+}
+
+// PersistenceSpec configures persistent volume storage for in-cluster backends.
+// When specified, a PVC is used instead of emptyDir, ensuring data survives pod restarts.
+type PersistenceSpec struct {
+	// StorageClassName is the name of the StorageClass to use for the PVC.
+	// If not specified, the cluster default StorageClass is used.
+	StorageClassName *string `json:"storageClassName,omitempty"`
+	// Size is the requested storage capacity.
+	Size resource.Quantity `json:"size"`
+	// AccessModes specifies the desired access modes for the PVC.
+	// Defaults to ReadWriteOnce if not specified.
+	// +kubebuilder:default={ReadWriteOnce}
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
 }
 
 type NamespaceSyncConfig struct {

@@ -66,9 +66,11 @@ const (
 // used by the tracking client for orphan cleanup.
 var managedGVKs = []schema.GroupVersionKind{
 	{Group: "apps", Version: "v1", Kind: "Deployment"},
+	{Group: "apps", Version: "v1", Kind: "StatefulSet"},
 	{Group: "", Version: "v1", Kind: "Service"},
 	{Group: "", Version: "v1", Kind: "Secret"},
 	{Group: "", Version: "v1", Kind: "ConfigMap"},
+	{Group: "", Version: "v1", Kind: "PersistentVolumeClaim"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
@@ -85,10 +87,12 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiregistration.k8s.io,resources=apiservices,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update
@@ -291,6 +295,15 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, tc *tracking.Client, 
 // reconcileKine ensures the Kine deployment and service exist in the target namespace.
 // Kine translates etcd gRPC calls into SQL queries against the configured storage backend.
 func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeSQLite &&
+		shard.Spec.Storage.InCluster != nil &&
+		shard.Spec.Storage.InCluster.Persistence != nil {
+		pvc := resources.BuildKinePVC(shard)
+		if err := tc.ApplyOwned(ctx, pvc); err != nil {
+			return fmt.Errorf("kine PVC: %w", err)
+		}
+	}
+
 	deployment := resources.BuildKineDeployment(shard)
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("kine deployment: %w", err)
@@ -339,9 +352,16 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 		return fmt.Errorf("postgresql secret: %w", err)
 	}
 
-	deployment := resources.BuildPostgreSQLDeployment(shard)
-	if err := tc.ApplyOwned(ctx, deployment); err != nil {
-		return fmt.Errorf("postgresql deployment: %w", err)
+	if resources.PostgreSQLPersistenceEnabled(shard) {
+		sts := resources.BuildPostgreSQLStatefulSet(shard)
+		if err := tc.ApplyOwned(ctx, sts); err != nil {
+			return fmt.Errorf("postgresql statefulset: %w", err)
+		}
+	} else {
+		deployment := resources.BuildPostgreSQLDeployment(shard)
+		if err := tc.ApplyOwned(ctx, deployment); err != nil {
+			return fmt.Errorf("postgresql deployment: %w", err)
+		}
 	}
 
 	svc := resources.BuildPostgreSQLService(shard)
@@ -1107,9 +1127,11 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.APIShard{}).
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(shardpredicate.DeploymentReadinessPredicate)).
+		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&kubeshardv1alpha1.NamespaceSync{}).
 		Owns(&kubeshardv1alpha1.WebhookSync{}).
 		Owns(&apiregistrationv1.APIService{}, builder.WithPredicates(shardpredicate.IgnoreStatusUpdatesPredicate)).

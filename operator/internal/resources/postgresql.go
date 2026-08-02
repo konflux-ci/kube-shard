@@ -233,3 +233,124 @@ func postgresLabels(shard *kubeshardv1alpha1.APIShard) map[string]string {
 		"app.kubernetes.io/component":  "database",
 	}
 }
+
+// PostgreSQLPersistenceEnabled returns true when the InCluster storage has
+// persistence configured, indicating a StatefulSet should be used instead of a Deployment.
+func PostgreSQLPersistenceEnabled(shard *kubeshardv1alpha1.APIShard) bool {
+	return shard.Spec.Storage.InCluster != nil && shard.Spec.Storage.InCluster.Persistence != nil
+}
+
+// BuildPostgreSQLStatefulSet creates an in-cluster PostgreSQL StatefulSet with
+// volumeClaimTemplates for persistent storage. Used when persistence is configured.
+func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.StatefulSet {
+	name := PostgreSQLDeploymentName(shard)
+	labels := postgresLabels(shard)
+	persistence := shard.Spec.Storage.InCluster.Persistence
+
+	var resourceReqs corev1.ResourceRequirements
+	if shard.Spec.Storage.InCluster != nil {
+		resourceReqs = shard.Spec.Storage.InCluster.Resources
+	}
+	if resourceReqs.Requests == nil {
+		resourceReqs.Requests = corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		}
+	}
+
+	accessModes := persistence.AccessModes
+	if len(accessModes) == 0 {
+		accessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+	}
+
+	return &appsv1.StatefulSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "StatefulSet",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: shard.Spec.TargetNamespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    ptr.To(int32(1)),
+			ServiceName: PostgreSQLServiceName(shard),
+			Selector:    &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "postgresql",
+							Image: DefaultPostgreSQLImage,
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "tcp",
+									ContainerPort: PostgreSQLPort,
+									Protocol:      corev1.ProtocolTCP,
+								},
+							},
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									SecretRef: &corev1.SecretEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: PostgreSQLSecretName(shard),
+										},
+									},
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name:  "PGDATA",
+									Value: "/var/lib/postgresql/data/pgdata",
+								},
+							},
+							Resources: resourceReqs,
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "data",
+									MountPath: "/var/lib/postgresql/data",
+								},
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt32(PostgreSQLPort),
+									},
+								},
+								InitialDelaySeconds: 10,
+								PeriodSeconds:       10,
+							},
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt32(PostgreSQLPort),
+									},
+								},
+								InitialDelaySeconds: 30,
+								PeriodSeconds:       30,
+							},
+						},
+					},
+				},
+			},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "data",
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes:      accessModes,
+						StorageClassName: persistence.StorageClassName,
+						Resources: corev1.VolumeResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceStorage: persistence.Size,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
