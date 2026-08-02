@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	DefaultKineImage = "rancher/kine:v0.14.14"
+	DefaultKineImage = "ghcr.io/k3s-io/kine:v0.16.3-nocgo"
 	KinePort         = 2379
 )
 

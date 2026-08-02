@@ -33,4 +33,4 @@ spec:
         memory: 1Gi
   kine:
     replicas: 1
-    image: rancher/kine:v0.14.14
+    image: ghcr.io/k3s-io/kine:v0.16.3-nocgo
