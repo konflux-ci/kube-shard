@@ -56,8 +56,8 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 			kine: kubeshardv1alpha1.KineSpec{
 				Replicas: 1,
 				ConnectionPool: &kubeshardv1alpha1.ConnectionPoolConfig{
-					MaxIdleConnections: ptr.To(5),
-					MaxOpenConnections: ptr.To(10),
+					MaxIdleConnections: ptr.To[int32](5),
+					MaxOpenConnections: ptr.To[int32](10),
 					MaxLifetime:        &metav1.Duration{Duration: 30 * time.Minute},
 				},
 			},
@@ -72,7 +72,7 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 			kine: kubeshardv1alpha1.KineSpec{
 				Replicas: 1,
 				ConnectionPool: &kubeshardv1alpha1.ConnectionPoolConfig{
-					MaxOpenConnections: ptr.To(0),
+					MaxOpenConnections: ptr.To[int32](0),
 				},
 			},
 			wantArgs: map[string]string{
@@ -116,8 +116,8 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 			kine: kubeshardv1alpha1.KineSpec{
 				Replicas: 1,
 				ConnectionPool: &kubeshardv1alpha1.ConnectionPoolConfig{
-					MaxIdleConnections: ptr.To(2),
-					MaxOpenConnections: ptr.To(20),
+					MaxIdleConnections: ptr.To[int32](2),
+					MaxOpenConnections: ptr.To[int32](20),
 					MaxLifetime:        &metav1.Duration{Duration: 1 * time.Hour},
 				},
 				Compaction: &kubeshardv1alpha1.CompactionConfig{

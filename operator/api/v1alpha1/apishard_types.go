@@ -73,17 +73,18 @@ type ConnectionPoolConfig struct {
 	// under bursty workloads at the cost of memory.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	MaxIdleConnections *int `json:"maxIdleConnections,omitempty"`
+	MaxIdleConnections *int32 `json:"maxIdleConnections,omitempty"`
 	// MaxOpenConnections is the maximum number of concurrent open connections
 	// to the database (both active and idle). Set to 0 for unlimited.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
-	MaxOpenConnections *int `json:"maxOpenConnections,omitempty"`
+	MaxOpenConnections *int32 `json:"maxOpenConnections,omitempty"`
 	// MaxLifetime is the maximum duration a connection may be reused before
 	// being closed and replaced. Helps balance load across database replicas
 	// and recover from transient network issues.
 	// Value is a Go duration string (e.g. "30m", "1h").
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
 	MaxLifetime *metav1.Duration `json:"maxLifetime,omitempty"`
 }
 
@@ -95,6 +96,7 @@ type CompactionConfig struct {
 	// MinRetain). Set to 0 to disable compaction entirely.
 	// Value is a Go duration string (e.g. "5m", "1h").
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
 	Interval *metav1.Duration `json:"interval,omitempty"`
 	// MinRetain is the minimum number of historical revisions to preserve
 	// per key during compaction. Higher values allow longer watch histories
@@ -134,6 +136,7 @@ type KineSpec struct {
 	// advance their resource version even when no real changes occur.
 	// Value is a Go duration string (e.g. "10s", "1m").
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
 	WatchProgressNotifyInterval *metav1.Duration `json:"watchProgressNotifyInterval,omitempty"`
 }
 

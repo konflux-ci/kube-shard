@@ -79,10 +79,10 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	if shard.Spec.Kine.ConnectionPool != nil {
 		cp := shard.Spec.Kine.ConnectionPool
 		if cp.MaxIdleConnections != nil {
-			args = append(args, "--datastore-max-idle-connections", strconv.Itoa(*cp.MaxIdleConnections))
+			args = append(args, "--datastore-max-idle-connections", strconv.FormatInt(int64(*cp.MaxIdleConnections), 10))
 		}
 		if cp.MaxOpenConnections != nil {
-			args = append(args, "--datastore-max-open-connections", strconv.Itoa(*cp.MaxOpenConnections))
+			args = append(args, "--datastore-max-open-connections", strconv.FormatInt(int64(*cp.MaxOpenConnections), 10))
 		}
 		if cp.MaxLifetime != nil {
 			args = append(args, "--datastore-connection-max-lifetime", cp.MaxLifetime.Duration.String())

@@ -197,12 +197,12 @@ func (in *ConnectionPoolConfig) DeepCopyInto(out *ConnectionPoolConfig) {
 	*out = *in
 	if in.MaxIdleConnections != nil {
 		in, out := &in.MaxIdleConnections, &out.MaxIdleConnections
-		*out = new(int)
+		*out = new(int32)
 		**out = **in
 	}
 	if in.MaxOpenConnections != nil {
 		in, out := &in.MaxOpenConnections, &out.MaxOpenConnections
-		*out = new(int)
+		*out = new(int32)
 		**out = **in
 	}
 	if in.MaxLifetime != nil {
