@@ -173,9 +173,17 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 								InitialDelaySeconds: 15,
 								PeriodSeconds:       20,
 							},
+							Lifecycle: &corev1.Lifecycle{
+								PreStop: &corev1.LifecycleHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{"/bin/sh", "-c", "sleep 3"},
+									},
+								},
+							},
 						},
 					},
-					Volumes: volumes,
+					TerminationGracePeriodSeconds: ptr.To(int64(15)),
+					Volumes:                       volumes,
 				},
 			},
 		},

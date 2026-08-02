@@ -180,8 +180,16 @@ func BuildPostgreSQLDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploy
 								InitialDelaySeconds: 30,
 								PeriodSeconds:       30,
 							},
+							Lifecycle: &corev1.Lifecycle{
+								PreStop: &corev1.LifecycleHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{"/bin/sh", "-c", "sleep 3"},
+									},
+								},
+							},
 						},
 					},
+					TerminationGracePeriodSeconds: ptr.To(int64(30)),
 					Volumes: []corev1.Volume{
 						{
 							Name: "data",
