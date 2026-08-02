@@ -108,7 +108,7 @@ spec:
     image: registry.k8s.io/kube-apiserver:v1.32.0
   kine:
     replicas: 1
-    image: ghcr.io/k3s-io/kine:v0.16.3-nocgo
+    image: ghcr.io/k3s-io/kine:v0.16.3
 ```
 
 For development with SQLite (no external database needed):

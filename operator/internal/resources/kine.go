@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	DefaultKineImage = "ghcr.io/k3s-io/kine:v0.16.3-nocgo"
+	DefaultKineImage = "ghcr.io/k3s-io/kine:v0.16.3"
 	KinePort         = 2379
 )
 
