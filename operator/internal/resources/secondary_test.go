@@ -21,8 +21,10 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
@@ -186,4 +188,16 @@ func TestBuildSecondaryDeployment_TopologySpreadConstraints(t *testing.T) {
 	g.Expect(podSpec.TopologySpreadConstraints).To(HaveLen(1))
 	g.Expect(podSpec.TopologySpreadConstraints[0].TopologyKey).To(Equal("topology.kubernetes.io/zone"))
 	g.Expect(podSpec.TopologySpreadConstraints[0].MaxSkew).To(Equal(int32(1)))
+}
+
+func TestBuildSecondaryDeployment_RollingUpdateStrategy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+
+	strategy := deploy.Spec.Strategy
+	g.Expect(strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+	g.Expect(strategy.RollingUpdate).ToNot(BeNil())
+	g.Expect(*strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromInt32(0)))
+	g.Expect(*strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromInt32(1)))
 }

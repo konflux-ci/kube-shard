@@ -172,6 +172,13 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To(replicas),
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxUnavailable: &intstr.IntOrString{Type: intstr.Int, IntVal: 0},
+					MaxSurge:       &intstr.IntOrString{Type: intstr.Int, IntVal: 1},
+				},
+			},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
