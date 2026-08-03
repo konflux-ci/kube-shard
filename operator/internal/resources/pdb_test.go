@@ -42,7 +42,7 @@ func TestBuildPDB_ReturnsNil_WhenReplicasZero(t *testing.T) {
 func TestBuildPDB_ReturnsPDB_WhenReplicasTwo(t *testing.T) {
 	g := NewGomegaWithT(t)
 	selector := map[string]string{
-		"app.kubernetes.io/name":       "kine",
+		"app.kubernetes.io/name":       NameKine,
 		"app.kubernetes.io/instance":   "test-shard",
 		"app.kubernetes.io/managed-by": "kube-shard-operator",
 	}

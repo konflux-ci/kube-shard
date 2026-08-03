@@ -72,7 +72,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	}
 
 	labels := map[string]string{
-		LabelName:      "kine",
+		LabelName:      NameKine,
 		LabelInstance:  shard.Name,
 		LabelManagedBy: ManagedByValue,
 		LabelComponent: ComponentStorage,
@@ -193,7 +193,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 					Affinity:                  BuildKineAffinity(shard),
 					Containers: []corev1.Container{
 						{
-							Name:         "kine",
+							Name:         NameKine,
 							Image:        image,
 							Args:         args,
 							Env:          env,
@@ -242,7 +242,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	name := KineServiceName(shard)
 	labels := map[string]string{
-		LabelName:      "kine",
+		LabelName:      NameKine,
 		LabelInstance:  shard.Name,
 		LabelManagedBy: ManagedByValue,
 		LabelComponent: ComponentStorage,
