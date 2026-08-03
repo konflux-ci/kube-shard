@@ -96,7 +96,7 @@ var _ = Describe("reconcileRequestHeaderCA", func() {
 	setAuthConfigMap := func(data map[string]string) {
 		cm := &corev1.ConfigMap{}
 		err := k8sClient.Get(ctx, types.NamespacedName{
-			Name: "extension-apiserver-authentication", Namespace: "kube-system",
+			Name: extensionAPIServerAuthCM, Namespace: kubeSystemNamespace,
 		}, cm)
 		if err == nil {
 			cm.Data = data
@@ -104,8 +104,8 @@ var _ = Describe("reconcileRequestHeaderCA", func() {
 		} else {
 			cm = &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "extension-apiserver-authentication",
-					Namespace: "kube-system",
+					Name:      extensionAPIServerAuthCM,
+					Namespace: kubeSystemNamespace,
 				},
 				Data: data,
 			}
@@ -139,7 +139,7 @@ var _ = Describe("reconcileRequestHeaderCA", func() {
 		tc := newTrackingClient(shard)
 		allowedNames, err := reconciler.reconcileRequestHeaderCA(ctx, tc, shard)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(allowedNames).To(Equal([]string{"front-proxy-client"}))
+		Expect(allowedNames).To(Equal([]string{defaultFrontProxyClient}))
 	})
 
 	It("should fall back to front-proxy-client when allowed names is an empty array", func() {
@@ -152,7 +152,7 @@ var _ = Describe("reconcileRequestHeaderCA", func() {
 		tc := newTrackingClient(shard)
 		allowedNames, err := reconciler.reconcileRequestHeaderCA(ctx, tc, shard)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(allowedNames).To(Equal([]string{"front-proxy-client"}))
+		Expect(allowedNames).To(Equal([]string{defaultFrontProxyClient}))
 	})
 
 	It("should return error when requestheader-client-ca-file is missing", func() {
@@ -769,7 +769,7 @@ var _ = Describe("reconcileSecondary", func() {
 		}()
 
 		tc := newTrackingClient(shard)
-		err := reconciler.reconcileSecondary(ctx, tc, shard, []string{"front-proxy-client"})
+		err := reconciler.reconcileSecondary(ctx, tc, shard, []string{defaultFrontProxyClient})
 		Expect(err).NotTo(HaveOccurred())
 
 		deploy := &appsv1.Deployment{}
@@ -1171,14 +1171,15 @@ var _ = Describe("checkDeploymentHealth", func() {
 		return shard
 	}
 
-	createDeployment := func(name, namespace string, replicas, readyReplicas int32) {
+	createDeployment := func(name, namespace string, readyReplicas int32) {
+		var one int32 = 1
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
 				Namespace: namespace,
 			},
 			Spec: appsv1.DeploymentSpec{
-				Replicas: &replicas,
+				Replicas: &one,
 				Selector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"app": name},
 				},
@@ -1189,7 +1190,7 @@ var _ = Describe("checkDeploymentHealth", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
-		deploy.Status.Replicas = replicas
+		deploy.Status.Replicas = 1
 		deploy.Status.ReadyReplicas = readyReplicas
 		Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
 	}
@@ -1198,8 +1199,8 @@ var _ = Describe("checkDeploymentHealth", func() {
 		shard := createHealthShard("sqlite-ok", kubeshardv1alpha1.StorageTypeSQLite)
 		defer func() { _ = k8sClient.Delete(ctx, shard) }()
 
-		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
-		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1)
 
 		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
 		Expect(err).NotTo(HaveOccurred())
@@ -1210,8 +1211,8 @@ var _ = Describe("checkDeploymentHealth", func() {
 		shard := createHealthShard("kine-bad", kubeshardv1alpha1.StorageTypeSQLite)
 		defer func() { _ = k8sClient.Delete(ctx, shard) }()
 
-		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1, 0)
-		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 0)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1)
 
 		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
 		Expect(err).NotTo(HaveOccurred())
@@ -1222,8 +1223,8 @@ var _ = Describe("checkDeploymentHealth", func() {
 		shard := createHealthShard("pg-ok", kubeshardv1alpha1.StorageTypeInClusterPostgreSQL)
 		defer func() { _ = k8sClient.Delete(ctx, shard) }()
 
-		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
-		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1)
 
 		var one int32 = 1
 		pgSts := &appsv1.StatefulSet{
@@ -1254,8 +1255,8 @@ var _ = Describe("checkDeploymentHealth", func() {
 		shard := createHealthShard("pg-bad", kubeshardv1alpha1.StorageTypeInClusterPostgreSQL)
 		defer func() { _ = k8sClient.Delete(ctx, shard) }()
 
-		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
-		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1)
 
 		var one int32 = 1
 		pgSts := &appsv1.StatefulSet{
@@ -1361,8 +1362,8 @@ var _ = Describe("requestHeaderCAMapper", func() {
 		mapper := requestHeaderCAMapper(k8sClient)
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "extension-apiserver-authentication",
-				Namespace: "kube-system",
+				Name:      extensionAPIServerAuthCM,
+				Namespace: kubeSystemNamespace,
 			},
 		}
 		requests := mapper(ctx, cm)
@@ -1383,7 +1384,7 @@ var _ = Describe("requestHeaderCAMapper", func() {
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "some-other-configmap",
-				Namespace: "kube-system",
+				Namespace: kubeSystemNamespace,
 			},
 		}
 		requests := mapper(ctx, cm)
@@ -1394,7 +1395,7 @@ var _ = Describe("requestHeaderCAMapper", func() {
 		mapper := requestHeaderCAMapper(k8sClient)
 		cm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "extension-apiserver-authentication",
+				Name:      extensionAPIServerAuthCM,
 				Namespace: "default",
 			},
 		}
@@ -1703,7 +1704,7 @@ var _ = Describe("PDB auto-creation", func() {
 			defer func() { _ = k8sClient.Delete(ctx, shard) }()
 
 			tc := newTrackingClient(shard)
-			err := reconciler.reconcileSecondary(ctx, tc, shard, []string{"front-proxy-client"})
+			err := reconciler.reconcileSecondary(ctx, tc, shard, []string{defaultFrontProxyClient})
 			Expect(err).NotTo(HaveOccurred())
 
 			pdb := &policyv1.PodDisruptionBudget{}
@@ -1747,7 +1748,7 @@ var _ = Describe("PDB auto-creation", func() {
 			defer func() { _ = k8sClient.Delete(ctx, shard) }()
 
 			tc := newTrackingClient(shard)
-			err := reconciler.reconcileSecondary(ctx, tc, shard, []string{"front-proxy-client"})
+			err := reconciler.reconcileSecondary(ctx, tc, shard, []string{defaultFrontProxyClient})
 			Expect(err).NotTo(HaveOccurred())
 
 			pdb := &policyv1.PodDisruptionBudget{}

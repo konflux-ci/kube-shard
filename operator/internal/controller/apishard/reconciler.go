@@ -61,6 +61,10 @@ const (
 	finalizerName     = "kube-shard.konflux-ci.dev/apiservice-cleanup"
 	ownerLabelKey     = "kube-shard.konflux-ci.dev/owner"
 	componentLabelKey = "kube-shard.konflux-ci.dev/component"
+
+	extensionAPIServerAuthCM = "extension-apiserver-authentication"
+	kubeSystemNamespace      = "kube-system"
+	defaultFrontProxyClient  = "front-proxy-client"
 )
 
 // managedGVKs lists all GVKs that the Reconciler may create,
@@ -594,15 +598,15 @@ func (r *Reconciler) reconcileAuthDelegator(ctx context.Context, tc *tracking.Cl
 func (r *Reconciler) reconcileRequestHeaderCA(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) ([]string, error) {
 	sourceCM := &corev1.ConfigMap{}
 	if err := r.Get(ctx, types.NamespacedName{
-		Name:      "extension-apiserver-authentication",
-		Namespace: "kube-system",
+		Name:      extensionAPIServerAuthCM,
+		Namespace: kubeSystemNamespace,
 	}, sourceCM); err != nil {
-		return nil, fmt.Errorf("reading extension-apiserver-authentication from kube-system: %w", err)
+		return nil, fmt.Errorf("reading %s from %s: %w", extensionAPIServerAuthCM, kubeSystemNamespace, err)
 	}
 
 	caData := sourceCM.Data["requestheader-client-ca-file"]
 	if caData == "" {
-		return nil, fmt.Errorf("requestheader-client-ca-file not found in extension-apiserver-authentication ConfigMap")
+		return nil, fmt.Errorf("requestheader-client-ca-file not found in %s ConfigMap", extensionAPIServerAuthCM)
 	}
 
 	var allowedNames []string
@@ -612,7 +616,7 @@ func (r *Reconciler) reconcileRequestHeaderCA(ctx context.Context, tc *tracking.
 		}
 	}
 	if len(allowedNames) == 0 {
-		allowedNames = []string{"front-proxy-client"}
+		allowedNames = []string{defaultFrontProxyClient}
 	}
 
 	cm := &corev1.ConfigMap{
@@ -1193,8 +1197,8 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 // changes, ensuring the secondary picks up front-proxy CA rotations.
 func requestHeaderCAMapper(c client.Client) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		if obj.GetName() != "extension-apiserver-authentication" ||
-			obj.GetNamespace() != "kube-system" {
+		if obj.GetName() != extensionAPIServerAuthCM ||
+			obj.GetNamespace() != kubeSystemNamespace {
 			return nil
 		}
 		var shards kubeshardv1alpha1.APIShardList
