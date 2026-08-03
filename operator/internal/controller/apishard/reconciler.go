@@ -268,8 +268,8 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alph
 		ObjectMeta: metav1.ObjectMeta{
 			Name: shard.Spec.TargetNamespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "kube-shard-operator",
-				"app.kubernetes.io/instance":   shard.Name,
+				resources.LabelManagedBy: resources.ManagedByValue,
+				resources.LabelInstance:  shard.Name,
 			},
 		},
 	}
@@ -743,8 +743,8 @@ func (r *Reconciler) reconcileNamespaceSync(ctx context.Context, tc *tracking.Cl
 			Name:      fmt.Sprintf("%s-ns-sync", shard.Name),
 			Namespace: shard.Spec.TargetNamespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/instance":   shard.Name,
-				"app.kubernetes.io/managed-by": "kube-shard-operator",
+				resources.LabelInstance:  shard.Name,
+				resources.LabelManagedBy: resources.ManagedByValue,
 			},
 		},
 	}
@@ -790,8 +790,8 @@ func (r *Reconciler) reconcileWebhookSync(ctx context.Context, tc *tracking.Clie
 			Name:      fmt.Sprintf("%s-webhook-sync", shard.Name),
 			Namespace: shard.Spec.TargetNamespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/instance":   shard.Name,
-				"app.kubernetes.io/managed-by": "kube-shard-operator",
+				resources.LabelInstance:  shard.Name,
+				resources.LabelManagedBy: resources.ManagedByValue,
 			},
 		},
 	}

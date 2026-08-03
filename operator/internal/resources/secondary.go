@@ -66,10 +66,10 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 	}
 
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kube-apiserver",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "apiserver",
+		LabelName:      "kube-apiserver",
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: ComponentAPIServer,
 	}
 
 	kineSvc := KineServiceName(shard)
@@ -250,10 +250,10 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 func BuildSecondaryService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	name := SecondaryServiceName(shard)
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kube-apiserver",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "apiserver",
+		LabelName:      "kube-apiserver",
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: ComponentAPIServer,
 	}
 
 	return &corev1.Service{

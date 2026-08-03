@@ -7,6 +7,18 @@ import (
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 )
 
+const (
+	LabelName      = "app.kubernetes.io/name"
+	LabelInstance  = "app.kubernetes.io/instance"
+	LabelManagedBy = "app.kubernetes.io/managed-by"
+	LabelComponent = "app.kubernetes.io/component"
+
+	ManagedByValue     = "kube-shard-operator"
+	ComponentAPIServer = "apiserver"
+	ComponentStorage   = "storage"
+	ComponentDatabase  = "database"
+)
+
 // isColocateEnabled returns true if component colocation is enabled for the shard.
 // Colocation is enabled by default when ColocateComponents is nil.
 func isColocateEnabled(shard *kubeshardv1alpha1.APIShard) bool {
@@ -37,8 +49,8 @@ func BuildSecondaryAffinity(shard *kubeshardv1alpha1.APIShard) *corev1.Affinity 
 					PodAffinityTerm: corev1.PodAffinityTerm{
 						LabelSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{
-								"app.kubernetes.io/instance":  shard.Name,
-								"app.kubernetes.io/component": "apiserver",
+								LabelInstance:  shard.Name,
+								LabelComponent: ComponentAPIServer,
 							},
 						},
 						TopologyKey: "kubernetes.io/hostname",
@@ -56,8 +68,8 @@ func BuildSecondaryAffinity(shard *kubeshardv1alpha1.APIShard) *corev1.Affinity 
 					PodAffinityTerm: corev1.PodAffinityTerm{
 						LabelSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{
-								"app.kubernetes.io/instance":  shard.Name,
-								"app.kubernetes.io/component": "storage",
+								LabelInstance:  shard.Name,
+								LabelComponent: ComponentStorage,
 							},
 						},
 						TopologyKey: "kubernetes.io/hostname",
@@ -90,8 +102,8 @@ func BuildKineAffinity(shard *kubeshardv1alpha1.APIShard) *corev1.Affinity {
 					PodAffinityTerm: corev1.PodAffinityTerm{
 						LabelSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{
-								"app.kubernetes.io/instance":  shard.Name,
-								"app.kubernetes.io/component": "storage",
+								LabelInstance:  shard.Name,
+								LabelComponent: ComponentStorage,
 							},
 						},
 						TopologyKey: "kubernetes.io/hostname",

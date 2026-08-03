@@ -197,8 +197,8 @@ func BuildAdminClientCertificate(shard *kubeshardv1alpha1.APIShard) *unstructure
 
 func certLabels(shard *kubeshardv1alpha1.APIShard) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/component":  "certificates",
+		resources.LabelManagedBy: resources.ManagedByValue,
+		resources.LabelInstance:  shard.Name,
+		resources.LabelComponent: "certificates",
 	}
 }
