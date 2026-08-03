@@ -24,10 +24,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -919,5 +921,62 @@ var _ = Describe("reconcileAdminKubeconfig", func() {
 		Expect(kubeconfigSecret.Data).To(HaveKey("tls.crt"))
 		Expect(kubeconfigSecret.Data).To(HaveKey("tls.key"))
 		Expect(string(kubeconfigSecret.Data["kubeconfig"])).To(ContainSubstring(shard.Name + "-apiserver"))
+	})
+})
+
+var _ = Describe("APIShard Deletion", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should remove the finalizer and complete deletion when no APIServices registered", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "test-del-noapisvc",
+				Finalizers: []string{finalizerName},
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-del-noapisvc-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+
+		Expect(k8sClient.Delete(ctx, shard)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		Expect(shard.DeletionTimestamp.IsZero()).To(BeFalse())
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: shard.Name},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(ctrl.Result{}))
+
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	})
+
+	It("should return no error when APIShard is not found", func() {
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: "nonexistent-shard"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(ctrl.Result{}))
 	})
 })
