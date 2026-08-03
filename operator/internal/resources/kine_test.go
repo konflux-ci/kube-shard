@@ -21,6 +21,7 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -220,6 +221,28 @@ func TestBuildKineDeployment_SchedulingFields(t *testing.T) {
 	g.Expect(podSpec.NodeSelector).To(HaveKey("node-role.kubernetes.io/infra"))
 }
 
+func TestBuildKineDeployment_TopologySpreadConstraints(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Kine.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app.kubernetes.io/component": "storage"},
+			},
+		},
+	}
+
+	deploy := BuildKineDeployment(shard)
+	podSpec := deploy.Spec.Template.Spec
+
+	g.Expect(podSpec.TopologySpreadConstraints).To(HaveLen(1))
+	g.Expect(podSpec.TopologySpreadConstraints[0].TopologyKey).To(Equal("topology.kubernetes.io/zone"))
+	g.Expect(podSpec.TopologySpreadConstraints[0].MaxSkew).To(Equal(int32(1)))
+}
+
 func TestBuildKineDeployment_AntiAffinityInjected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -251,7 +274,7 @@ func TestBuildKineService_PreferSameNode_Enabled(t *testing.T) {
 	svc := BuildKineService(shard)
 
 	g.Expect(svc.Spec.TrafficDistribution).ToNot(BeNil())
-	g.Expect(*svc.Spec.TrafficDistribution).To(Equal("PreferSameNode"))
+	g.Expect(*svc.Spec.TrafficDistribution).To(Equal(corev1.ServiceTrafficDistributionPreferSameNode))
 }
 
 func TestBuildKineService_PreferSameNode_Disabled(t *testing.T) {
@@ -272,5 +295,5 @@ func TestBuildKineService_PreferSameNode_Default(t *testing.T) {
 	svc := BuildKineService(shard)
 
 	g.Expect(svc.Spec.TrafficDistribution).ToNot(BeNil())
-	g.Expect(*svc.Spec.TrafficDistribution).To(Equal("PreferSameNode"))
+	g.Expect(*svc.Spec.TrafficDistribution).To(Equal(corev1.ServiceTrafficDistributionPreferSameNode))
 }

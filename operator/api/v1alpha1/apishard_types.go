@@ -195,6 +195,10 @@ type APIShardSpec struct {
 	// on the same nodes, combined with topology-aware routing
 	// (trafficDistribution: PreferSameNode) on the Kine Service.
 	// This minimizes gRPC latency between the apiserver and Kine.
+	// NOTE: Co-location relies on soft podAffinity and cannot override
+	// hard scheduling constraints. If the secondary and Kine specs use
+	// divergent nodeSelector or tolerations (e.g., pinning only one
+	// component to infra nodes), co-location will be silently defeated.
 	// +optional
 	// +kubebuilder:default=true
 	ColocateComponents *bool `json:"colocateComponents,omitempty"`

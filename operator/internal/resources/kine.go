@@ -265,7 +265,7 @@ func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	}
 
 	if isColocateEnabled(shard) {
-		svc.Spec.TrafficDistribution = ptr.To("PreferSameNode")
+		svc.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferSameNode)
 	}
 
 	return svc

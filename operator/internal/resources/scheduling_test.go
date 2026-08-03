@@ -34,6 +34,7 @@ func TestBuildSecondaryAffinity_MultiReplica_AntiAffinity(t *testing.T) {
 	g.Expect(prefs[0].PodAffinityTerm.TopologyKey).To(Equal("kubernetes.io/hostname"))
 	labels := prefs[0].PodAffinityTerm.LabelSelector.MatchLabels
 	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/component", "apiserver"))
+	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-shard"))
 	g.Expect(affinity.PodAffinity).To(BeNil())
 }
 
@@ -53,6 +54,7 @@ func TestBuildSecondaryAffinity_MultiReplica_WithColocate(t *testing.T) {
 	g.Expect(prefs[0].Weight).To(Equal(int32(80)))
 	labels := prefs[0].PodAffinityTerm.LabelSelector.MatchLabels
 	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/component", "storage"))
+	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-shard"))
 }
 
 func TestBuildSecondaryAffinity_ColocateDefault_NilMeansTrue(t *testing.T) {
@@ -103,5 +105,6 @@ func TestBuildKineAffinity_MultiReplica(t *testing.T) {
 	g.Expect(prefs).To(HaveLen(1))
 	labels := prefs[0].PodAffinityTerm.LabelSelector.MatchLabels
 	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/component", "storage"))
+	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-shard"))
 	g.Expect(affinity.PodAffinity).To(BeNil())
 }

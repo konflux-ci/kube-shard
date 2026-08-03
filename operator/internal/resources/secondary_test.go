@@ -165,3 +165,25 @@ func TestBuildSecondaryDeployment_ColocateAffinity(t *testing.T) {
 	g.Expect(affinity.PodAntiAffinity).ToNot(BeNil())
 	g.Expect(affinity.PodAffinity).ToNot(BeNil())
 }
+
+func TestBuildSecondaryDeployment_TopologySpreadConstraints(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Secondary.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app.kubernetes.io/component": "apiserver"},
+			},
+		},
+	}
+
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	podSpec := deploy.Spec.Template.Spec
+
+	g.Expect(podSpec.TopologySpreadConstraints).To(HaveLen(1))
+	g.Expect(podSpec.TopologySpreadConstraints[0].TopologyKey).To(Equal("topology.kubernetes.io/zone"))
+	g.Expect(podSpec.TopologySpreadConstraints[0].MaxSkew).To(Equal(int32(1)))
+}
