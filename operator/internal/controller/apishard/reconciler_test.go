@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -1567,5 +1568,194 @@ var _ = Describe("ensureNamespace", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-ns-labels-ns"}, ns)).To(Succeed())
 		Expect(ns.Labels).To(HaveKeyWithValue(resources.LabelManagedBy, resources.ManagedByValue))
 		Expect(ns.Labels).To(HaveKeyWithValue(resources.LabelInstance, "test-ns-labels"))
+	})
+})
+
+var _ = Describe("PDB auto-creation", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	Context("reconcileKine", func() {
+		It("should create a PDB when Kine replicas >= 2", func() {
+			nsName := "test-kine-pdb-yes"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+			_ = k8sClient.Create(ctx, ns)
+
+			shard := &kubeshardv1alpha1.APIShard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-kine-pdb-yes",
+				},
+				Spec: kubeshardv1alpha1.APIShardSpec{
+					TargetNamespace: nsName,
+					APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+						{Group: "tekton.dev", Versions: []string{"v1"}},
+					},
+					Storage: kubeshardv1alpha1.StorageSpec{
+						Type: kubeshardv1alpha1.StorageTypeSQLite,
+					},
+					NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+						LabelSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{"type": "tenant"},
+						},
+					},
+					Kine: kubeshardv1alpha1.KineSpec{
+						Replicas: 2,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+			tc := newTrackingClient(shard)
+			err := reconciler.reconcileKine(ctx, tc, shard)
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resources.KineDeploymentName(shard),
+				Namespace: nsName,
+			}, pdb)).To(Succeed())
+			Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+			Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
+		})
+
+		It("should not create a PDB when Kine replicas < 2", func() {
+			nsName := "test-kine-pdb-no"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+			_ = k8sClient.Create(ctx, ns)
+
+			shard := &kubeshardv1alpha1.APIShard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-kine-pdb-no",
+				},
+				Spec: kubeshardv1alpha1.APIShardSpec{
+					TargetNamespace: nsName,
+					APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+						{Group: "tekton.dev", Versions: []string{"v1"}},
+					},
+					Storage: kubeshardv1alpha1.StorageSpec{
+						Type: kubeshardv1alpha1.StorageTypeSQLite,
+					},
+					NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+						LabelSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{"type": "tenant"},
+						},
+					},
+					Kine: kubeshardv1alpha1.KineSpec{
+						Replicas: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+			tc := newTrackingClient(shard)
+			err := reconciler.reconcileKine(ctx, tc, shard)
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resources.KineDeploymentName(shard),
+				Namespace: nsName,
+			}, pdb)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+
+	Context("reconcileSecondary", func() {
+		It("should create a PDB when Secondary replicas >= 2", func() {
+			nsName := "test-sec-pdb-yes"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+			_ = k8sClient.Create(ctx, ns)
+
+			shard := &kubeshardv1alpha1.APIShard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-sec-pdb-yes",
+				},
+				Spec: kubeshardv1alpha1.APIShardSpec{
+					TargetNamespace: nsName,
+					APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+						{Group: "tekton.dev", Versions: []string{"v1"}},
+					},
+					Storage: kubeshardv1alpha1.StorageSpec{
+						Type: kubeshardv1alpha1.StorageTypeSQLite,
+					},
+					NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+						LabelSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{"type": "tenant"},
+						},
+					},
+					Secondary: kubeshardv1alpha1.SecondarySpec{
+						Replicas: 3,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+			tc := newTrackingClient(shard)
+			err := reconciler.reconcileSecondary(ctx, tc, shard, []string{"front-proxy-client"})
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resources.SecondaryDeploymentName(shard),
+				Namespace: nsName,
+			}, pdb)).To(Succeed())
+			Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+			Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
+		})
+
+		It("should not create a PDB when Secondary replicas < 2", func() {
+			nsName := "test-sec-pdb-no"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+			_ = k8sClient.Create(ctx, ns)
+
+			shard := &kubeshardv1alpha1.APIShard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-sec-pdb-no",
+				},
+				Spec: kubeshardv1alpha1.APIShardSpec{
+					TargetNamespace: nsName,
+					APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+						{Group: "tekton.dev", Versions: []string{"v1"}},
+					},
+					Storage: kubeshardv1alpha1.StorageSpec{
+						Type: kubeshardv1alpha1.StorageTypeSQLite,
+					},
+					NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+						LabelSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{"type": "tenant"},
+						},
+					},
+					Secondary: kubeshardv1alpha1.SecondarySpec{
+						Replicas: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+			tc := newTrackingClient(shard)
+			err := reconciler.reconcileSecondary(ctx, tc, shard, []string{"front-proxy-client"})
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resources.SecondaryDeploymentName(shard),
+				Namespace: nsName,
+			}, pdb)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
 	})
 })
