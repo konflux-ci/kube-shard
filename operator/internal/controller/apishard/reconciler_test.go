@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -978,5 +979,304 @@ var _ = Describe("APIShard Deletion", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}))
+	})
+})
+
+var _ = Describe("reconcileCRDConflicts", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createConflictShard := func(suffix string, forceAggregation bool) *kubeshardv1alpha1.APIShard {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-conflict-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-conflict-" + suffix + "-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				ForceAggregation: forceAggregation,
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		// The CRD defaults forceAggregation to true; override in-memory for
+		// tests that need the non-default path (reconciler uses the pointer).
+		shard.Spec.ForceAggregation = forceAggregation
+		return shard
+	}
+
+	It("should set CRDConflict=False when no conflicting CRDs exist", func() {
+		shard := createConflictShard("none", false)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		reconciler.reconcileCRDConflicts(ctx, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("NoConflicts"))
+	})
+
+	It("should set phase to Blocked when CRDs conflict and forceAggregation is false", func() {
+		shard := createConflictShard("blocked", false)
+		defer func() {
+			crd := &apiextensionsv1.CustomResourceDefinition{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "pipelines.tekton.dev"}, crd); err == nil {
+				_ = k8sClient.Delete(ctx, crd)
+			}
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pipelines.tekton.dev",
+			},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: "tekton.dev",
+				Names: apiextensionsv1.CustomResourceDefinitionNames{
+					Plural:   "pipelines",
+					Singular: "pipeline",
+					Kind:     "Pipeline",
+				},
+				Scope: apiextensionsv1.NamespaceScoped,
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+					{
+						Name:    "v1",
+						Served:  true,
+						Storage: true,
+						Schema: &apiextensionsv1.CustomResourceValidation{
+							OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+								Type: "object",
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, crd)).To(Succeed())
+
+		reconciler.reconcileCRDConflicts(ctx, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("CRDsExistOnPrimary"))
+		Expect(shard.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseBlocked))
+	})
+
+	It("should set ForcedAggregation reason when forceAggregation is true", func() {
+		shard := createConflictShard("forced", true)
+		defer func() {
+			crd := &apiextensionsv1.CustomResourceDefinition{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "pipelineruns.tekton.dev"}, crd); err == nil {
+				_ = k8sClient.Delete(ctx, crd)
+			}
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "pipelineruns.tekton.dev",
+			},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: "tekton.dev",
+				Names: apiextensionsv1.CustomResourceDefinitionNames{
+					Plural:   "pipelineruns",
+					Singular: "pipelinerun",
+					Kind:     "PipelineRun",
+				},
+				Scope: apiextensionsv1.NamespaceScoped,
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+					{
+						Name:    "v1",
+						Served:  true,
+						Storage: true,
+						Schema: &apiextensionsv1.CustomResourceValidation{
+							OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+								Type: "object",
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, crd)).To(Succeed())
+
+		reconciler.reconcileCRDConflicts(ctx, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("ForcedAggregation"))
+		Expect(shard.Status.Phase).NotTo(Equal(kubeshardv1alpha1.PhaseBlocked))
+	})
+})
+
+var _ = Describe("checkDeploymentHealth", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createHealthShard := func(suffix string, storageType kubeshardv1alpha1.StorageType) *kubeshardv1alpha1.APIShard {
+		nsName := "test-health-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-health-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: storageType,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				Secondary: kubeshardv1alpha1.SecondarySpec{Replicas: 1},
+				Kine:      kubeshardv1alpha1.KineSpec{Replicas: 1},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	createDeployment := func(name, namespace string, replicas, readyReplicas int32) {
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": name},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "img"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+		deploy.Status.Replicas = replicas
+		deploy.Status.ReadyReplicas = readyReplicas
+		Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+	}
+
+	It("should return true when Kine and Secondary are both ready (SQLite)", func() {
+		shard := createHealthShard("sqlite-ok", kubeshardv1alpha1.StorageTypeSQLite)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+
+		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(healthy).To(BeTrue())
+	})
+
+	It("should return false when Kine is not ready", func() {
+		shard := createHealthShard("kine-bad", kubeshardv1alpha1.StorageTypeSQLite)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1, 0)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+
+		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(healthy).To(BeFalse())
+	})
+
+	It("should check PostgreSQL StatefulSet when storage type is InClusterPostgreSQL", func() {
+		shard := createHealthShard("pg-ok", kubeshardv1alpha1.StorageTypeInClusterPostgreSQL)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+
+		var one int32 = 1
+		pgSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resources.PostgreSQLStatefulSetName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: &one,
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "pg"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "pg"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "pg", Image: "postgres"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pgSts)).To(Succeed())
+		pgSts.Status.Replicas = 1
+		pgSts.Status.ReadyReplicas = 1
+		Expect(k8sClient.Status().Update(ctx, pgSts)).To(Succeed())
+
+		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(healthy).To(BeTrue())
+	})
+
+	It("should return false when PG StatefulSet is not ready", func() {
+		shard := createHealthShard("pg-bad", kubeshardv1alpha1.StorageTypeInClusterPostgreSQL)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1, 1)
+
+		var one int32 = 1
+		pgSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resources.PostgreSQLStatefulSetName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: &one,
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "pg"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "pg"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "pg", Image: "postgres"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pgSts)).To(Succeed())
+		pgSts.Status.Replicas = 1
+		pgSts.Status.ReadyReplicas = 0
+		Expect(k8sClient.Status().Update(ctx, pgSts)).To(Succeed())
+
+		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(healthy).To(BeFalse())
 	})
 })
