@@ -20,7 +20,9 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 )
@@ -100,5 +102,73 @@ func TestBuildSecondaryDeployment_CustomImage(t *testing.T) {
 	got := deploy.Spec.Template.Spec.Containers[0].Image
 	if got != "custom-registry/kube-apiserver:v1.33.0" {
 		t.Errorf("image = %q, want custom image", got)
+	}
+}
+
+func TestBuildSecondaryDeployment_SchedulingFields(t *testing.T) {
+	shard := newTestShard()
+	shard.Spec.Secondary.NodeSelector = map[string]string{
+		"node-role.kubernetes.io/infra": "",
+	}
+	shard.Spec.Secondary.Tolerations = []corev1.Toleration{
+		{
+			Key:      "node-role.kubernetes.io/infra",
+			Operator: corev1.TolerationOpExists,
+			Effect:   corev1.TaintEffectNoSchedule,
+		},
+	}
+
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	podSpec := deploy.Spec.Template.Spec
+
+	if podSpec.NodeSelector == nil {
+		t.Fatal("expected nodeSelector to be set")
+	}
+	if _, ok := podSpec.NodeSelector["node-role.kubernetes.io/infra"]; !ok {
+		t.Error("expected infra node selector")
+	}
+	if len(podSpec.Tolerations) != 1 {
+		t.Fatalf("expected 1 toleration, got %d", len(podSpec.Tolerations))
+	}
+	if podSpec.Tolerations[0].Key != "node-role.kubernetes.io/infra" {
+		t.Errorf("toleration key = %q, want node-role.kubernetes.io/infra", podSpec.Tolerations[0].Key)
+	}
+}
+
+func TestBuildSecondaryDeployment_AntiAffinityInjected(t *testing.T) {
+	shard := newTestShard()
+	shard.Spec.Secondary.Replicas = 3
+	shard.Spec.ColocateComponents = ptr.To(false)
+
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	affinity := deploy.Spec.Template.Spec.Affinity
+
+	if affinity == nil {
+		t.Fatal("expected affinity to be set for replicas > 1")
+	}
+	if affinity.PodAntiAffinity == nil {
+		t.Error("expected podAntiAffinity")
+	}
+	if affinity.PodAffinity != nil {
+		t.Error("expected no podAffinity when colocate is false")
+	}
+}
+
+func TestBuildSecondaryDeployment_ColocateAffinity(t *testing.T) {
+	shard := newTestShard()
+	shard.Spec.Secondary.Replicas = 3
+	shard.Spec.ColocateComponents = ptr.To(true)
+
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	affinity := deploy.Spec.Template.Spec.Affinity
+
+	if affinity == nil {
+		t.Fatal("expected affinity to be set")
+	}
+	if affinity.PodAntiAffinity == nil {
+		t.Error("expected podAntiAffinity")
+	}
+	if affinity.PodAffinity == nil {
+		t.Error("expected podAffinity for co-location")
 	}
 }

@@ -70,6 +70,11 @@ spec:
                 type: array
               colocateComponents:
                 default: true
+                description: |-
+                  ColocateComponents enables co-location of apiserver and Kine pods
+                  on the same nodes, combined with topology-aware routing
+                  (trafficDistribution: PreferSameNode) on the Kine Service.
+                  This minimizes gRPC latency between the apiserver and Kine.
                 type: boolean
               forceAggregation:
                 default: true
@@ -88,6 +93,8 @@ spec:
                   nodeSelector:
                     additionalProperties:
                       type: string
+                    description: NodeSelector constrains Kine pods to nodes matching
+                      the specified labels.
                     type: object
                   replicas:
                     default: 1
@@ -154,6 +161,8 @@ spec:
                         type: object
                     type: object
                   tolerations:
+                    description: Tolerations allows Kine pods to schedule onto nodes
+                      with matching taints.
                     items:
                       description: |-
                         The pod this Toleration is attached to tolerates any taint that matches
@@ -193,6 +202,9 @@ spec:
                       type: object
                     type: array
                   topologySpreadConstraints:
+                    description: |-
+                      TopologySpreadConstraints controls how Kine pods are distributed
+                      across topology domains (zones, racks, etc.).
                     items:
                       description: TopologySpreadConstraint specifies how to spread
                         matching pods among the given topology.
@@ -427,6 +439,9 @@ spec:
                   nodeSelector:
                     additionalProperties:
                       type: string
+                    description: |-
+                      NodeSelector constrains the secondary apiserver pods to nodes
+                      matching the specified labels.
                     type: object
                   replicas:
                     default: 1
@@ -493,6 +508,9 @@ spec:
                         type: object
                     type: object
                   tolerations:
+                    description: |-
+                      Tolerations allows the secondary apiserver pods to schedule onto
+                      nodes with matching taints.
                     items:
                       description: |-
                         The pod this Toleration is attached to tolerates any taint that matches
@@ -532,6 +550,9 @@ spec:
                       type: object
                     type: array
                   topologySpreadConstraints:
+                    description: |-
+                      TopologySpreadConstraints controls how secondary apiserver pods
+                      are distributed across topology domains (zones, racks, etc.).
                     items:
                       description: TopologySpreadConstraint specifies how to spread
                         matching pods among the given topology.

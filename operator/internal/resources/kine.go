@@ -139,6 +139,10 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					NodeSelector:              shard.Spec.Kine.NodeSelector,
+					Tolerations:               shard.Spec.Kine.Tolerations,
+					TopologySpreadConstraints: shard.Spec.Kine.TopologySpreadConstraints,
+					Affinity:                  BuildKineAffinity(shard),
 					Containers: []corev1.Container{
 						{
 							Name:         "kine",
@@ -193,7 +197,7 @@ func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 		"app.kubernetes.io/component":  "storage",
 	}
 
-	return &corev1.Service{
+	svc := &corev1.Service{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
 			Kind:       "Service",
@@ -215,4 +219,10 @@ func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 			},
 		},
 	}
+
+	if isColocateEnabled(shard) {
+		svc.Spec.TrafficDistribution = ptr.To("PreferSameNode")
+	}
+
+	return svc
 }

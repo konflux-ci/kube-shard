@@ -138,6 +138,10 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					NodeSelector:              shard.Spec.Secondary.NodeSelector,
+					Tolerations:               shard.Spec.Secondary.Tolerations,
+					TopologySpreadConstraints: shard.Spec.Secondary.TopologySpreadConstraints,
+					Affinity:                  BuildSecondaryAffinity(shard),
 					Containers: []corev1.Container{
 						{
 							Name:      "kube-apiserver",
