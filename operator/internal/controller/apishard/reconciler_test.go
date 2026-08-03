@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -369,5 +370,231 @@ var _ = Describe("APIShard Controller", func() {
 				}, pgSecret)
 			}, timeout, interval).Should(Succeed())
 		})
+	})
+})
+
+var _ = Describe("validateExternalPostgreSQLSecret", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createPGShard := func(suffix string, ref *kubeshardv1alpha1.SecretKeyReference) *kubeshardv1alpha1.APIShard {
+		nsName := "test-ext-pg-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-ext-pg-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type:                kubeshardv1alpha1.StorageTypePostgreSQL,
+					ConnectionSecretRef: ref,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	It("should set StorageReady=False when connectionSecretRef is nil", func() {
+		shard := createPGShard("no-ref", nil)
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		err := reconciler.validateExternalPostgreSQLSecret(ctx, shard)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("connectionSecretRef is not set"))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("MissingConnectionSecretRef"))
+	})
+
+	It("should set StorageReady=False when Secret is not found", func() {
+		shard := createPGShard("not-found", &kubeshardv1alpha1.SecretKeyReference{
+			Name: "nonexistent-secret",
+			Key:  "dsn",
+		})
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		err := reconciler.validateExternalPostgreSQLSecret(ctx, shard)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not found"))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("SecretNotFound"))
+	})
+
+	It("should set StorageReady=False when key is missing from Secret", func() {
+		shard := createPGShard("no-key", &kubeshardv1alpha1.SecretKeyReference{
+			Name: "pg-secret-no-key",
+			Key:  "dsn",
+		})
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pg-secret-no-key",
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"wrong-key": []byte("postgres://..."),
+			},
+		}
+		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+		err := reconciler.validateExternalPostgreSQLSecret(ctx, shard)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not found in secret"))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("KeyNotFound"))
+	})
+
+	It("should set StorageReady=True when Secret and key are valid", func() {
+		shard := createPGShard("valid", &kubeshardv1alpha1.SecretKeyReference{
+			Name: "pg-secret-valid",
+			Key:  "dsn",
+		})
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pg-secret-valid",
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"dsn": []byte("postgres://user:pass@host:5432/db"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+		err := reconciler.validateExternalPostgreSQLSecret(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("SecretValid"))
+	})
+})
+
+var _ = Describe("getOrGeneratePostgresPassword", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should reuse password from existing secret", func() {
+		nsName := "test-pw-reuse"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-pw-reuse",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		existingSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resources.PostgreSQLSecretName(shard),
+				Namespace: nsName,
+			},
+			Data: map[string][]byte{
+				"POSTGRES_PASSWORD": []byte("my-existing-password"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, existingSecret)).To(Succeed())
+
+		password, err := reconciler.getOrGeneratePostgresPassword(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(password).To(Equal("my-existing-password"))
+	})
+
+	It("should generate a new password when no secret exists", func() {
+		nsName := "test-pw-gen"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-pw-gen",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		password, err := reconciler.getOrGeneratePostgresPassword(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(password).NotTo(BeEmpty())
+		Expect(len(password)).To(BeNumerically(">=", 16))
 	})
 })
