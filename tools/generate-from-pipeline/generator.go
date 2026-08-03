@@ -279,11 +279,15 @@ func padScript(sleepSecs int, targetBytes int) string {
 }
 
 // randomInt returns a cryptographically random integer in [min, max].
-// When min >= max it returns min.
+// When min >= max it returns min. Falls back to min if the entropy
+// source is unavailable.
 func randomInt(min, max int) int {
 	if min >= max {
 		return min
 	}
-	n, _ := rand.Int(rand.Reader, big.NewInt(int64(max-min+1)))
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max-min+1)))
+	if err != nil {
+		return min
+	}
 	return min + int(n.Int64())
 }
