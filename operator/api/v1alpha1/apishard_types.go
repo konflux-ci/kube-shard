@@ -63,6 +63,12 @@ type SecondarySpec struct {
 	Replicas  int32                       `json:"replicas,omitempty"`
 	Image     string                      `json:"image,omitempty"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 }
 
 type KineSpec struct {
@@ -70,6 +76,12 @@ type KineSpec struct {
 	Replicas  int32                       `json:"replicas,omitempty"`
 	Image     string                      `json:"image,omitempty"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 }
 
 type APIShardSpec struct {
@@ -88,6 +100,10 @@ type APIShardSpec struct {
 	// Blocked, leaving remediation to the user.
 	// +kubebuilder:default=true
 	ForceAggregation bool `json:"forceAggregation,omitempty"`
+
+	// +optional
+	// +kubebuilder:default=true
+	ColocateComponents *bool `json:"colocateComponents,omitempty"`
 }
 
 type ConnectionSecretReference struct {
