@@ -345,12 +345,12 @@ var _ = Describe("APIShard Controller", func() {
 				NamespacedName: types.NamespacedName{Name: shard.Name},
 			})
 
-			pgDeploy := &appsv1.Deployment{}
+			pgSts := &appsv1.StatefulSet{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      resources.PostgreSQLDeploymentName(shard),
+					Name:      resources.PostgreSQLStatefulSetName(shard),
 					Namespace: "test-pg-ns",
-				}, pgDeploy)
+				}, pgSts)
 			}, timeout, interval).Should(Succeed())
 
 			pgSvc := &corev1.Service{}

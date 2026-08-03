@@ -25,14 +25,17 @@ import (
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 )
 
-func TestBuildPostgreSQLDeployment_NoPersistence_UsesEmptyDir(t *testing.T) {
+func TestBuildPostgreSQLStatefulSet_NoPersistence_UsesEmptyDir(t *testing.T) {
 	shard := newTestShard()
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
 	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
 
-	deploy := BuildPostgreSQLDeployment(shard)
+	sts := BuildPostgreSQLStatefulSet(shard)
 
-	volumes := deploy.Spec.Template.Spec.Volumes
+	if len(sts.Spec.VolumeClaimTemplates) != 0 {
+		t.Errorf("expected 0 VCTs when persistence is nil, got %d", len(sts.Spec.VolumeClaimTemplates))
+	}
+	volumes := sts.Spec.Template.Spec.Volumes
 	if len(volumes) != 1 {
 		t.Fatalf("expected 1 volume, got %d", len(volumes))
 	}
@@ -41,7 +44,7 @@ func TestBuildPostgreSQLDeployment_NoPersistence_UsesEmptyDir(t *testing.T) {
 	}
 }
 
-func TestBuildPostgreSQLStatefulSet_WithPersistence(t *testing.T) {
+func TestBuildPostgreSQLStatefulSet_WithPersistence_UsesVCT(t *testing.T) {
 	shard := newTestShard()
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
 	storageClass := "gp3-csi"
@@ -54,15 +57,12 @@ func TestBuildPostgreSQLStatefulSet_WithPersistence(t *testing.T) {
 
 	sts := BuildPostgreSQLStatefulSet(shard)
 
-	if sts.Name != PostgreSQLDeploymentName(shard) {
-		t.Errorf("StatefulSet name = %q, want %q", sts.Name, PostgreSQLDeploymentName(shard))
-	}
-	if sts.Namespace != shard.Spec.TargetNamespace {
-		t.Errorf("StatefulSet namespace = %q, want %q", sts.Namespace, shard.Spec.TargetNamespace)
+	if len(sts.Spec.Template.Spec.Volumes) != 0 {
+		t.Errorf("expected 0 volumes when persistence is set (data via VCT), got %d", len(sts.Spec.Template.Spec.Volumes))
 	}
 
 	if len(sts.Spec.VolumeClaimTemplates) != 1 {
-		t.Fatalf("expected 1 volumeClaimTemplate, got %d", len(sts.Spec.VolumeClaimTemplates))
+		t.Fatalf("expected 1 VCT, got %d", len(sts.Spec.VolumeClaimTemplates))
 	}
 	vct := sts.Spec.VolumeClaimTemplates[0]
 	if vct.Name != "data" {
@@ -87,13 +87,19 @@ func TestBuildPostgreSQLStatefulSet_WithPersistence(t *testing.T) {
 func TestBuildPostgreSQLStatefulSet_PodTemplate(t *testing.T) {
 	shard := newTestShard()
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
-	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{
-		Persistence: &kubeshardv1alpha1.PersistenceSpec{
-			Size: resource.MustParse("10Gi"),
-		},
-	}
+	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
 
 	sts := BuildPostgreSQLStatefulSet(shard)
+
+	if sts.Name != PostgreSQLStatefulSetName(shard) {
+		t.Errorf("name = %q, want %q", sts.Name, PostgreSQLStatefulSetName(shard))
+	}
+	if sts.Namespace != shard.Spec.TargetNamespace {
+		t.Errorf("namespace = %q, want %q", sts.Namespace, shard.Spec.TargetNamespace)
+	}
+	if sts.Spec.ServiceName != PostgreSQLServiceName(shard) {
+		t.Errorf("ServiceName = %q, want %q", sts.Spec.ServiceName, PostgreSQLServiceName(shard))
+	}
 
 	containers := sts.Spec.Template.Spec.Containers
 	if len(containers) != 1 {
@@ -106,7 +112,6 @@ func TestBuildPostgreSQLStatefulSet_PodTemplate(t *testing.T) {
 		t.Errorf("container image = %q, want %q", containers[0].Image, DefaultPostgreSQLImage)
 	}
 
-	// Should have volume mount for data
 	var dataMount *corev1.VolumeMount
 	for i := range containers[0].VolumeMounts {
 		if containers[0].VolumeMounts[i].Name == "data" {
@@ -119,65 +124,5 @@ func TestBuildPostgreSQLStatefulSet_PodTemplate(t *testing.T) {
 	}
 	if dataMount.MountPath != "/var/lib/postgresql/data" {
 		t.Errorf("data mount path = %q, want '/var/lib/postgresql/data'", dataMount.MountPath)
-	}
-
-	// StatefulSet should have no Volumes (data comes from VCT)
-	if len(sts.Spec.Template.Spec.Volumes) != 0 {
-		t.Errorf("expected 0 volumes in pod template (data via VCT), got %d", len(sts.Spec.Template.Spec.Volumes))
-	}
-}
-
-func TestBuildPostgreSQLStatefulSet_ServiceName(t *testing.T) {
-	shard := newTestShard()
-	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
-	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{
-		Persistence: &kubeshardv1alpha1.PersistenceSpec{
-			Size: resource.MustParse("10Gi"),
-		},
-	}
-
-	sts := BuildPostgreSQLStatefulSet(shard)
-
-	if sts.Spec.ServiceName != PostgreSQLServiceName(shard) {
-		t.Errorf("ServiceName = %q, want %q", sts.Spec.ServiceName, PostgreSQLServiceName(shard))
-	}
-}
-
-func TestPostgreSQLPersistenceEnabled(t *testing.T) {
-	tests := []struct {
-		name     string
-		inCluster *kubeshardv1alpha1.InClusterStorage
-		want     bool
-	}{
-		{
-			name:     "nil InCluster",
-			inCluster: nil,
-			want:     false,
-		},
-		{
-			name:     "nil Persistence",
-			inCluster: &kubeshardv1alpha1.InClusterStorage{},
-			want:     false,
-		},
-		{
-			name: "Persistence set",
-			inCluster: &kubeshardv1alpha1.InClusterStorage{
-				Persistence: &kubeshardv1alpha1.PersistenceSpec{
-					Size: resource.MustParse("10Gi"),
-				},
-			},
-			want: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			shard := newTestShard()
-			shard.Spec.Storage.InCluster = tt.inCluster
-			got := PostgreSQLPersistenceEnabled(shard)
-			if got != tt.want {
-				t.Errorf("PostgreSQLPersistenceEnabled() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }

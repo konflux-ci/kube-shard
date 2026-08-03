@@ -64,10 +64,6 @@ type PersistenceSpec struct {
 	StorageClassName *string `json:"storageClassName,omitempty"`
 	// Size is the requested storage capacity.
 	Size resource.Quantity `json:"size"`
-	// AccessModes specifies the desired access modes for the PVC.
-	// Defaults to ReadWriteOnce if not specified.
-	// +kubebuilder:default={ReadWriteOnce}
-	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
 }
 
 type NamespaceSyncConfig struct {

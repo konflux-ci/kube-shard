@@ -295,15 +295,6 @@ spec:
                           PersistenceSpec configures persistent volume storage for in-cluster backends.
                           When specified, a PVC is used instead of emptyDir, ensuring data survives pod restarts.
                         properties:
-                          accessModes:
-                            default:
-                            - ReadWriteOnce
-                            description: |-
-                              AccessModes specifies the desired access modes for the PVC.
-                              Defaults to ReadWriteOnce if not specified.
-                            items:
-                              type: string
-                            type: array
                           size:
                             anyOf:
                             - type: integer

@@ -41,10 +41,6 @@ func KineServiceName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-kine", shard.Name)
 }
 
-func KinePVCName(shard *kubeshardv1alpha1.APIShard) string {
-	return fmt.Sprintf("%s-kine-data", shard.Name)
-}
-
 func KineEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 	switch shard.Spec.Storage.Type {
 	case kubeshardv1alpha1.StorageTypeSQLite:
@@ -85,23 +81,12 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	var volumeMounts []corev1.VolumeMount
 
 	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeSQLite {
-		if shard.Spec.Storage.InCluster != nil && shard.Spec.Storage.InCluster.Persistence != nil {
-			volumes = append(volumes, corev1.Volume{
-				Name: "data",
-				VolumeSource: corev1.VolumeSource{
-					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: KinePVCName(shard),
-					},
-				},
-			})
-		} else {
-			volumes = append(volumes, corev1.Volume{
-				Name: "data",
-				VolumeSource: corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
-				},
-			})
-		}
+		volumes = append(volumes, corev1.Volume{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
 			Name:      "data",
 			MountPath: "/data",
@@ -230,44 +215,4 @@ func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 			},
 		},
 	}
-}
-
-// BuildKinePVC creates a PersistentVolumeClaim for Kine SQLite data storage.
-// Only called when persistence is configured on the InClusterStorage spec.
-func BuildKinePVC(shard *kubeshardv1alpha1.APIShard) *corev1.PersistentVolumeClaim {
-	persistence := shard.Spec.Storage.InCluster.Persistence
-	labels := map[string]string{
-		"app.kubernetes.io/name":       "kine",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "storage",
-	}
-
-	accessModes := persistence.AccessModes
-	if len(accessModes) == 0 {
-		accessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
-	}
-
-	pvc := &corev1.PersistentVolumeClaim{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "PersistentVolumeClaim",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      KinePVCName(shard),
-			Namespace: shard.Spec.TargetNamespace,
-			Labels:    labels,
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes:      accessModes,
-			StorageClassName: persistence.StorageClassName,
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: persistence.Size,
-				},
-			},
-		},
-	}
-
-	return pvc
 }

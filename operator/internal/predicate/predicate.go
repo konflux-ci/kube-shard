@@ -63,6 +63,21 @@ var IgnoreStatusUpdatesPredicate = predicate.Funcs{
 	GenericFunc: func(e event.GenericEvent) bool { return true },
 }
 
+type replicaCounts struct {
+	Replicas, Ready, Available, Updated int32
+}
+
+func extractReplicaCounts(obj client.Object) (replicaCounts, bool) {
+	switch o := obj.(type) {
+	case *appsv1.Deployment:
+		return replicaCounts{o.Status.Replicas, o.Status.ReadyReplicas, o.Status.AvailableReplicas, o.Status.UpdatedReplicas}, true
+	case *appsv1.StatefulSet:
+		return replicaCounts{o.Status.Replicas, o.Status.ReadyReplicas, o.Status.AvailableReplicas, o.Status.UpdatedReplicas}, true
+	default:
+		return replicaCounts{}, false
+	}
+}
+
 // DeploymentReadinessPredicate extends IgnoreStatusUpdatesPredicate by also
 // triggering on deployment readiness changes (ReadyReplicas, AvailableReplicas,
 // etc.) so the controller can react to health changes without polling.
@@ -74,16 +89,35 @@ var DeploymentReadinessPredicate = predicate.Funcs{
 		if generationOrMetadataChanged(e.ObjectOld, e.ObjectNew) {
 			return true
 		}
-		oldDep, ok1 := e.ObjectOld.(*appsv1.Deployment)
-		newDep, ok2 := e.ObjectNew.(*appsv1.Deployment)
-		if !ok1 || !ok2 {
+		oldCounts, ok := extractReplicaCounts(e.ObjectOld)
+		if !ok {
 			return true
 		}
-		return oldDep.Status.ReadyReplicas != newDep.Status.ReadyReplicas ||
-			oldDep.Status.AvailableReplicas != newDep.Status.AvailableReplicas ||
-			oldDep.Status.UnavailableReplicas != newDep.Status.UnavailableReplicas ||
-			oldDep.Status.UpdatedReplicas != newDep.Status.UpdatedReplicas ||
-			oldDep.Status.Replicas != newDep.Status.Replicas
+		newCounts, _ := extractReplicaCounts(e.ObjectNew)
+		return oldCounts != newCounts
+	},
+	CreateFunc:  func(e event.CreateEvent) bool { return true },
+	DeleteFunc:  func(e event.DeleteEvent) bool { return true },
+	GenericFunc: func(e event.GenericEvent) bool { return true },
+}
+
+// StatefulSetReadinessPredicate extends IgnoreStatusUpdatesPredicate by also
+// triggering on StatefulSet readiness changes so the controller can react to
+// health changes without polling.
+var StatefulSetReadinessPredicate = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		if e.ObjectOld == nil || e.ObjectNew == nil {
+			return true
+		}
+		if generationOrMetadataChanged(e.ObjectOld, e.ObjectNew) {
+			return true
+		}
+		oldCounts, ok := extractReplicaCounts(e.ObjectOld)
+		if !ok {
+			return true
+		}
+		newCounts, _ := extractReplicaCounts(e.ObjectNew)
+		return oldCounts != newCounts
 	},
 	CreateFunc:  func(e event.CreateEvent) bool { return true },
 	DeleteFunc:  func(e event.DeleteEvent) bool { return true },
