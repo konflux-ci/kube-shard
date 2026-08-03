@@ -7,10 +7,15 @@ import (
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 )
 
+// isColocateEnabled returns true if component colocation is enabled for the shard.
+// Colocation is enabled by default when ColocateComponents is nil.
 func isColocateEnabled(shard *kubeshardv1alpha1.APIShard) bool {
 	return shard.Spec.ColocateComponents == nil || *shard.Spec.ColocateComponents
 }
 
+// BuildSecondaryAffinity returns the pod affinity/anti-affinity rules for the
+// secondary apiserver deployment. It spreads replicas across nodes and optionally
+// colocates them with the storage (Kine) pods. Returns nil if no rules apply.
 func BuildSecondaryAffinity(shard *kubeshardv1alpha1.APIShard) *corev1.Affinity {
 	replicas := shard.Spec.Secondary.Replicas
 	if replicas == 0 {
@@ -65,6 +70,8 @@ func BuildSecondaryAffinity(shard *kubeshardv1alpha1.APIShard) *corev1.Affinity 
 	return affinity
 }
 
+// BuildKineAffinity returns the pod anti-affinity rules for the Kine deployment
+// to spread replicas across different nodes. Returns nil for single-replica deployments.
 func BuildKineAffinity(shard *kubeshardv1alpha1.APIShard) *corev1.Affinity {
 	replicas := shard.Spec.Kine.Replicas
 	if replicas == 0 {

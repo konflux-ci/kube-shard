@@ -238,12 +238,55 @@ Key considerations:
 
 ### Load testing
 
-The `hack/loadtest/` directory contains scripts to stress-test storage capacity:
+#### Generating realistic load from a Konflux pipeline
+
+The `tools/generate-from-pipeline/` tool takes a real Tekton PipelineRun YAML (e.g. a Konflux build pipeline) and generates a runnable load test PipelineRun that matches its storage footprint. It resolves task bundles from the OCI registry to replicate the exact number of steps, step names, and per-task sizes.
+
+```bash
+# Build the tool
+cd tools/generate-from-pipeline && go build -o ../../_output/generate-from-pipeline .
+
+# Generate a load test PipelineRun from a real Konflux build pipeline
+_output/generate-from-pipeline \
+  -input .tekton/my-component-pull-request.yaml \
+  -output _output/loadtest.yaml
+
+# Run 1000 copies in parallel
+PIPELINERUN_YAML=_output/loadtest.yaml ./hack/loadtest/run-loadtest.sh 1000
+```
+
+The tool resolves all task bundles concurrently, then generates a PipelineRun where each task has:
+- The same number of steps as the real task (with real step names)
+- Inline scripts padded to match the real task's serialized size
+- `sleep` commands so the Tekton controller creates real TaskRuns with organic status fields
+- Preserved `runAfter` dependencies and matrix expansion
+
+Options:
+
+```
+-input              Input PipelineRun YAML file (required)
+-output             Output load test YAML file (required)
+-namespace          Namespace for generated PipelineRun (default: default)
+-prefix             generateName prefix (default: load-test-)
+-image              Step container image (default: busybox)
+-sleep-range        Min,max sleep seconds per step (default: 1,10)
+-skip-resolve       Don't resolve bundles, use defaults (offline mode)
+-default-task-size-kb  Fallback task size in KB (default: 17)
+-default-steps      Fallback step count (default: 3)
+```
+
+**Known limitation:** Real Konflux pipelines use `taskRef` with bundle resolvers, so the PipelineRun object stored in etcd is compact (~20 KB) and task specs only appear in the controller-created TaskRuns. The generated load test uses inline `taskSpec`, so the PipelineRun object itself is larger (~195 KB for the reverse-proxy pipeline) because all task specs are embedded. The task specs are effectively stored twice -- once in the PipelineRun and once in each TaskRun. This results in roughly 1.6x the real per-build storage footprint. TaskRun sizes are accurate.
+
+#### Synthetic load test
+
+The `hack/loadtest/` directory contains scripts for simpler synthetic load tests with configurable size and task count:
 
 ```bash
 # Create 1000 PipelineRuns (~100KB each, 10 tasks per PR, 10 in parallel)
 ./hack/loadtest/run-loadtest.sh 1000 100 10 10
 ```
+
+#### Monitoring
 
 Monitor DB size during the test:
 

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -52,6 +53,7 @@ func findArg(args []string, prefix string) string {
 }
 
 func TestBuildSecondaryDeployment_RequestHeaderAllowedNames_Kubernetes(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	allowedNames := []string{"front-proxy-client"}
 
@@ -59,13 +61,11 @@ func TestBuildSecondaryDeployment_RequestHeaderAllowedNames_Kubernetes(t *testin
 	args := deploy.Spec.Template.Spec.Containers[0].Args
 
 	got := findArg(args, "--requestheader-allowed-names=")
-	want := "--requestheader-allowed-names=front-proxy-client"
-	if got != want {
-		t.Errorf("requestheader-allowed-names arg = %q, want %q", got, want)
-	}
+	g.Expect(got).To(Equal("--requestheader-allowed-names=front-proxy-client"))
 }
 
 func TestBuildSecondaryDeployment_RequestHeaderAllowedNames_OpenShift(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	allowedNames := []string{
 		"kube-apiserver-proxy",
@@ -77,35 +77,46 @@ func TestBuildSecondaryDeployment_RequestHeaderAllowedNames_OpenShift(t *testing
 	args := deploy.Spec.Template.Spec.Containers[0].Args
 
 	got := findArg(args, "--requestheader-allowed-names=")
-	want := "--requestheader-allowed-names=kube-apiserver-proxy,system:kube-apiserver-proxy,system:openshift-aggregator"
-	if got != want {
-		t.Errorf("requestheader-allowed-names arg = %q, want %q", got, want)
-	}
+	g.Expect(got).To(Equal("--requestheader-allowed-names=kube-apiserver-proxy,system:kube-apiserver-proxy,system:openshift-aggregator"))
 }
 
 func TestBuildSecondaryDeployment_DefaultImage(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
 
 	got := deploy.Spec.Template.Spec.Containers[0].Image
-	if got != DefaultSecondaryImage {
-		t.Errorf("image = %q, want %q", got, DefaultSecondaryImage)
-	}
+	g.Expect(got).To(Equal(DefaultSecondaryImage))
 }
 
 func TestBuildSecondaryDeployment_CustomImage(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Secondary.Image = "custom-registry/kube-apiserver:v1.33.0"
 
 	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
 
 	got := deploy.Spec.Template.Spec.Containers[0].Image
-	if got != "custom-registry/kube-apiserver:v1.33.0" {
-		t.Errorf("image = %q, want custom image", got)
-	}
+	g.Expect(got).To(Equal("custom-registry/kube-apiserver:v1.33.0"))
+}
+
+func TestBuildSecondaryDeployment_GracefulShutdown(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+
+	args := deploy.Spec.Template.Spec.Containers[0].Args
+
+	g.Expect(findArg(args, "--shutdown-delay-duration=")).To(Equal("--shutdown-delay-duration=15s"))
+	g.Expect(findArg(args, "--shutdown-send-retry-after=")).To(Equal("--shutdown-send-retry-after=true"))
+
+	podSpec := deploy.Spec.Template.Spec
+	g.Expect(podSpec.TerminationGracePeriodSeconds).ToNot(BeNil())
+	g.Expect(*podSpec.TerminationGracePeriodSeconds).To(Equal(int64(65)))
 }
 
 func TestBuildSecondaryDeployment_SchedulingFields(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Secondary.NodeSelector = map[string]string{
 		"node-role.kubernetes.io/infra": "",
@@ -121,21 +132,14 @@ func TestBuildSecondaryDeployment_SchedulingFields(t *testing.T) {
 	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
 	podSpec := deploy.Spec.Template.Spec
 
-	if podSpec.NodeSelector == nil {
-		t.Fatal("expected nodeSelector to be set")
-	}
-	if _, ok := podSpec.NodeSelector["node-role.kubernetes.io/infra"]; !ok {
-		t.Error("expected infra node selector")
-	}
-	if len(podSpec.Tolerations) != 1 {
-		t.Fatalf("expected 1 toleration, got %d", len(podSpec.Tolerations))
-	}
-	if podSpec.Tolerations[0].Key != "node-role.kubernetes.io/infra" {
-		t.Errorf("toleration key = %q, want node-role.kubernetes.io/infra", podSpec.Tolerations[0].Key)
-	}
+	g.Expect(podSpec.NodeSelector).ToNot(BeNil())
+	g.Expect(podSpec.NodeSelector).To(HaveKey("node-role.kubernetes.io/infra"))
+	g.Expect(podSpec.Tolerations).To(HaveLen(1))
+	g.Expect(podSpec.Tolerations[0].Key).To(Equal("node-role.kubernetes.io/infra"))
 }
 
 func TestBuildSecondaryDeployment_AntiAffinityInjected(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Secondary.Replicas = 3
 	shard.Spec.ColocateComponents = ptr.To(false)
@@ -143,18 +147,13 @@ func TestBuildSecondaryDeployment_AntiAffinityInjected(t *testing.T) {
 	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
 	affinity := deploy.Spec.Template.Spec.Affinity
 
-	if affinity == nil {
-		t.Fatal("expected affinity to be set for replicas > 1")
-	}
-	if affinity.PodAntiAffinity == nil {
-		t.Error("expected podAntiAffinity")
-	}
-	if affinity.PodAffinity != nil {
-		t.Error("expected no podAffinity when colocate is false")
-	}
+	g.Expect(affinity).ToNot(BeNil())
+	g.Expect(affinity.PodAntiAffinity).ToNot(BeNil())
+	g.Expect(affinity.PodAffinity).To(BeNil())
 }
 
 func TestBuildSecondaryDeployment_ColocateAffinity(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Secondary.Replicas = 3
 	shard.Spec.ColocateComponents = ptr.To(true)
@@ -162,13 +161,7 @@ func TestBuildSecondaryDeployment_ColocateAffinity(t *testing.T) {
 	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
 	affinity := deploy.Spec.Template.Spec.Affinity
 
-	if affinity == nil {
-		t.Fatal("expected affinity to be set")
-	}
-	if affinity.PodAntiAffinity == nil {
-		t.Error("expected podAntiAffinity")
-	}
-	if affinity.PodAffinity == nil {
-		t.Error("expected podAffinity for co-location")
-	}
+	g.Expect(affinity).ToNot(BeNil())
+	g.Expect(affinity.PodAntiAffinity).ToNot(BeNil())
+	g.Expect(affinity.PodAffinity).ToNot(BeNil())
 }

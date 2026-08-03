@@ -3,144 +3,105 @@ package resources
 import (
 	"testing"
 
+	. "github.com/onsi/gomega"
 	"k8s.io/utils/ptr"
 )
 
 func TestBuildSecondaryAffinity_SingleReplica_NoColocate(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Secondary.Replicas = 1
 	shard.Spec.ColocateComponents = ptr.To(false)
 
 	affinity := BuildSecondaryAffinity(shard)
 
-	if affinity != nil {
-		t.Error("expected nil affinity for single replica without co-location")
-	}
+	g.Expect(affinity).To(BeNil())
 }
 
 func TestBuildSecondaryAffinity_MultiReplica_AntiAffinity(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Secondary.Replicas = 3
 	shard.Spec.ColocateComponents = ptr.To(false)
 
 	affinity := BuildSecondaryAffinity(shard)
 
-	if affinity == nil {
-		t.Fatal("expected non-nil affinity for multi-replica")
-	}
-	if affinity.PodAntiAffinity == nil {
-		t.Fatal("expected podAntiAffinity")
-	}
+	g.Expect(affinity).ToNot(BeNil())
+	g.Expect(affinity.PodAntiAffinity).ToNot(BeNil())
 	prefs := affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
-	if len(prefs) != 1 {
-		t.Fatalf("expected 1 anti-affinity rule, got %d", len(prefs))
-	}
-	if prefs[0].Weight != 100 {
-		t.Errorf("anti-affinity weight = %d, want 100", prefs[0].Weight)
-	}
-	if prefs[0].PodAffinityTerm.TopologyKey != "kubernetes.io/hostname" {
-		t.Errorf("topologyKey = %q, want kubernetes.io/hostname", prefs[0].PodAffinityTerm.TopologyKey)
-	}
+	g.Expect(prefs).To(HaveLen(1))
+	g.Expect(prefs[0].Weight).To(Equal(int32(100)))
+	g.Expect(prefs[0].PodAffinityTerm.TopologyKey).To(Equal("kubernetes.io/hostname"))
 	labels := prefs[0].PodAffinityTerm.LabelSelector.MatchLabels
-	if labels["app.kubernetes.io/component"] != "apiserver" {
-		t.Errorf("component label = %q, want apiserver", labels["app.kubernetes.io/component"])
-	}
-	if affinity.PodAffinity != nil {
-		t.Error("expected no podAffinity when colocate is false")
-	}
+	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/component", "apiserver"))
+	g.Expect(affinity.PodAffinity).To(BeNil())
 }
 
 func TestBuildSecondaryAffinity_MultiReplica_WithColocate(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Secondary.Replicas = 3
 	shard.Spec.ColocateComponents = ptr.To(true)
 
 	affinity := BuildSecondaryAffinity(shard)
 
-	if affinity == nil {
-		t.Fatal("expected non-nil affinity")
-	}
-	if affinity.PodAntiAffinity == nil {
-		t.Fatal("expected podAntiAffinity")
-	}
-	if affinity.PodAffinity == nil {
-		t.Fatal("expected podAffinity for co-location")
-	}
+	g.Expect(affinity).ToNot(BeNil())
+	g.Expect(affinity.PodAntiAffinity).ToNot(BeNil())
+	g.Expect(affinity.PodAffinity).ToNot(BeNil())
 	prefs := affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution
-	if len(prefs) != 1 {
-		t.Fatalf("expected 1 co-location rule, got %d", len(prefs))
-	}
-	if prefs[0].Weight != 80 {
-		t.Errorf("co-location weight = %d, want 80", prefs[0].Weight)
-	}
+	g.Expect(prefs).To(HaveLen(1))
+	g.Expect(prefs[0].Weight).To(Equal(int32(80)))
 	labels := prefs[0].PodAffinityTerm.LabelSelector.MatchLabels
-	if labels["app.kubernetes.io/component"] != "storage" {
-		t.Errorf("component label = %q, want storage", labels["app.kubernetes.io/component"])
-	}
+	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/component", "storage"))
 }
 
 func TestBuildSecondaryAffinity_ColocateDefault_NilMeansTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Secondary.Replicas = 3
 	shard.Spec.ColocateComponents = nil
 
 	affinity := BuildSecondaryAffinity(shard)
 
-	if affinity == nil || affinity.PodAffinity == nil {
-		t.Error("expected co-location affinity when ColocateComponents is nil (default true)")
-	}
+	g.Expect(affinity).ToNot(BeNil())
+	g.Expect(affinity.PodAffinity).ToNot(BeNil())
 }
 
 func TestBuildSecondaryAffinity_SingleReplica_WithColocate(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Secondary.Replicas = 1
 	shard.Spec.ColocateComponents = ptr.To(true)
 
 	affinity := BuildSecondaryAffinity(shard)
 
-	if affinity == nil {
-		t.Fatal("expected non-nil affinity for co-location even with 1 replica")
-	}
-	if affinity.PodAntiAffinity != nil {
-		t.Error("expected no anti-affinity for single replica")
-	}
-	if affinity.PodAffinity == nil {
-		t.Fatal("expected podAffinity for co-location")
-	}
+	g.Expect(affinity).ToNot(BeNil())
+	g.Expect(affinity.PodAntiAffinity).To(BeNil())
+	g.Expect(affinity.PodAffinity).ToNot(BeNil())
 }
 
 func TestBuildKineAffinity_SingleReplica(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Kine.Replicas = 1
 
 	affinity := BuildKineAffinity(shard)
 
-	if affinity != nil {
-		t.Error("expected nil affinity for single kine replica")
-	}
+	g.Expect(affinity).To(BeNil())
 }
 
 func TestBuildKineAffinity_MultiReplica(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Kine.Replicas = 3
 
 	affinity := BuildKineAffinity(shard)
 
-	if affinity == nil {
-		t.Fatal("expected non-nil affinity for multi-replica kine")
-	}
-	if affinity.PodAntiAffinity == nil {
-		t.Fatal("expected podAntiAffinity")
-	}
+	g.Expect(affinity).ToNot(BeNil())
+	g.Expect(affinity.PodAntiAffinity).ToNot(BeNil())
 	prefs := affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
-	if len(prefs) != 1 {
-		t.Fatalf("expected 1 anti-affinity rule, got %d", len(prefs))
-	}
+	g.Expect(prefs).To(HaveLen(1))
 	labels := prefs[0].PodAffinityTerm.LabelSelector.MatchLabels
-	if labels["app.kubernetes.io/component"] != "storage" {
-		t.Errorf("component label = %q, want storage", labels["app.kubernetes.io/component"])
-	}
-	if affinity.PodAffinity != nil {
-		t.Error("expected no podAffinity on kine (only apiserver seeks kine)")
-	}
+	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/component", "storage"))
+	g.Expect(affinity.PodAffinity).To(BeNil())
 }

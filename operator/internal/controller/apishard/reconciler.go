@@ -66,6 +66,7 @@ const (
 // used by the tracking client for orphan cleanup.
 var managedGVKs = []schema.GroupVersionKind{
 	{Group: "apps", Version: "v1", Kind: "Deployment"},
+	{Group: "apps", Version: "v1", Kind: "StatefulSet"},
 	{Group: "", Version: "v1", Kind: "Service"},
 	{Group: "", Version: "v1", Kind: "Secret"},
 	{Group: "", Version: "v1", Kind: "ConfigMap"},
@@ -85,6 +86,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -339,9 +341,9 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 		return fmt.Errorf("postgresql secret: %w", err)
 	}
 
-	deployment := resources.BuildPostgreSQLDeployment(shard)
-	if err := tc.ApplyOwned(ctx, deployment); err != nil {
-		return fmt.Errorf("postgresql deployment: %w", err)
+	sts := resources.BuildPostgreSQLStatefulSet(shard)
+	if err := tc.ApplyOwned(ctx, sts); err != nil {
+		return fmt.Errorf("postgresql statefulset: %w", err)
 	}
 
 	svc := resources.BuildPostgreSQLService(shard)
@@ -1078,6 +1080,19 @@ func (r *Reconciler) checkDeploymentHealth(ctx context.Context, shard *kubeshard
 	secondaryReady := secondaryDeploy.Status.ReadyReplicas > 0 &&
 		secondaryDeploy.Status.ReadyReplicas == secondaryDeploy.Status.Replicas
 
+	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeInClusterPostgreSQL {
+		pgSts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      resources.PostgreSQLStatefulSetName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+		}, pgSts); err != nil {
+			return false, err
+		}
+		pgReady := pgSts.Status.ReadyReplicas > 0 &&
+			pgSts.Status.ReadyReplicas == pgSts.Status.Replicas
+		return kineReady && secondaryReady && pgReady, nil
+	}
+
 	return kineReady && secondaryReady, nil
 }
 
@@ -1107,6 +1122,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.APIShard{}).
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(shardpredicate.DeploymentReadinessPredicate)).
+		Owns(&appsv1.StatefulSet{}, builder.WithPredicates(shardpredicate.StatefulSetReadinessPredicate)).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ConfigMap{}).

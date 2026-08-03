@@ -18,6 +18,7 @@ package resources
 
 import (
 	"fmt"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -31,16 +32,21 @@ import (
 const (
 	DefaultKineImage = "ghcr.io/k3s-io/kine:v0.16.3"
 	KinePort         = 2379
+	dataVolumeName   = "data"
 )
 
+// KineDeploymentName returns the name of the Kine Deployment for the given shard.
 func KineDeploymentName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-kine", shard.Name)
 }
 
+// KineServiceName returns the name of the Kine Service for the given shard.
 func KineServiceName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-kine", shard.Name)
 }
 
+// KineEndpoint returns the storage endpoint connection string for Kine based on
+// the configured storage type (SQLite or PostgreSQL).
 func KineEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 	switch shard.Spec.Storage.Type {
 	case kubeshardv1alpha1.StorageTypeSQLite:
@@ -52,6 +58,8 @@ func KineEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 	}
 }
 
+// BuildKineDeployment constructs the Kine Deployment resource for the given shard,
+// including container configuration, storage volumes, and connection pool settings.
 func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	name := KineDeploymentName(shard)
 	image := shard.Spec.Kine.Image
@@ -75,6 +83,39 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 		"--listen-address", fmt.Sprintf("tcp://0.0.0.0:%d", KinePort),
 	}
 
+	if shard.Spec.Kine.ConnectionPool != nil {
+		cp := shard.Spec.Kine.ConnectionPool
+		if cp.MaxIdleConnections != nil {
+			args = append(args, "--datastore-max-idle-connections", strconv.FormatInt(int64(*cp.MaxIdleConnections), 10))
+		}
+		if cp.MaxOpenConnections != nil {
+			args = append(args, "--datastore-max-open-connections", strconv.FormatInt(int64(*cp.MaxOpenConnections), 10))
+		}
+		if cp.MaxLifetime != nil {
+			args = append(args, "--datastore-connection-max-lifetime", cp.MaxLifetime.Duration.String())
+		}
+	}
+
+	if shard.Spec.Kine.Compaction != nil {
+		c := shard.Spec.Kine.Compaction
+		if c.Interval != nil {
+			args = append(args, "--compact-interval", c.Interval.Duration.String())
+		}
+		if c.MinRetain != nil {
+			args = append(args, "--compact-min-retain", strconv.FormatInt(*c.MinRetain, 10))
+		}
+		if c.BatchSize != nil {
+			args = append(args, "--compact-batch-size", strconv.FormatInt(*c.BatchSize, 10))
+		}
+	}
+
+	if shard.Spec.Kine.PollBatchSize != nil {
+		args = append(args, "--poll-batch-size", strconv.FormatInt(*shard.Spec.Kine.PollBatchSize, 10))
+	}
+	if shard.Spec.Kine.WatchProgressNotifyInterval != nil {
+		args = append(args, "--watch-progress-notify-interval", shard.Spec.Kine.WatchProgressNotifyInterval.Duration.String())
+	}
+
 	var envFrom []corev1.EnvFromSource
 	var env []corev1.EnvVar
 	var volumes []corev1.Volume
@@ -82,13 +123,13 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 
 	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeSQLite {
 		volumes = append(volumes, corev1.Volume{
-			Name: "data",
+			Name: dataVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "data",
+			Name:      dataVolumeName,
 			MountPath: "/data",
 		})
 	}
@@ -188,6 +229,9 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	return deployment
 }
 
+// BuildKineService constructs the Kine Service resource for the given shard,
+// exposing the gRPC endpoint. When colocation is enabled, traffic distribution
+// is set to prefer same-node routing.
 func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	name := KineServiceName(shard)
 	labels := map[string]string{
