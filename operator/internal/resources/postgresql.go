@@ -120,7 +120,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 		vcts = []corev1.PersistentVolumeClaim{
 			{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "data",
+					Name: dataVolumeName,
 				},
 				Spec: corev1.PersistentVolumeClaimSpec{
 					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -136,7 +136,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 	} else {
 		volumes = []corev1.Volume{
 			{
-				Name: "data",
+				Name: dataVolumeName,
 				VolumeSource: corev1.VolumeSource{
 					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
@@ -190,7 +190,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 							Resources: resourceReqs,
 							VolumeMounts: []corev1.VolumeMount{
 								{
-									Name:      "data",
+									Name:      dataVolumeName,
 									MountPath: "/var/lib/postgresql/data",
 								},
 							},

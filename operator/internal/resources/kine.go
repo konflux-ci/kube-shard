@@ -32,6 +32,7 @@ import (
 const (
 	DefaultKineImage = "ghcr.io/k3s-io/kine:v0.16.3"
 	KinePort         = 2379
+	dataVolumeName   = "data"
 )
 
 func KineDeploymentName(shard *kubeshardv1alpha1.APIShard) string {
@@ -116,13 +117,13 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 
 	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeSQLite {
 		volumes = append(volumes, corev1.Volume{
-			Name: "data",
+			Name: dataVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
 		})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "data",
+			Name:      dataVolumeName,
 			MountPath: "/data",
 		})
 	}
