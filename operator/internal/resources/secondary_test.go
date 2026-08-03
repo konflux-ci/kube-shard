@@ -102,3 +102,25 @@ func TestBuildSecondaryDeployment_CustomImage(t *testing.T) {
 		t.Errorf("image = %q, want custom image", got)
 	}
 }
+
+func TestBuildSecondaryDeployment_GracefulShutdown(t *testing.T) {
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+
+	args := deploy.Spec.Template.Spec.Containers[0].Args
+
+	if got := findArg(args, "--shutdown-delay-duration="); got != "--shutdown-delay-duration=15s" {
+		t.Errorf("shutdown-delay-duration arg = %q, want %q", got, "--shutdown-delay-duration=15s")
+	}
+	if got := findArg(args, "--shutdown-send-retry-after="); got != "--shutdown-send-retry-after=true" {
+		t.Errorf("shutdown-send-retry-after arg = %q, want %q", got, "--shutdown-send-retry-after=true")
+	}
+
+	podSpec := deploy.Spec.Template.Spec
+	if podSpec.TerminationGracePeriodSeconds == nil {
+		t.Fatal("terminationGracePeriodSeconds is nil, want 65")
+	}
+	if *podSpec.TerminationGracePeriodSeconds != 65 {
+		t.Errorf("terminationGracePeriodSeconds = %d, want 65", *podSpec.TerminationGracePeriodSeconds)
+	}
+}

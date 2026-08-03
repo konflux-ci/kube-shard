@@ -116,6 +116,11 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 		// Admission webhooks are re-enabled so that mutating/validating webhooks
 		// synced from the primary by WebhookSync are enforced on the secondary.
 		"--enable-admission-plugins=MutatingAdmissionWebhook,ValidatingAdmissionWebhook",
+		// Graceful shutdown: delay keeps the process alive and serving while the
+		// aggregation layer propagates endpoint removal. Retry-After headers tell
+		// clients to retry on another instance during draining.
+		"--shutdown-delay-duration=15s",
+		"--shutdown-send-retry-after=true",
 	}
 
 	deployment := &appsv1.Deployment{
@@ -138,6 +143,7 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					TerminationGracePeriodSeconds: ptr.To(int64(65)),
 					Containers: []corev1.Container{
 						{
 							Name:      "kube-apiserver",
