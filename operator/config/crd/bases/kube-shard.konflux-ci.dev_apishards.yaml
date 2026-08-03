@@ -79,9 +79,80 @@ spec:
                   Blocked, leaving remediation to the user.
                 type: boolean
               kine:
+                description: |-
+                  KineSpec configures the Kine deployment that translates etcd gRPC calls
+                  into SQL queries against the backing database.
                 properties:
+                  compaction:
+                    description: Compaction controls the background revision cleanup
+                      process.
+                    properties:
+                      batchSize:
+                        description: |-
+                          BatchSize is the number of obsolete revisions to delete per compaction
+                          cycle. Larger batches compact faster but may increase database lock
+                          contention.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      interval:
+                        description: |-
+                          Interval is how often Kine runs a compaction cycle. Each cycle deletes
+                          obsolete revisions older than the most recent one per key (subject to
+                          MinRetain). Set to 0 to disable compaction entirely.
+                          Value is a Go duration string (e.g. "5m", "1h").
+                        type: string
+                        x-kubernetes-validations:
+                        - message: duration must not be negative
+                          rule: '!self.startsWith(''-'')'
+                      minRetain:
+                        description: |-
+                          MinRetain is the minimum number of historical revisions to preserve
+                          per key during compaction. Higher values allow longer watch histories
+                          at the cost of storage.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    type: object
+                  connectionPool:
+                    description: ConnectionPool tunes the SQL connection pool parameters.
+                    properties:
+                      maxIdleConnections:
+                        description: |-
+                          MaxIdleConnections is the maximum number of idle (kept-alive but unused)
+                          connections in the pool. Higher values reduce connection setup latency
+                          under bursty workloads at the cost of memory.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      maxLifetime:
+                        description: |-
+                          MaxLifetime is the maximum duration a connection may be reused before
+                          being closed and replaced. Helps balance load across database replicas
+                          and recover from transient network issues.
+                          Value is a Go duration string (e.g. "30m", "1h").
+                        type: string
+                        x-kubernetes-validations:
+                        - message: duration must not be negative
+                          rule: '!self.startsWith(''-'')'
+                      maxOpenConnections:
+                        description: |-
+                          MaxOpenConnections is the maximum number of concurrent open connections
+                          to the database (both active and idle). Set to 0 for unlimited.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    type: object
                   image:
                     type: string
+                  pollBatchSize:
+                    description: |-
+                      PollBatchSize is the maximum number of events Kine fetches per database
+                      poll cycle. Larger values improve throughput for high-change-rate
+                      workloads at the cost of per-poll latency.
+                    format: int64
+                    minimum: 0
+                    type: integer
                   replicas:
                     default: 1
                     format: int32
@@ -146,6 +217,16 @@ spec:
                           More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                         type: object
                     type: object
+                  watchProgressNotifyInterval:
+                    description: |-
+                      WatchProgressNotifyInterval controls how often Kine sends bookmark
+                      (progress notification) events to active watchers, allowing them to
+                      advance their resource version even when no real changes occur.
+                      Value is a Go duration string (e.g. "10s", "1m").
+                    type: string
+                    x-kubernetes-validations:
+                    - message: duration must not be negative
+                      rule: '!self.startsWith(''-'')'
                 type: object
               namespaceSync:
                 properties:
