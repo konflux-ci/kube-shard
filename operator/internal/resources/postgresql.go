@@ -36,7 +36,7 @@ const (
 	PostgreSQLPort         = 5432
 )
 
-func PostgreSQLDeploymentName(shard *kubeshardv1alpha1.APIShard) string {
+func PostgreSQLStatefulSetName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-postgresql", shard.Name)
 }
 
@@ -94,12 +94,11 @@ func BuildPostgreSQLSecret(shard *kubeshardv1alpha1.APIShard, password string) *
 	}
 }
 
-// BuildPostgreSQLDeployment creates the in-cluster PostgreSQL deployment.
-// NOTE: Data is stored on an EmptyDir volume and is lost when the pod restarts.
-// InClusterPostgreSQL is intended for development and staging environments.
-// For production, use storage.type=PostgreSQL with a managed database.
-func BuildPostgreSQLDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
-	name := PostgreSQLDeploymentName(shard)
+// BuildPostgreSQLStatefulSet creates the in-cluster PostgreSQL StatefulSet.
+// When persistence is configured, VolumeClaimTemplates provide durable storage.
+// When persistence is nil, an emptyDir volume is used (data lost on pod restart).
+func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.StatefulSet {
+	name := PostgreSQLStatefulSetName(shard)
 	labels := postgresLabels(shard)
 
 	var resourceReqs corev1.ResourceRequirements
@@ -113,19 +112,52 @@ func BuildPostgreSQLDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploy
 		}
 	}
 
-	return &appsv1.Deployment{
+	var volumes []corev1.Volume
+	var vcts []corev1.PersistentVolumeClaim
+
+	persistence := persistenceFromShard(shard)
+	if persistence != nil {
+		vcts = []corev1.PersistentVolumeClaim{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: dataVolumeName,
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					StorageClassName: persistence.StorageClassName,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: persistence.Size,
+						},
+					},
+				},
+			},
+		}
+	} else {
+		volumes = []corev1.Volume{
+			{
+				Name: dataVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+		}
+	}
+
+	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+			Kind:       "StatefulSet",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: shard.Spec.TargetNamespace,
 			Labels:    labels,
 		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: ptr.To(int32(1)),
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    ptr.To(int32(1)),
+			ServiceName: PostgreSQLServiceName(shard),
+			Selector:    &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
@@ -158,7 +190,7 @@ func BuildPostgreSQLDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploy
 							Resources: resourceReqs,
 							VolumeMounts: []corev1.VolumeMount{
 								{
-									Name:      "data",
+									Name:      dataVolumeName,
 									MountPath: "/var/lib/postgresql/data",
 								},
 							},
@@ -182,16 +214,10 @@ func BuildPostgreSQLDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deploy
 							},
 						},
 					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "data",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-					},
+					Volumes: volumes,
 				},
 			},
+			VolumeClaimTemplates: vcts,
 		},
 	}
 }
@@ -232,4 +258,11 @@ func postgresLabels(shard *kubeshardv1alpha1.APIShard) map[string]string {
 		"app.kubernetes.io/managed-by": "kube-shard-operator",
 		"app.kubernetes.io/component":  "database",
 	}
+}
+
+func persistenceFromShard(shard *kubeshardv1alpha1.APIShard) *kubeshardv1alpha1.PersistenceSpec {
+	if shard.Spec.Storage.InCluster == nil {
+		return nil
+	}
+	return shard.Spec.Storage.InCluster.Persistence
 }

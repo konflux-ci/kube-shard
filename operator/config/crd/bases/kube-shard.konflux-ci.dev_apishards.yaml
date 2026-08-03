@@ -371,6 +371,26 @@ spec:
                     type: object
                   inCluster:
                     properties:
+                      persistence:
+                        description: |-
+                          PersistenceSpec configures persistent volume storage for in-cluster backends.
+                          When specified, a PVC is used instead of emptyDir, ensuring data survives pod restarts.
+                        properties:
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: Size is the requested storage capacity.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClassName:
+                            description: |-
+                              StorageClassName is the name of the StorageClass to use for the PVC.
+                              If not specified, the cluster default StorageClass is used.
+                            type: string
+                        required:
+                        - size
+                        type: object
                       resources:
                         description: ResourceRequirements describes the compute resource
                           requirements.
