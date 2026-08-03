@@ -73,7 +73,7 @@ func GeneratePassword() (string, error) {
 func BuildPostgreSQLSecret(shard *kubeshardv1alpha1.APIShard, password string) *corev1.Secret {
 	name := PostgreSQLSecretName(shard)
 	labels := postgresLabels(shard)
-	user := "kine"
+	user := NameKine
 
 	return &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{
@@ -88,7 +88,7 @@ func BuildPostgreSQLSecret(shard *kubeshardv1alpha1.APIShard, password string) *
 		StringData: map[string]string{
 			"POSTGRES_USER":     user,
 			"POSTGRES_PASSWORD": password,
-			"POSTGRES_DB":       "kine",
+			"POSTGRES_DB":       NameKine,
 			"KINE_ENDPOINT":     PostgreSQLDSN(shard, user, password),
 		},
 	}

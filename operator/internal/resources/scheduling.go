@@ -17,6 +17,8 @@ const (
 	ComponentAPIServer = "apiserver"
 	ComponentStorage   = "storage"
 	ComponentDatabase  = "database"
+
+	NameKine = "kine"
 )
 
 // isColocateEnabled returns true if component colocation is enabled for the shard.
