@@ -1333,6 +1333,169 @@ var _ = Describe("setErrorAndRequeue", func() {
 	})
 })
 
+var _ = Describe("requestHeaderCAMapper", func() {
+	It("should return reconcile requests for all shards when ConfigMap matches", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-rhca-mapper",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-rhca-mapper-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		mapper := requestHeaderCAMapper(k8sClient)
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "extension-apiserver-authentication",
+				Namespace: "kube-system",
+			},
+		}
+		requests := mapper(ctx, cm)
+		Expect(requests).NotTo(BeEmpty())
+
+		found := false
+		for _, req := range requests {
+			if req.Name == "test-rhca-mapper" {
+				found = true
+				break
+			}
+		}
+		Expect(found).To(BeTrue(), "expected reconcile request for test-rhca-mapper shard")
+	})
+
+	It("should return nil for non-matching ConfigMap", func() {
+		mapper := requestHeaderCAMapper(k8sClient)
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "some-other-configmap",
+				Namespace: "kube-system",
+			},
+		}
+		requests := mapper(ctx, cm)
+		Expect(requests).To(BeNil())
+	})
+
+	It("should return nil for wrong namespace", func() {
+		mapper := requestHeaderCAMapper(k8sClient)
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "extension-apiserver-authentication",
+				Namespace: "default",
+			},
+		}
+		requests := mapper(ctx, cm)
+		Expect(requests).To(BeNil())
+	})
+})
+
+var _ = Describe("connectionSecretMapper", func() {
+	It("should return reconcile request for PostgreSQL shard with matching secret", func() {
+		nsName := "test-connmap-pg"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-connmap-pg",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypePostgreSQL,
+					ConnectionSecretRef: &kubeshardv1alpha1.SecretKeyReference{
+						Name: "my-pg-secret",
+						Key:  "dsn",
+					},
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		mapper := connectionSecretMapper(k8sClient)
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "my-pg-secret",
+				Namespace: nsName,
+			},
+		}
+		requests := mapper(ctx, secret)
+		Expect(requests).To(HaveLen(1))
+		Expect(requests[0].Name).To(Equal("test-connmap-pg"))
+	})
+
+	It("should return no requests for non-matching secret", func() {
+		mapper := connectionSecretMapper(k8sClient)
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unrelated-secret",
+				Namespace: "default",
+			},
+		}
+		requests := mapper(ctx, secret)
+		Expect(requests).To(BeEmpty())
+	})
+
+	It("should return no requests for SQLite shard", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-connmap-sqlite",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-connmap-sqlite-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		mapper := connectionSecretMapper(k8sClient)
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "some-secret",
+				Namespace: "test-connmap-sqlite-ns",
+			},
+		}
+		requests := mapper(ctx, secret)
+
+		for _, req := range requests {
+			Expect(req.Name).NotTo(Equal("test-connmap-sqlite"))
+		}
+	})
+})
+
 var _ = Describe("ensureNamespace", func() {
 	var reconciler *Reconciler
 
