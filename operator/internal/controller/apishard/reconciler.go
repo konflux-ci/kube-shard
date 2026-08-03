@@ -74,6 +74,7 @@ var managedGVKs = []schema.GroupVersionKind{
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
+	{Group: "policy", Version: "v1", Kind: "PodDisruptionBudget"},
 }
 
 // Reconciler reconciles an APIShard object.
@@ -97,6 +98,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=webhooksyncs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives the desired state for a single APIShard resource. It provisions
 // the target namespace, storage backend, TLS certificates, auth configuration, and
@@ -303,6 +305,17 @@ func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, sha
 		return fmt.Errorf("kine deployment: %w", err)
 	}
 
+	if pdb := resources.BuildPDB(
+		resources.KineDeploymentName(shard),
+		shard.Spec.TargetNamespace,
+		shard.Spec.Kine.Replicas,
+		deployment.Spec.Selector.MatchLabels,
+	); pdb != nil {
+		if err := tc.ApplyOwned(ctx, pdb); err != nil {
+			return fmt.Errorf("kine pdb: %w", err)
+		}
+	}
+
 	svc := resources.BuildKineService(shard)
 	if err := tc.ApplyOwned(ctx, svc); err != nil {
 		if svc.Spec.TrafficDistribution != nil && isTrafficDistributionUnsupported(err) {
@@ -336,6 +349,17 @@ func (r *Reconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client
 	deployment := resources.BuildSecondaryDeployment(shard, requestHeaderAllowedNames)
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("secondary deployment: %w", err)
+	}
+
+	if pdb := resources.BuildPDB(
+		resources.SecondaryDeploymentName(shard),
+		shard.Spec.TargetNamespace,
+		shard.Spec.Secondary.Replicas,
+		deployment.Spec.Selector.MatchLabels,
+	); pdb != nil {
+		if err := tc.ApplyOwned(ctx, pdb); err != nil {
+			return fmt.Errorf("secondary pdb: %w", err)
+		}
 	}
 
 	svc := resources.BuildSecondaryService(shard)
