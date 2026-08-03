@@ -34,6 +34,7 @@ import (
 	"github.com/konflux-ci/konflux-ci/operator/pkg/tracking"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
+	"github.com/konflux-ci/kube-shard/operator/internal/certs"
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
 )
 
@@ -777,5 +778,146 @@ var _ = Describe("reconcileSecondary", func() {
 			Name:      resources.SecondaryServiceName(shard),
 			Namespace: nsName,
 		}, svc)).To(Succeed())
+	})
+})
+
+var _ = Describe("reconcileAdminKubeconfig", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createShardWithNS := func(suffix string) *kubeshardv1alpha1.APIShard {
+		nsName := "test-kubeconfig-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-kubeconfig-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	It("should be a no-op when PKI secret does not exist", func() {
+		shard := createShardWithNS("no-pki")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAdminKubeconfig(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(shard.Status.ConnectionSecret).To(BeNil())
+	})
+
+	It("should be a no-op when PKI secret has empty ca.crt", func() {
+		shard := createShardWithNS("empty-ca")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		pkiSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.PKISecretName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"ca.crt":  {},
+				"tls.crt": []byte("cert"),
+				"tls.key": []byte("key"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, pkiSecret)).To(Succeed())
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAdminKubeconfig(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(shard.Status.ConnectionSecret).To(BeNil())
+	})
+
+	It("should be a no-op when admin client cert secret does not exist", func() {
+		shard := createShardWithNS("no-admin")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		pkiSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.PKISecretName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"ca.crt": []byte("fake-ca"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, pkiSecret)).To(Succeed())
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAdminKubeconfig(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(shard.Status.ConnectionSecret).To(BeNil())
+	})
+
+	It("should create kubeconfig secret when PKI and admin certs exist", func() {
+		shard := createShardWithNS("full")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		pkiSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.PKISecretName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"ca.crt": []byte("fake-ca-cert"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, pkiSecret)).To(Succeed())
+
+		adminSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.AdminClientSecretName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"tls.crt": []byte("fake-client-cert"),
+				"tls.key": []byte("fake-client-key"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, adminSecret)).To(Succeed())
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAdminKubeconfig(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(shard.Status.ConnectionSecret).NotTo(BeNil())
+		Expect(shard.Status.ConnectionSecret.Name).To(Equal(shard.Name + "-admin-kubeconfig"))
+		Expect(shard.Status.ConnectionSecret.Namespace).To(Equal(shard.Spec.TargetNamespace))
+
+		kubeconfigSecret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      shard.Name + "-admin-kubeconfig",
+			Namespace: shard.Spec.TargetNamespace,
+		}, kubeconfigSecret)).To(Succeed())
+
+		Expect(kubeconfigSecret.Data).To(HaveKey("kubeconfig"))
+		Expect(kubeconfigSecret.Data).To(HaveKey("tls.crt"))
+		Expect(kubeconfigSecret.Data).To(HaveKey("tls.key"))
+		Expect(string(kubeconfigSecret.Data["kubeconfig"])).To(ContainSubstring(shard.Name + "-apiserver"))
 	})
 })
