@@ -17,6 +17,7 @@ limitations under the License.
 package apishard
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -1278,5 +1279,130 @@ var _ = Describe("checkDeploymentHealth", func() {
 		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(healthy).To(BeFalse())
+	})
+})
+
+var _ = Describe("setErrorAndRequeue", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should set Phase to Error and populate Message and Reconciled condition", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-err-requeue",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-err-requeue-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		testErr := fmt.Errorf("something went wrong")
+		result, err := reconciler.setErrorAndRequeue(ctx, shard, testErr)
+		Expect(err).To(MatchError("something went wrong"))
+		Expect(result).To(Equal(ctrl.Result{}))
+
+		updated := &kubeshardv1alpha1.APIShard{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseError))
+		Expect(updated.Status.Message).To(Equal("something went wrong"))
+
+		cond := meta.FindStatusCondition(updated.Status.Conditions, kubeshardv1alpha1.ConditionReconciled)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("ReconcileError"))
+	})
+})
+
+var _ = Describe("ensureNamespace", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should be idempotent when namespace already exists", func() {
+		nsName := "test-ns-exists"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-ns-exists",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		err := reconciler.ensureNamespace(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should create namespace with correct labels", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-ns-labels",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-ns-labels-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		err := reconciler.ensureNamespace(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		ns := &corev1.Namespace{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-ns-labels-ns"}, ns)).To(Succeed())
+		Expect(ns.Labels).To(HaveKeyWithValue(resources.LabelManagedBy, resources.ManagedByValue))
+		Expect(ns.Labels).To(HaveKeyWithValue(resources.LabelInstance, "test-ns-labels"))
 	})
 })
