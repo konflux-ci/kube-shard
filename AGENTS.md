@@ -111,3 +111,5 @@ Use the shim script for direct access to the secondary (bypassing aggregation):
 - Kubernetes manifests use Kustomize (`deploy/poc/kustomization.yaml`)
 - Generated/temporary files go in `_output/` (gitignored)
 - Environment variables provide configuration; all have sensible defaults
+- **Doc comments**: Every exported and unexported function/method must have a Go doc comment. The comment must start with the function name (e.g., `// BuildKineDeployment constructs ...`).
+- **Test assertions**: Use [gomega](https://onsi.github.io/gomega/) for all test assertions. Initialize with `g := NewGomegaWithT(t)` and use `g.Expect(...)` instead of raw `t.Error`/`t.Fatal` patterns.

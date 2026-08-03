@@ -35,14 +35,18 @@ const (
 	dataVolumeName   = "data"
 )
 
+// KineDeploymentName returns the name of the Kine Deployment for the given shard.
 func KineDeploymentName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-kine", shard.Name)
 }
 
+// KineServiceName returns the name of the Kine Service for the given shard.
 func KineServiceName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-kine", shard.Name)
 }
 
+// KineEndpoint returns the storage endpoint connection string for Kine based on
+// the configured storage type (SQLite or PostgreSQL).
 func KineEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 	switch shard.Spec.Storage.Type {
 	case kubeshardv1alpha1.StorageTypeSQLite:
@@ -54,6 +58,8 @@ func KineEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 	}
 }
 
+// BuildKineDeployment constructs the Kine Deployment resource for the given shard,
+// including container configuration, storage volumes, and connection pool settings.
 func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	name := KineDeploymentName(shard)
 	image := shard.Spec.Kine.Image
@@ -66,10 +72,10 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	}
 
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kine",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "storage",
+		LabelName:      "kine",
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: ComponentStorage,
 	}
 
 	args := []string{
@@ -174,6 +180,10 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					NodeSelector:              shard.Spec.Kine.NodeSelector,
+					Tolerations:               shard.Spec.Kine.Tolerations,
+					TopologySpreadConstraints: shard.Spec.Kine.TopologySpreadConstraints,
+					Affinity:                  BuildKineAffinity(shard),
 					Containers: []corev1.Container{
 						{
 							Name:         "kine",
@@ -219,16 +229,19 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	return deployment
 }
 
+// BuildKineService constructs the Kine Service resource for the given shard,
+// exposing the gRPC endpoint. When colocation is enabled, traffic distribution
+// is set to prefer same-node routing.
 func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	name := KineServiceName(shard)
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kine",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "storage",
+		LabelName:      "kine",
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: ComponentStorage,
 	}
 
-	return &corev1.Service{
+	svc := &corev1.Service{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
 			Kind:       "Service",
@@ -250,4 +263,10 @@ func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 			},
 		},
 	}
+
+	if isColocateEnabled(shard) {
+		svc.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferSameNode)
+	}
+
+	return svc
 }

@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -143,6 +145,7 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
 			shard := newTestShard()
 			shard.Spec.Kine = tt.kine
 			shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeSQLite
@@ -156,63 +159,141 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 			}
 
 			for flag, want := range tt.wantArgs {
-				got, ok := argMap[flag]
-				if !ok {
-					t.Errorf("expected flag %s not found in args", flag)
-					continue
-				}
-				if got != want {
-					t.Errorf("flag %s = %q, want %q", flag, got, want)
-				}
+				g.Expect(argMap).To(HaveKey(flag))
+				g.Expect(argMap[flag]).To(Equal(want))
 			}
 
 			for _, flag := range tt.absentArgs {
-				if _, ok := argMap[flag]; ok {
-					t.Errorf("flag %s should be absent when not configured", flag)
-				}
+				g.Expect(argMap).ToNot(HaveKey(flag))
 			}
 		})
 	}
 }
 
 func TestBuildKineDeployment_DefaultImage(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	deploy := BuildKineDeployment(shard)
 
 	got := deploy.Spec.Template.Spec.Containers[0].Image
-	if got != DefaultKineImage {
-		t.Errorf("image = %q, want %q", got, DefaultKineImage)
-	}
+	g.Expect(got).To(Equal(DefaultKineImage))
 }
 
 func TestBuildKineDeployment_CustomImage(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Kine.Image = "custom-registry/kine:v1.0.0"
 
 	deploy := BuildKineDeployment(shard)
 
 	got := deploy.Spec.Template.Spec.Containers[0].Image
-	if got != "custom-registry/kine:v1.0.0" {
-		t.Errorf("image = %q, want custom image", got)
-	}
+	g.Expect(got).To(Equal("custom-registry/kine:v1.0.0"))
 }
 
 func TestBuildKineDeployment_SQLiteVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeSQLite
 
 	deploy := BuildKineDeployment(shard)
 
 	volumes := deploy.Spec.Template.Spec.Volumes
-	if len(volumes) != 1 || volumes[0].Name != "data" {
-		t.Fatalf("expected 1 volume named 'data', got %d volumes", len(volumes))
-	}
-	if volumes[0].EmptyDir == nil {
-		t.Error("SQLite volume should use EmptyDir")
-	}
+	g.Expect(volumes).To(HaveLen(1))
+	g.Expect(volumes[0].Name).To(Equal("data"))
+	g.Expect(volumes[0].EmptyDir).ToNot(BeNil())
 
 	mounts := deploy.Spec.Template.Spec.Containers[0].VolumeMounts
-	if len(mounts) != 1 || mounts[0].MountPath != "/data" {
-		t.Error("expected volume mount at /data")
+	g.Expect(mounts).To(HaveLen(1))
+	g.Expect(mounts[0].MountPath).To(Equal("/data"))
+}
+
+func TestBuildKineDeployment_SchedulingFields(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Kine.NodeSelector = map[string]string{
+		"node-role.kubernetes.io/infra": "",
 	}
+
+	deploy := BuildKineDeployment(shard)
+	podSpec := deploy.Spec.Template.Spec
+
+	g.Expect(podSpec.NodeSelector).ToNot(BeNil())
+	g.Expect(podSpec.NodeSelector).To(HaveKey("node-role.kubernetes.io/infra"))
+}
+
+func TestBuildKineDeployment_TopologySpreadConstraints(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Kine.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           1,
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app.kubernetes.io/component": "storage"},
+			},
+		},
+	}
+
+	deploy := BuildKineDeployment(shard)
+	podSpec := deploy.Spec.Template.Spec
+
+	g.Expect(podSpec.TopologySpreadConstraints).To(HaveLen(1))
+	g.Expect(podSpec.TopologySpreadConstraints[0].TopologyKey).To(Equal("topology.kubernetes.io/zone"))
+	g.Expect(podSpec.TopologySpreadConstraints[0].MaxSkew).To(Equal(int32(1)))
+}
+
+func TestBuildKineDeployment_AntiAffinityInjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Kine.Replicas = 3
+
+	deploy := BuildKineDeployment(shard)
+	affinity := deploy.Spec.Template.Spec.Affinity
+
+	g.Expect(affinity).ToNot(BeNil())
+	g.Expect(affinity.PodAntiAffinity).ToNot(BeNil())
+}
+
+func TestBuildKineDeployment_NoAffinitySingleReplica(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Kine.Replicas = 1
+
+	deploy := BuildKineDeployment(shard)
+	affinity := deploy.Spec.Template.Spec.Affinity
+
+	g.Expect(affinity).To(BeNil())
+}
+
+func TestBuildKineService_PreferSameNode_Enabled(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.ColocateComponents = ptr.To(true)
+
+	svc := BuildKineService(shard)
+
+	g.Expect(svc.Spec.TrafficDistribution).ToNot(BeNil())
+	g.Expect(*svc.Spec.TrafficDistribution).To(Equal(corev1.ServiceTrafficDistributionPreferSameNode))
+}
+
+func TestBuildKineService_PreferSameNode_Disabled(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.ColocateComponents = ptr.To(false)
+
+	svc := BuildKineService(shard)
+
+	g.Expect(svc.Spec.TrafficDistribution).To(BeNil())
+}
+
+func TestBuildKineService_PreferSameNode_Default(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.ColocateComponents = nil
+
+	svc := BuildKineService(shard)
+
+	g.Expect(svc.Spec.TrafficDistribution).ToNot(BeNil())
+	g.Expect(*svc.Spec.TrafficDistribution).To(Equal(corev1.ServiceTrafficDistributionPreferSameNode))
 }

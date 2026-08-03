@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -267,8 +268,8 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alph
 		ObjectMeta: metav1.ObjectMeta{
 			Name: shard.Spec.TargetNamespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "kube-shard-operator",
-				"app.kubernetes.io/instance":   shard.Name,
+				resources.LabelManagedBy: resources.ManagedByValue,
+				resources.LabelInstance:  shard.Name,
 			},
 		},
 	}
@@ -292,7 +293,11 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, tc *tracking.Client, 
 
 // reconcileKine ensures the Kine deployment and service exist in the target namespace.
 // Kine translates etcd gRPC calls into SQL queries against the configured storage backend.
+// If the cluster does not support trafficDistribution on Services (Kubernetes < 1.33),
+// the field is cleared and the apply is retried so reconciliation is not blocked.
 func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	logger := log.FromContext(ctx)
+
 	deployment := resources.BuildKineDeployment(shard)
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("kine deployment: %w", err)
@@ -300,10 +305,28 @@ func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, sha
 
 	svc := resources.BuildKineService(shard)
 	if err := tc.ApplyOwned(ctx, svc); err != nil {
+		if svc.Spec.TrafficDistribution != nil && isTrafficDistributionUnsupported(err) {
+			logger.Info("trafficDistribution not supported on this cluster, falling back without it")
+			svc.Spec.TrafficDistribution = nil
+			if retryErr := tc.ApplyOwned(ctx, svc); retryErr != nil {
+				return fmt.Errorf("kine service (fallback without trafficDistribution): %w", retryErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("kine service: %w", err)
 	}
 
 	return nil
+}
+
+// isTrafficDistributionUnsupported checks whether an error from the API server
+// indicates that the trafficDistribution field is not recognized. This happens
+// on clusters older than Kubernetes 1.33 where the ServiceTrafficDistribution
+// feature gate is not available.
+func isTrafficDistributionUnsupported(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "trafficDistribution") &&
+		(apierrors.IsInvalid(err) || apierrors.IsNotFound(err) || strings.Contains(msg, "unknown field"))
 }
 
 // reconcileSecondary ensures the secondary kube-apiserver deployment and its
@@ -720,8 +743,8 @@ func (r *Reconciler) reconcileNamespaceSync(ctx context.Context, tc *tracking.Cl
 			Name:      fmt.Sprintf("%s-ns-sync", shard.Name),
 			Namespace: shard.Spec.TargetNamespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/instance":   shard.Name,
-				"app.kubernetes.io/managed-by": "kube-shard-operator",
+				resources.LabelInstance:  shard.Name,
+				resources.LabelManagedBy: resources.ManagedByValue,
 			},
 		},
 	}
@@ -767,8 +790,8 @@ func (r *Reconciler) reconcileWebhookSync(ctx context.Context, tc *tracking.Clie
 			Name:      fmt.Sprintf("%s-webhook-sync", shard.Name),
 			Namespace: shard.Spec.TargetNamespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/instance":   shard.Name,
-				"app.kubernetes.io/managed-by": "kube-shard-operator",
+				resources.LabelInstance:  shard.Name,
+				resources.LabelManagedBy: resources.ManagedByValue,
 			},
 		},
 	}

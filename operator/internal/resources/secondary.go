@@ -34,14 +34,17 @@ const (
 	SecondaryPort         = 6443
 )
 
+// SecondaryDeploymentName returns the name of the secondary apiserver Deployment for the given shard.
 func SecondaryDeploymentName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-apiserver", shard.Name)
 }
 
+// SecondaryServiceName returns the name of the secondary apiserver Service for the given shard.
 func SecondaryServiceName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-apiserver", shard.Name)
 }
 
+// SecondaryEndpoint returns the in-cluster HTTPS URL for the secondary apiserver.
 func SecondaryEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("https://%s.%s.svc",
 		SecondaryServiceName(shard),
@@ -49,6 +52,8 @@ func SecondaryEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 	)
 }
 
+// BuildSecondaryDeployment constructs the secondary kube-apiserver Deployment resource
+// for the given shard, including TLS, authorization webhook, and request-header configuration.
 func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAllowedNames []string) *appsv1.Deployment {
 	name := SecondaryDeploymentName(shard)
 	image := shard.Spec.Secondary.Image
@@ -61,10 +66,10 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 	}
 
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kube-apiserver",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "apiserver",
+		LabelName:      "kube-apiserver",
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: ComponentAPIServer,
 	}
 
 	kineSvc := KineServiceName(shard)
@@ -144,6 +149,10 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 				},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: ptr.To(int64(65)),
+					NodeSelector:                  shard.Spec.Secondary.NodeSelector,
+					Tolerations:                   shard.Spec.Secondary.Tolerations,
+					TopologySpreadConstraints:     shard.Spec.Secondary.TopologySpreadConstraints,
+					Affinity:                      BuildSecondaryAffinity(shard),
 					Containers: []corev1.Container{
 						{
 							Name:      "kube-apiserver",
@@ -237,13 +246,14 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 	return deployment
 }
 
+// BuildSecondaryService constructs the secondary apiserver Service resource for the given shard.
 func BuildSecondaryService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	name := SecondaryServiceName(shard)
 	labels := map[string]string{
-		"app.kubernetes.io/name":       "kube-apiserver",
-		"app.kubernetes.io/instance":   shard.Name,
-		"app.kubernetes.io/managed-by": "kube-shard-operator",
-		"app.kubernetes.io/component":  "apiserver",
+		LabelName:      "kube-apiserver",
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: ComponentAPIServer,
 	}
 
 	return &corev1.Service{

@@ -75,6 +75,18 @@ type SecondarySpec struct {
 	Replicas  int32                       `json:"replicas,omitempty"`
 	Image     string                      `json:"image,omitempty"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	// NodeSelector constrains the secondary apiserver pods to nodes
+	// matching the specified labels.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Tolerations allows the secondary apiserver pods to schedule onto
+	// nodes with matching taints.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// TopologySpreadConstraints controls how secondary apiserver pods
+	// are distributed across topology domains (zones, racks, etc.).
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 }
 
 // ConnectionPoolConfig tunes the SQL connection pool that Kine maintains
@@ -131,6 +143,16 @@ type KineSpec struct {
 	Replicas  int32                       `json:"replicas,omitempty"`
 	Image     string                      `json:"image,omitempty"`
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	// NodeSelector constrains Kine pods to nodes matching the specified labels.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Tolerations allows Kine pods to schedule onto nodes with matching taints.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	// TopologySpreadConstraints controls how Kine pods are distributed
+	// across topology domains (zones, racks, etc.).
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 	// ConnectionPool tunes the SQL connection pool parameters.
 	// +optional
 	ConnectionPool *ConnectionPoolConfig `json:"connectionPool,omitempty"`
@@ -168,6 +190,18 @@ type APIShardSpec struct {
 	// Blocked, leaving remediation to the user.
 	// +kubebuilder:default=true
 	ForceAggregation bool `json:"forceAggregation,omitempty"`
+
+	// ColocateComponents enables co-location of apiserver and Kine pods
+	// on the same nodes, combined with topology-aware routing
+	// (trafficDistribution: PreferSameNode) on the Kine Service.
+	// This minimizes gRPC latency between the apiserver and Kine.
+	// NOTE: Co-location relies on soft podAffinity and cannot override
+	// hard scheduling constraints. If the secondary and Kine specs use
+	// divergent nodeSelector or tolerations (e.g., pinning only one
+	// component to infra nodes), co-location will be silently defeated.
+	// +optional
+	// +kubebuilder:default=true
+	ColocateComponents *bool `json:"colocateComponents,omitempty"`
 }
 
 type ConnectionSecretReference struct {
