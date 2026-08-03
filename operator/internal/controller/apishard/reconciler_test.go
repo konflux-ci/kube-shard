@@ -994,7 +994,7 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		}
 	})
 
-	createConflictShard := func(suffix string, forceAggregation bool) *kubeshardv1alpha1.APIShard {
+	createConflictShard := func(suffix, group string, forceAggregation bool) *kubeshardv1alpha1.APIShard {
 		shard := &kubeshardv1alpha1.APIShard{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-conflict-" + suffix,
@@ -1002,7 +1002,7 @@ var _ = Describe("reconcileCRDConflicts", func() {
 			Spec: kubeshardv1alpha1.APIShardSpec{
 				TargetNamespace: "test-conflict-" + suffix + "-ns",
 				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
-					{Group: "tekton.dev", Versions: []string{"v1"}},
+					{Group: group, Versions: []string{"v1"}},
 				},
 				Storage: kubeshardv1alpha1.StorageSpec{
 					Type: kubeshardv1alpha1.StorageTypeSQLite,
@@ -1017,14 +1017,15 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		}
 		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
-		// The CRD defaults forceAggregation to true; override in-memory for
-		// tests that need the non-default path (reconciler uses the pointer).
+		// The CRD has +kubebuilder:default=true with omitempty, so false
+		// cannot survive an API round-trip via the Go client. Override
+		// in-memory to simulate the state from a YAML-applied manifest.
 		shard.Spec.ForceAggregation = forceAggregation
 		return shard
 	}
 
 	It("should set CRDConflict=False when no conflicting CRDs exist", func() {
-		shard := createConflictShard("none", false)
+		shard := createConflictShard("none", "noconflict.example.com", false)
 		defer func() { _ = k8sClient.Delete(ctx, shard) }()
 
 		reconciler.reconcileCRDConflicts(ctx, shard)
@@ -1036,10 +1037,10 @@ var _ = Describe("reconcileCRDConflicts", func() {
 	})
 
 	It("should set phase to Blocked when CRDs conflict and forceAggregation is false", func() {
-		shard := createConflictShard("blocked", false)
+		shard := createConflictShard("blocked", "blocked.example.com", false)
 		defer func() {
 			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "pipelines.tekton.dev"}, crd); err == nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "widgets.blocked.example.com"}, crd); err == nil {
 				_ = k8sClient.Delete(ctx, crd)
 			}
 			_ = k8sClient.Delete(ctx, shard)
@@ -1047,14 +1048,14 @@ var _ = Describe("reconcileCRDConflicts", func() {
 
 		crd := &apiextensionsv1.CustomResourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "pipelines.tekton.dev",
+				Name: "widgets.blocked.example.com",
 			},
 			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-				Group: "tekton.dev",
+				Group: "blocked.example.com",
 				Names: apiextensionsv1.CustomResourceDefinitionNames{
-					Plural:   "pipelines",
-					Singular: "pipeline",
-					Kind:     "Pipeline",
+					Plural:   "widgets",
+					Singular: "widget",
+					Kind:     "Widget",
 				},
 				Scope: apiextensionsv1.NamespaceScoped,
 				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
@@ -1083,10 +1084,10 @@ var _ = Describe("reconcileCRDConflicts", func() {
 	})
 
 	It("should set ForcedAggregation reason when forceAggregation is true", func() {
-		shard := createConflictShard("forced", true)
+		shard := createConflictShard("forced", "forced.example.com", true)
 		defer func() {
 			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "pipelineruns.tekton.dev"}, crd); err == nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gadgets.forced.example.com"}, crd); err == nil {
 				_ = k8sClient.Delete(ctx, crd)
 			}
 			_ = k8sClient.Delete(ctx, shard)
@@ -1094,14 +1095,14 @@ var _ = Describe("reconcileCRDConflicts", func() {
 
 		crd := &apiextensionsv1.CustomResourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "pipelineruns.tekton.dev",
+				Name: "gadgets.forced.example.com",
 			},
 			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-				Group: "tekton.dev",
+				Group: "forced.example.com",
 				Names: apiextensionsv1.CustomResourceDefinitionNames{
-					Plural:   "pipelineruns",
-					Singular: "pipelinerun",
-					Kind:     "PipelineRun",
+					Plural:   "gadgets",
+					Singular: "gadget",
+					Kind:     "Gadget",
 				},
 				Scope: apiextensionsv1.NamespaceScoped,
 				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
