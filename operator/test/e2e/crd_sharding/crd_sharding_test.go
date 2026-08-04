@@ -118,6 +118,7 @@ spec:
     - group: example.com
       versions:
         - v1
+        - v1beta1
   storage:
     type: SQLite
   namespaceSync:
@@ -332,6 +333,20 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("true"),
 				"Webhook annotation not found -- webhook was not invoked on the secondary")
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+	})
+
+	It("should convert between API versions via the conversion webhook", func() {
+		By("reading the Widget via v1beta1 API (triggering conversion on the secondary)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get",
+				"widgets.v1beta1.example.com", widgetName,
+				"-n", widgetNamespace,
+				"-o", "jsonpath={.spec.message}")
+			output, err := logger.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred(),
+				"Conversion webhook failed -- the operator likely did not transform the service reference to a URL")
+			g.Expect(output).To(Equal("hello from e2e test"))
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 
