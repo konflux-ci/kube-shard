@@ -15,7 +15,7 @@ func main() {
 	output := flag.String("output", "", "Output load test PipelineRun YAML file (required)")
 	namespace := flag.String("namespace", "default", "Namespace for generated PipelineRun")
 	prefix := flag.String("prefix", "load-test-", "generateName prefix")
-	image := flag.String("image", "busybox", "Step container image")
+	image := flag.String("image", "registry.access.redhat.com/hi/core-runtime:2.43", "Step container image")
 	sleepRange := flag.String("sleep-range", "1,10", "Min,max sleep seconds per step")
 	skipResolve := flag.Bool("skip-resolve", false, "Don't resolve bundles, use defaults")
 	defaultTaskSizeKB := flag.Int("default-task-size-kb", 17, "Fallback task size in KB when not resolving")
