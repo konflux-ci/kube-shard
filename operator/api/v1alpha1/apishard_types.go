@@ -108,7 +108,7 @@ type ConnectionPoolConfig struct {
 	// and recover from transient network issues.
 	// Value is a Go duration string (e.g. "30m", "1h").
 	// +optional
-	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="duration must be a valid non-negative Go duration"
 	MaxLifetime *metav1.Duration `json:"maxLifetime,omitempty"`
 }
 
@@ -123,7 +123,7 @@ type CompactionConfig struct {
 	// Value is a Go duration string (e.g. "0s", "5m", "1h").
 	// +optional
 	// +kubebuilder:default="0s"
-	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="duration must be a valid non-negative Go duration"
 	Interval *metav1.Duration `json:"interval,omitempty"`
 	// MinRetain is the minimum number of historical revisions to preserve
 	// per key during compaction. Higher values allow longer watch histories
@@ -148,7 +148,7 @@ type CompactionConfig struct {
 	// Value is a Go duration string (e.g. "30s", "1m").
 	// +optional
 	// +kubebuilder:default="30s"
-	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="duration must be a valid non-negative Go duration"
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
 }
 
@@ -186,7 +186,7 @@ type KineSpec struct {
 	// advance their resource version even when no real changes occur.
 	// Value is a Go duration string (e.g. "10s", "1m").
 	// +optional
-	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="duration must be a valid non-negative Go duration"
 	WatchProgressNotifyInterval *metav1.Duration `json:"watchProgressNotifyInterval,omitempty"`
 }
 
