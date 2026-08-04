@@ -41,6 +41,7 @@ import (
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 	"github.com/konflux-ci/kube-shard/operator/internal/certs"
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
+	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
 )
 
 // newTrackingClient creates a tracking.Client configured with ownership for the given APIShard.
@@ -1759,5 +1760,292 @@ var _ = Describe("PDB auto-creation", func() {
 			}, pdb)
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
+	})
+})
+
+var _ = Describe("transformCRDConversion", func() {
+	It("should convert service reference to URL", func() {
+		port := int32(443)
+		path := "/convert"
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Conversion: &apiextensionsv1.CustomResourceConversion{
+					Strategy: apiextensionsv1.WebhookConverter,
+					Webhook: &apiextensionsv1.WebhookConversion{
+						ConversionReviewVersions: []string{"v1"},
+						ClientConfig: &apiextensionsv1.WebhookClientConfig{
+							Service: &apiextensionsv1.ServiceReference{
+								Namespace: "openshift-pipelines",
+								Name:      "tekton-pipelines-webhook",
+								Port:      &port,
+								Path:      &path,
+							},
+							CABundle: []byte("fake-ca-bundle"),
+						},
+					},
+				},
+			},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(crd.Spec.Conversion.Strategy).To(Equal(apiextensionsv1.WebhookConverter))
+		Expect(crd.Spec.Conversion.Webhook.ClientConfig.Service).To(BeNil())
+		Expect(crd.Spec.Conversion.Webhook.ClientConfig.URL).NotTo(BeNil())
+		Expect(*crd.Spec.Conversion.Webhook.ClientConfig.URL).To(Equal(
+			"https://tekton-pipelines-webhook.openshift-pipelines.svc:443/convert",
+		))
+		Expect(crd.Spec.Conversion.Webhook.ClientConfig.CABundle).To(Equal([]byte("fake-ca-bundle")))
+	})
+
+	It("should use default port 443 when port is nil", func() {
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Conversion: &apiextensionsv1.CustomResourceConversion{
+					Strategy: apiextensionsv1.WebhookConverter,
+					Webhook: &apiextensionsv1.WebhookConversion{
+						ConversionReviewVersions: []string{"v1"},
+						ClientConfig: &apiextensionsv1.WebhookClientConfig{
+							Service: &apiextensionsv1.ServiceReference{
+								Namespace: "openshift-pipelines",
+								Name:      "tekton-pipelines-webhook",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(*crd.Spec.Conversion.Webhook.ClientConfig.URL).To(Equal(
+			"https://tekton-pipelines-webhook.openshift-pipelines.svc:443",
+		))
+	})
+
+	It("should not modify CRD with strategy None", func() {
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Conversion: &apiextensionsv1.CustomResourceConversion{
+					Strategy: apiextensionsv1.NoneConverter,
+				},
+			},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(crd.Spec.Conversion.Strategy).To(Equal(apiextensionsv1.NoneConverter))
+		Expect(crd.Spec.Conversion.Webhook).To(BeNil())
+	})
+
+	It("should not modify CRD with no conversion", func() {
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(crd.Spec.Conversion).To(BeNil())
+	})
+
+	It("should not modify CRD with URL already set", func() {
+		existingURL := "https://already-set.example.com:8443/convert"
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Conversion: &apiextensionsv1.CustomResourceConversion{
+					Strategy: apiextensionsv1.WebhookConverter,
+					Webhook: &apiextensionsv1.WebhookConversion{
+						ConversionReviewVersions: []string{"v1"},
+						ClientConfig: &apiextensionsv1.WebhookClientConfig{
+							URL: &existingURL,
+						},
+					},
+				},
+			},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(crd.Spec.Conversion.Webhook.ClientConfig.Service).To(BeNil())
+		Expect(*crd.Spec.Conversion.Webhook.ClientConfig.URL).To(Equal(existingURL))
+	})
+})
+
+var _ = Describe("syncCRDsToSecondary", func() {
+	const (
+		shardName = "sync-test"
+		shardNS   = "sync-test-ns"
+		crdGroup  = "synctest.example.com"
+		crdPlural = "synctests"
+		crdName   = "synctests.synctest.example.com"
+	)
+
+	var (
+		reconciler *Reconciler
+		shard      *kubeshardv1alpha1.APIShard
+		provider   *secondary.ClientProvider
+	)
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: shardNS}}
+		_ = k8sClient.Create(ctx, ns)
+
+		provider = secondary.NewClientProvider(k8sClient.Scheme())
+		provider.InjectClientForTest(shardName, k8sClient)
+
+		reconciler = &Reconciler{
+			Client:         k8sClient,
+			Scheme:         k8sClient.Scheme(),
+			ClientProvider: provider,
+		}
+
+		shard = &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{Name: shardName},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: shardNS,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: crdGroup, Versions: []string{"v1", "v1beta1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{Type: kubeshardv1alpha1.StorageTypeSQLite},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+
+		pkiSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.PKISecretName(shard),
+				Namespace: shardNS,
+			},
+			Data: map[string][]byte{
+				"ca.crt":  []byte("fake-ca-cert"),
+				"tls.crt": []byte("fake-tls-cert"),
+				"tls.key": []byte("fake-tls-key"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, pkiSecret)).To(Succeed())
+
+		adminSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.AdminClientSecretName(shard),
+				Namespace: shardNS,
+			},
+			Data: map[string][]byte{
+				"tls.crt": []byte("fake-client-cert"),
+				"tls.key": []byte("fake-client-key"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, adminSecret)).To(Succeed())
+	})
+
+	AfterEach(func() {
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: crdName}, crd); err == nil {
+			_ = k8sClient.Delete(ctx, crd)
+		}
+		_ = k8sClient.Delete(ctx, shard)
+		_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: certs.PKISecretName(shard), Namespace: shardNS}})
+		_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: certs.AdminClientSecretName(shard), Namespace: shardNS}})
+	})
+
+	It("should apply a CRD with URL-based conversion via SSA preserving caBundle", func() {
+		url := "https://my-webhook.my-ns.svc:9443/convert"
+		caBundle := []byte("test-ca-bundle-data")
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: crdName},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: crdGroup,
+				Names: apiextensionsv1.CustomResourceDefinitionNames{
+					Plural:   crdPlural,
+					Singular: "synctest",
+					Kind:     "SyncTest",
+					ListKind: "SyncTestList",
+				},
+				Scope: apiextensionsv1.NamespaceScoped,
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+					{
+						Name: "v1", Served: true, Storage: true,
+						Schema: &apiextensionsv1.CustomResourceValidation{
+							OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{Type: "object"},
+						},
+					},
+					{
+						Name: "v1beta1", Served: true, Storage: false,
+						Schema: &apiextensionsv1.CustomResourceValidation{
+							OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{Type: "object"},
+						},
+					},
+				},
+				Conversion: &apiextensionsv1.CustomResourceConversion{
+					Strategy: apiextensionsv1.WebhookConverter,
+					Webhook: &apiextensionsv1.WebhookConversion{
+						ConversionReviewVersions: []string{"v1"},
+						ClientConfig: &apiextensionsv1.WebhookClientConfig{
+							URL:      &url,
+							CABundle: caBundle,
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, crd)).To(Succeed())
+
+		err := reconciler.syncCRDsToSecondary(ctx, shard, []string{crdName})
+		Expect(err).NotTo(HaveOccurred())
+
+		synced := &apiextensionsv1.CustomResourceDefinition{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crdName}, synced)).To(Succeed())
+
+		Expect(synced.Spec.Conversion).NotTo(BeNil())
+		Expect(synced.Spec.Conversion.Strategy).To(Equal(apiextensionsv1.WebhookConverter))
+		Expect(synced.Spec.Conversion.Webhook.ClientConfig.URL).NotTo(BeNil())
+		Expect(*synced.Spec.Conversion.Webhook.ClientConfig.URL).To(Equal(url))
+		Expect(synced.Spec.Conversion.Webhook.ClientConfig.CABundle).To(Equal(caBundle),
+			"caBundle should be preserved through the SSA apply")
+	})
+
+	It("should apply a CRD without conversion webhook via SSA", func() {
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: crdName},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: crdGroup,
+				Names: apiextensionsv1.CustomResourceDefinitionNames{
+					Plural:   crdPlural,
+					Singular: "synctest",
+					Kind:     "SyncTest",
+					ListKind: "SyncTestList",
+				},
+				Scope: apiextensionsv1.NamespaceScoped,
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+					{
+						Name: "v1", Served: true, Storage: true,
+						Schema: &apiextensionsv1.CustomResourceValidation{
+							OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{Type: "object"},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, crd)).To(Succeed())
+
+		err := reconciler.syncCRDsToSecondary(ctx, shard, []string{crdName})
+		Expect(err).NotTo(HaveOccurred())
+
+		synced := &apiextensionsv1.CustomResourceDefinition{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crdName}, synced)).To(Succeed())
+		Expect(synced.Spec.Group).To(Equal(crdGroup))
+		Expect(synced.Spec.Versions).To(HaveLen(1))
+	})
+
+	It("should return an error when a CRD does not exist on the primary", func() {
+		err := reconciler.syncCRDsToSecondary(ctx, shard, []string{"nonexistent.synctest.example.com"})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("get CRD nonexistent.synctest.example.com from primary"))
 	})
 })

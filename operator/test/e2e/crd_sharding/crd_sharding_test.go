@@ -59,6 +59,7 @@ var _ = Describe("CRD Sharding", Ordered, func() {
 			{"delete", "widget", widgetName, "-n", widgetNamespace, "--ignore-not-found"},
 			{"delete", "mutatingwebhookconfiguration", "e2e-widget-webhook", "--ignore-not-found"},
 			{"delete", "apiservice", "v1.example.com", "--ignore-not-found"},
+			{"delete", "apiservice", "v1beta1.example.com", "--ignore-not-found"},
 			{"delete", "apishard", shardName, "--ignore-not-found", "--wait=false"},
 			{"delete", "crd", "widgets.example.com", "--ignore-not-found"},
 			{"delete", "ns", webhookNS, "--ignore-not-found", "--wait=false"},
@@ -118,6 +119,7 @@ spec:
     - group: example.com
       versions:
         - v1
+        - v1beta1
   storage:
     type: SQLite
   namespaceSync:
@@ -147,6 +149,16 @@ spec:
 		cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(testdataDir, "dummy_crd.yaml"))
 		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRD on primary")
+
+		By("waiting for cert-manager to inject caBundle into the CRD conversion webhook")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "crd", "widgets.example.com",
+				"-o", "jsonpath={.spec.conversion.webhook.clientConfig.caBundle}")
+			output, err := logger.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).NotTo(BeEmpty(),
+				"caBundle should be injected by cert-manager before the operator syncs the CRD")
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("waiting for CRDConflict condition to be True (operator detected the conflict)")
 		Eventually(func(g Gomega) {
@@ -275,9 +287,9 @@ spec:
 			"e2e-widget-webhook", "--ignore-not-found")
 		_, _ = logger.Run(cmd)
 
-		By("cleaning up APIService")
+		By("cleaning up APIServices")
 		cmd = exec.Command("kubectl", "delete", "apiservice",
-			"v1.example.com", "--ignore-not-found")
+			"v1.example.com", "v1beta1.example.com", "--ignore-not-found")
 		_, _ = logger.Run(cmd)
 
 		By("cleaning up APIShard")
@@ -332,6 +344,20 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("true"),
 				"Webhook annotation not found -- webhook was not invoked on the secondary")
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+	})
+
+	It("should convert between API versions via the conversion webhook", func() {
+		By("reading the Widget via v1beta1 API (triggering conversion on the secondary)")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get",
+				"widgets.v1beta1.example.com", widgetName,
+				"-n", widgetNamespace,
+				"-o", "jsonpath={.spec.message}")
+			output, err := logger.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred(),
+				"Conversion webhook failed -- the operator likely did not transform the service reference to a URL")
+			g.Expect(output).To(Equal("hello from e2e test"))
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 
