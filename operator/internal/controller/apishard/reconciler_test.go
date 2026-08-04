@@ -17,23 +17,42 @@ limitations under the License.
 package apishard
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/konflux-ci/konflux-ci/operator/pkg/tracking"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
+	"github.com/konflux-ci/kube-shard/operator/internal/certs"
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
 )
+
+// newTrackingClient creates a tracking.Client configured with ownership for the given APIShard.
+func newTrackingClient(shard *kubeshardv1alpha1.APIShard) *tracking.Client {
+	return tracking.NewClientWithOwnership(k8sClient, tracking.OwnershipConfig{
+		Owner:             shard,
+		OwnerLabelKey:     ownerLabelKey,
+		ComponentLabelKey: componentLabelKey,
+		Component:         "apishard",
+		FieldManager:      fieldManager,
+	})
+}
 
 var _ = Describe("reconcileRequestHeaderCA", func() {
 	var reconciler *Reconciler
@@ -74,20 +93,10 @@ var _ = Describe("reconcileRequestHeaderCA", func() {
 		return shard
 	}
 
-	newTrackingClient := func(shard *kubeshardv1alpha1.APIShard) *tracking.Client {
-		return tracking.NewClientWithOwnership(k8sClient, tracking.OwnershipConfig{
-			Owner:             shard,
-			OwnerLabelKey:     ownerLabelKey,
-			ComponentLabelKey: componentLabelKey,
-			Component:         "apishard",
-			FieldManager:      fieldManager,
-		})
-	}
-
 	setAuthConfigMap := func(data map[string]string) {
 		cm := &corev1.ConfigMap{}
 		err := k8sClient.Get(ctx, types.NamespacedName{
-			Name: "extension-apiserver-authentication", Namespace: "kube-system",
+			Name: extensionAPIServerAuthCM, Namespace: kubeSystemNamespace,
 		}, cm)
 		if err == nil {
 			cm.Data = data
@@ -95,8 +104,8 @@ var _ = Describe("reconcileRequestHeaderCA", func() {
 		} else {
 			cm = &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "extension-apiserver-authentication",
-					Namespace: "kube-system",
+					Name:      extensionAPIServerAuthCM,
+					Namespace: kubeSystemNamespace,
 				},
 				Data: data,
 			}
@@ -130,7 +139,7 @@ var _ = Describe("reconcileRequestHeaderCA", func() {
 		tc := newTrackingClient(shard)
 		allowedNames, err := reconciler.reconcileRequestHeaderCA(ctx, tc, shard)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(allowedNames).To(Equal([]string{"front-proxy-client"}))
+		Expect(allowedNames).To(Equal([]string{defaultFrontProxyClient}))
 	})
 
 	It("should fall back to front-proxy-client when allowed names is an empty array", func() {
@@ -143,7 +152,7 @@ var _ = Describe("reconcileRequestHeaderCA", func() {
 		tc := newTrackingClient(shard)
 		allowedNames, err := reconciler.reconcileRequestHeaderCA(ctx, tc, shard)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(allowedNames).To(Equal([]string{"front-proxy-client"}))
+		Expect(allowedNames).To(Equal([]string{defaultFrontProxyClient}))
 	})
 
 	It("should return error when requestheader-client-ca-file is missing", func() {
@@ -368,6 +377,1387 @@ var _ = Describe("APIShard Controller", func() {
 					Namespace: "test-pg-ns",
 				}, pgSecret)
 			}, timeout, interval).Should(Succeed())
+		})
+	})
+})
+
+var _ = Describe("validateExternalPostgreSQLSecret", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createPGShard := func(suffix string, ref *kubeshardv1alpha1.SecretKeyReference) *kubeshardv1alpha1.APIShard {
+		nsName := "test-ext-pg-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-ext-pg-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type:                kubeshardv1alpha1.StorageTypePostgreSQL,
+					ConnectionSecretRef: ref,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	It("should set StorageReady=False when connectionSecretRef is nil", func() {
+		shard := createPGShard("no-ref", nil)
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		err := reconciler.validateExternalPostgreSQLSecret(ctx, shard)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("connectionSecretRef is not set"))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("MissingConnectionSecretRef"))
+	})
+
+	It("should set StorageReady=False when Secret is not found", func() {
+		shard := createPGShard("not-found", &kubeshardv1alpha1.SecretKeyReference{
+			Name: "nonexistent-secret",
+			Key:  "dsn",
+		})
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		err := reconciler.validateExternalPostgreSQLSecret(ctx, shard)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not found"))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("SecretNotFound"))
+	})
+
+	It("should set StorageReady=False when key is missing from Secret", func() {
+		shard := createPGShard("no-key", &kubeshardv1alpha1.SecretKeyReference{
+			Name: "pg-secret-no-key",
+			Key:  "dsn",
+		})
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pg-secret-no-key",
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"wrong-key": []byte("postgres://..."),
+			},
+		}
+		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+		err := reconciler.validateExternalPostgreSQLSecret(ctx, shard)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not found in secret"))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("KeyNotFound"))
+	})
+
+	It("should set StorageReady=True when Secret and key are valid", func() {
+		shard := createPGShard("valid", &kubeshardv1alpha1.SecretKeyReference{
+			Name: "pg-secret-valid",
+			Key:  "dsn",
+		})
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pg-secret-valid",
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"dsn": []byte("postgres://user:pass@host:5432/db"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+		err := reconciler.validateExternalPostgreSQLSecret(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("SecretValid"))
+	})
+})
+
+var _ = Describe("getOrGeneratePostgresPassword", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should reuse password from existing secret", func() {
+		nsName := "test-pw-reuse"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-pw-reuse",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		existingSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resources.PostgreSQLSecretName(shard),
+				Namespace: nsName,
+			},
+			Data: map[string][]byte{
+				"POSTGRES_PASSWORD": []byte("my-existing-password"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, existingSecret)).To(Succeed())
+
+		password, err := reconciler.getOrGeneratePostgresPassword(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(password).To(Equal("my-existing-password"))
+	})
+
+	It("should generate a new password when no secret exists", func() {
+		nsName := "test-pw-gen"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-pw-gen",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		password, err := reconciler.getOrGeneratePostgresPassword(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(password).NotTo(BeEmpty())
+		Expect(len(password)).To(BeNumerically(">=", 16))
+	})
+})
+
+var _ = Describe("reconcileAuthConfig", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should create the authz-config ConfigMap with webhook config", func() {
+		nsName := "test-authcfg"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-authcfg",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAuthConfig(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      shard.Name + "-authz-config",
+			Namespace: nsName,
+		}, cm)).To(Succeed())
+
+		Expect(cm.Data).To(HaveKey("webhook-config.yaml"))
+		Expect(cm.Data["webhook-config.yaml"]).To(ContainSubstring("subjectaccessreviews"))
+		Expect(cm.Data["webhook-config.yaml"]).To(ContainSubstring("tokenFile"))
+	})
+})
+
+var _ = Describe("reconcileAuthDelegator", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should create a ClusterRoleBinding for auth-delegator", func() {
+		nsName := "test-auth-del"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-auth-del",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		defer func() {
+			crb := &rbacv1.ClusterRoleBinding{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name + "-auth-delegator"}, crb); err == nil {
+				_ = k8sClient.Delete(ctx, crb)
+			}
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAuthDelegator(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: shard.Name + "-auth-delegator",
+		}, crb)).To(Succeed())
+
+		Expect(crb.RoleRef.Name).To(Equal("system:auth-delegator"))
+		Expect(crb.RoleRef.Kind).To(Equal("ClusterRole"))
+		Expect(crb.Subjects).To(HaveLen(1))
+		Expect(crb.Subjects[0].Kind).To(Equal("ServiceAccount"))
+		Expect(crb.Subjects[0].Name).To(Equal("default"))
+		Expect(crb.Subjects[0].Namespace).To(Equal(nsName))
+	})
+})
+
+var _ = Describe("reconcileSecondary", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should create secondary deployment and service", func() {
+		nsName := "test-secondary"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-secondary",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				Secondary: kubeshardv1alpha1.SecondarySpec{
+					Replicas: 1,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileSecondary(ctx, tc, shard, []string{defaultFrontProxyClient})
+		Expect(err).NotTo(HaveOccurred())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.SecondaryDeploymentName(shard),
+			Namespace: nsName,
+		}, deploy)).To(Succeed())
+
+		svc := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.SecondaryServiceName(shard),
+			Namespace: nsName,
+		}, svc)).To(Succeed())
+	})
+})
+
+var _ = Describe("reconcileAdminKubeconfig", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createShardWithNS := func(suffix string) *kubeshardv1alpha1.APIShard {
+		nsName := "test-kubeconfig-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-kubeconfig-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	It("should be a no-op when PKI secret does not exist", func() {
+		shard := createShardWithNS("no-pki")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAdminKubeconfig(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(shard.Status.ConnectionSecret).To(BeNil())
+	})
+
+	It("should be a no-op when PKI secret has empty ca.crt", func() {
+		shard := createShardWithNS("empty-ca")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		pkiSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.PKISecretName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"ca.crt":  {},
+				"tls.crt": []byte("cert"),
+				"tls.key": []byte("key"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, pkiSecret)).To(Succeed())
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAdminKubeconfig(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(shard.Status.ConnectionSecret).To(BeNil())
+	})
+
+	It("should be a no-op when admin client cert secret does not exist", func() {
+		shard := createShardWithNS("no-admin")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		pkiSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.PKISecretName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"ca.crt": []byte("fake-ca"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, pkiSecret)).To(Succeed())
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAdminKubeconfig(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(shard.Status.ConnectionSecret).To(BeNil())
+	})
+
+	It("should create kubeconfig secret when PKI and admin certs exist", func() {
+		shard := createShardWithNS("full")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		pkiSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.PKISecretName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"ca.crt": []byte("fake-ca-cert"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, pkiSecret)).To(Succeed())
+
+		adminSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      certs.AdminClientSecretName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Data: map[string][]byte{
+				"tls.crt": []byte("fake-client-cert"),
+				"tls.key": []byte("fake-client-key"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, adminSecret)).To(Succeed())
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAdminKubeconfig(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(shard.Status.ConnectionSecret).NotTo(BeNil())
+		Expect(shard.Status.ConnectionSecret.Name).To(Equal(shard.Name + "-admin-kubeconfig"))
+		Expect(shard.Status.ConnectionSecret.Namespace).To(Equal(shard.Spec.TargetNamespace))
+
+		kubeconfigSecret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      shard.Name + "-admin-kubeconfig",
+			Namespace: shard.Spec.TargetNamespace,
+		}, kubeconfigSecret)).To(Succeed())
+
+		Expect(kubeconfigSecret.Data).To(HaveKey("kubeconfig"))
+		Expect(kubeconfigSecret.Data).To(HaveKey("tls.crt"))
+		Expect(kubeconfigSecret.Data).To(HaveKey("tls.key"))
+		Expect(string(kubeconfigSecret.Data["kubeconfig"])).To(ContainSubstring(shard.Name + "-apiserver"))
+	})
+})
+
+var _ = Describe("APIShard Deletion", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should remove the finalizer and complete deletion when no APIServices registered", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "test-del-noapisvc",
+				Finalizers: []string{finalizerName},
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-del-noapisvc-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+
+		Expect(k8sClient.Delete(ctx, shard)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		Expect(shard.DeletionTimestamp.IsZero()).To(BeFalse())
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: shard.Name},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(ctrl.Result{}))
+
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	})
+
+	It("should return no error when APIShard is not found", func() {
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: "nonexistent-shard"},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(ctrl.Result{}))
+	})
+})
+
+var _ = Describe("reconcileCRDConflicts", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createConflictShard := func(suffix, group string, forceAggregation bool) *kubeshardv1alpha1.APIShard {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-conflict-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-conflict-" + suffix + "-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: group, Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				ForceAggregation: forceAggregation,
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		// The CRD has +kubebuilder:default=true with omitempty, so false
+		// cannot survive an API round-trip via the Go client. Override
+		// in-memory to simulate the state from a YAML-applied manifest.
+		shard.Spec.ForceAggregation = forceAggregation
+		return shard
+	}
+
+	It("should set CRDConflict=False when no conflicting CRDs exist", func() {
+		shard := createConflictShard("none", "noconflict.example.com", false)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		reconciler.reconcileCRDConflicts(ctx, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("NoConflicts"))
+	})
+
+	It("should set phase to Blocked when CRDs conflict and forceAggregation is false", func() {
+		shard := createConflictShard("blocked", "blocked.example.com", false)
+		defer func() {
+			crd := &apiextensionsv1.CustomResourceDefinition{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "widgets.blocked.example.com"}, crd); err == nil {
+				_ = k8sClient.Delete(ctx, crd)
+			}
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "widgets.blocked.example.com",
+			},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: "blocked.example.com",
+				Names: apiextensionsv1.CustomResourceDefinitionNames{
+					Plural:   "widgets",
+					Singular: "widget",
+					Kind:     "Widget",
+				},
+				Scope: apiextensionsv1.NamespaceScoped,
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+					{
+						Name:    "v1",
+						Served:  true,
+						Storage: true,
+						Schema: &apiextensionsv1.CustomResourceValidation{
+							OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+								Type: "object",
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, crd)).To(Succeed())
+
+		reconciler.reconcileCRDConflicts(ctx, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("CRDsExistOnPrimary"))
+		Expect(shard.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseBlocked))
+	})
+
+	It("should set ForcedAggregation reason when forceAggregation is true", func() {
+		shard := createConflictShard("forced", "forced.example.com", true)
+		defer func() {
+			crd := &apiextensionsv1.CustomResourceDefinition{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gadgets.forced.example.com"}, crd); err == nil {
+				_ = k8sClient.Delete(ctx, crd)
+			}
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "gadgets.forced.example.com",
+			},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: "forced.example.com",
+				Names: apiextensionsv1.CustomResourceDefinitionNames{
+					Plural:   "gadgets",
+					Singular: "gadget",
+					Kind:     "Gadget",
+				},
+				Scope: apiextensionsv1.NamespaceScoped,
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+					{
+						Name:    "v1",
+						Served:  true,
+						Storage: true,
+						Schema: &apiextensionsv1.CustomResourceValidation{
+							OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+								Type: "object",
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, crd)).To(Succeed())
+
+		reconciler.reconcileCRDConflicts(ctx, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("ForcedAggregation"))
+		Expect(shard.Status.Phase).NotTo(Equal(kubeshardv1alpha1.PhaseBlocked))
+	})
+})
+
+var _ = Describe("checkDeploymentHealth", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createHealthShard := func(suffix string, storageType kubeshardv1alpha1.StorageType) *kubeshardv1alpha1.APIShard {
+		nsName := "test-health-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-health-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: storageType,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				Secondary: kubeshardv1alpha1.SecondarySpec{Replicas: 1},
+				Kine:      kubeshardv1alpha1.KineSpec{Replicas: 1},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	createDeployment := func(name, namespace string, readyReplicas int32) {
+		var one int32 = 1
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &one,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": name},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "img"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+		deploy.Status.Replicas = 1
+		deploy.Status.ReadyReplicas = readyReplicas
+		Expect(k8sClient.Status().Update(ctx, deploy)).To(Succeed())
+	}
+
+	It("should return true when Kine and Secondary are both ready (SQLite)", func() {
+		shard := createHealthShard("sqlite-ok", kubeshardv1alpha1.StorageTypeSQLite)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+
+		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(healthy).To(BeTrue())
+	})
+
+	It("should return false when Kine is not ready", func() {
+		shard := createHealthShard("kine-bad", kubeshardv1alpha1.StorageTypeSQLite)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 0)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+
+		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(healthy).To(BeFalse())
+	})
+
+	It("should check PostgreSQL StatefulSet when storage type is InClusterPostgreSQL", func() {
+		shard := createHealthShard("pg-ok", kubeshardv1alpha1.StorageTypeInClusterPostgreSQL)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+
+		var one int32 = 1
+		pgSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resources.PostgreSQLStatefulSetName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: &one,
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "pg"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "pg"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "pg", Image: "postgres"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pgSts)).To(Succeed())
+		pgSts.Status.Replicas = 1
+		pgSts.Status.ReadyReplicas = 1
+		Expect(k8sClient.Status().Update(ctx, pgSts)).To(Succeed())
+
+		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(healthy).To(BeTrue())
+	})
+
+	It("should return false when PG StatefulSet is not ready", func() {
+		shard := createHealthShard("pg-bad", kubeshardv1alpha1.StorageTypeInClusterPostgreSQL)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		createDeployment(resources.KineDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+		createDeployment(resources.SecondaryDeploymentName(shard), shard.Spec.TargetNamespace, 1)
+
+		var one int32 = 1
+		pgSts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resources.PostgreSQLStatefulSetName(shard),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: &one,
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "pg"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "pg"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "pg", Image: "postgres"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pgSts)).To(Succeed())
+		pgSts.Status.Replicas = 1
+		pgSts.Status.ReadyReplicas = 0
+		Expect(k8sClient.Status().Update(ctx, pgSts)).To(Succeed())
+
+		healthy, err := reconciler.checkDeploymentHealth(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(healthy).To(BeFalse())
+	})
+})
+
+var _ = Describe("setErrorAndRequeue", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should set Phase to Error and populate Message and Reconciled condition", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-err-requeue",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-err-requeue-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		testErr := fmt.Errorf("something went wrong")
+		result, err := reconciler.setErrorAndRequeue(ctx, shard, testErr)
+		Expect(err).To(MatchError("something went wrong"))
+		Expect(result).To(Equal(ctrl.Result{}))
+
+		updated := &kubeshardv1alpha1.APIShard{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseError))
+		Expect(updated.Status.Message).To(Equal("something went wrong"))
+
+		cond := meta.FindStatusCondition(updated.Status.Conditions, kubeshardv1alpha1.ConditionReconciled)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("ReconcileError"))
+	})
+})
+
+var _ = Describe("requestHeaderCAMapper", func() {
+	It("should return reconcile requests for all shards when ConfigMap matches", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-rhca-mapper",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-rhca-mapper-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		mapper := requestHeaderCAMapper(k8sClient)
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      extensionAPIServerAuthCM,
+				Namespace: kubeSystemNamespace,
+			},
+		}
+		requests := mapper(ctx, cm)
+		Expect(requests).NotTo(BeEmpty())
+
+		found := false
+		for _, req := range requests {
+			if req.Name == "test-rhca-mapper" {
+				found = true
+				break
+			}
+		}
+		Expect(found).To(BeTrue(), "expected reconcile request for test-rhca-mapper shard")
+	})
+
+	It("should return nil for non-matching ConfigMap", func() {
+		mapper := requestHeaderCAMapper(k8sClient)
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "some-other-configmap",
+				Namespace: kubeSystemNamespace,
+			},
+		}
+		requests := mapper(ctx, cm)
+		Expect(requests).To(BeNil())
+	})
+
+	It("should return nil for wrong namespace", func() {
+		mapper := requestHeaderCAMapper(k8sClient)
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      extensionAPIServerAuthCM,
+				Namespace: "default",
+			},
+		}
+		requests := mapper(ctx, cm)
+		Expect(requests).To(BeNil())
+	})
+})
+
+var _ = Describe("connectionSecretMapper", func() {
+	It("should return reconcile request for PostgreSQL shard with matching secret", func() {
+		nsName := "test-connmap-pg"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-connmap-pg",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypePostgreSQL,
+					ConnectionSecretRef: &kubeshardv1alpha1.SecretKeyReference{
+						Name: "my-pg-secret",
+						Key:  "dsn",
+					},
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		mapper := connectionSecretMapper(k8sClient)
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "my-pg-secret",
+				Namespace: nsName,
+			},
+		}
+		requests := mapper(ctx, secret)
+		Expect(requests).To(HaveLen(1))
+		Expect(requests[0].Name).To(Equal("test-connmap-pg"))
+	})
+
+	It("should return no requests for non-matching secret", func() {
+		mapper := connectionSecretMapper(k8sClient)
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "unrelated-secret",
+				Namespace: "default",
+			},
+		}
+		requests := mapper(ctx, secret)
+		Expect(requests).To(BeEmpty())
+	})
+
+	It("should return no requests for SQLite shard", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-connmap-sqlite",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-connmap-sqlite-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		mapper := connectionSecretMapper(k8sClient)
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "some-secret",
+				Namespace: "test-connmap-sqlite-ns",
+			},
+		}
+		requests := mapper(ctx, secret)
+
+		for _, req := range requests {
+			Expect(req.Name).NotTo(Equal("test-connmap-sqlite"))
+		}
+	})
+})
+
+var _ = Describe("ensureNamespace", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("should be idempotent when namespace already exists", func() {
+		nsName := "test-ns-exists"
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-ns-exists",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		err := reconciler.ensureNamespace(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should create namespace with correct labels", func() {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-ns-labels",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-ns-labels-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		err := reconciler.ensureNamespace(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		ns := &corev1.Namespace{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-ns-labels-ns"}, ns)).To(Succeed())
+		Expect(ns.Labels).To(HaveKeyWithValue(resources.LabelManagedBy, resources.ManagedByValue))
+		Expect(ns.Labels).To(HaveKeyWithValue(resources.LabelInstance, "test-ns-labels"))
+	})
+})
+
+var _ = Describe("PDB auto-creation", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	Context("reconcileKine", func() {
+		It("should create a PDB when Kine replicas >= 2", func() {
+			nsName := "test-kine-pdb-yes"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+			_ = k8sClient.Create(ctx, ns)
+
+			shard := &kubeshardv1alpha1.APIShard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-kine-pdb-yes",
+				},
+				Spec: kubeshardv1alpha1.APIShardSpec{
+					TargetNamespace: nsName,
+					APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+						{Group: "tekton.dev", Versions: []string{"v1"}},
+					},
+					Storage: kubeshardv1alpha1.StorageSpec{
+						Type: kubeshardv1alpha1.StorageTypeSQLite,
+					},
+					NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+						LabelSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{"type": "tenant"},
+						},
+					},
+					Kine: kubeshardv1alpha1.KineSpec{
+						Replicas: 2,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+			tc := newTrackingClient(shard)
+			err := reconciler.reconcileKine(ctx, tc, shard)
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resources.KineDeploymentName(shard),
+				Namespace: nsName,
+			}, pdb)).To(Succeed())
+			Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+			Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
+		})
+
+		It("should not create a PDB when Kine replicas < 2", func() {
+			nsName := "test-kine-pdb-no"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+			_ = k8sClient.Create(ctx, ns)
+
+			shard := &kubeshardv1alpha1.APIShard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-kine-pdb-no",
+				},
+				Spec: kubeshardv1alpha1.APIShardSpec{
+					TargetNamespace: nsName,
+					APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+						{Group: "tekton.dev", Versions: []string{"v1"}},
+					},
+					Storage: kubeshardv1alpha1.StorageSpec{
+						Type: kubeshardv1alpha1.StorageTypeSQLite,
+					},
+					NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+						LabelSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{"type": "tenant"},
+						},
+					},
+					Kine: kubeshardv1alpha1.KineSpec{
+						Replicas: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+			tc := newTrackingClient(shard)
+			err := reconciler.reconcileKine(ctx, tc, shard)
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resources.KineDeploymentName(shard),
+				Namespace: nsName,
+			}, pdb)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+
+	Context("reconcileSecondary", func() {
+		It("should create a PDB when Secondary replicas >= 2", func() {
+			nsName := "test-sec-pdb-yes"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+			_ = k8sClient.Create(ctx, ns)
+
+			shard := &kubeshardv1alpha1.APIShard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-sec-pdb-yes",
+				},
+				Spec: kubeshardv1alpha1.APIShardSpec{
+					TargetNamespace: nsName,
+					APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+						{Group: "tekton.dev", Versions: []string{"v1"}},
+					},
+					Storage: kubeshardv1alpha1.StorageSpec{
+						Type: kubeshardv1alpha1.StorageTypeSQLite,
+					},
+					NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+						LabelSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{"type": "tenant"},
+						},
+					},
+					Secondary: kubeshardv1alpha1.SecondarySpec{
+						Replicas: 3,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+			tc := newTrackingClient(shard)
+			err := reconciler.reconcileSecondary(ctx, tc, shard, []string{defaultFrontProxyClient})
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resources.SecondaryDeploymentName(shard),
+				Namespace: nsName,
+			}, pdb)).To(Succeed())
+			Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+			Expect(pdb.Spec.MaxUnavailable.IntValue()).To(Equal(1))
+		})
+
+		It("should not create a PDB when Secondary replicas < 2", func() {
+			nsName := "test-sec-pdb-no"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+			_ = k8sClient.Create(ctx, ns)
+
+			shard := &kubeshardv1alpha1.APIShard{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-sec-pdb-no",
+				},
+				Spec: kubeshardv1alpha1.APIShardSpec{
+					TargetNamespace: nsName,
+					APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+						{Group: "tekton.dev", Versions: []string{"v1"}},
+					},
+					Storage: kubeshardv1alpha1.StorageSpec{
+						Type: kubeshardv1alpha1.StorageTypeSQLite,
+					},
+					NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+						LabelSelector: metav1.LabelSelector{
+							MatchLabels: map[string]string{"type": "tenant"},
+						},
+					},
+					Secondary: kubeshardv1alpha1.SecondarySpec{
+						Replicas: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+			tc := newTrackingClient(shard)
+			err := reconciler.reconcileSecondary(ctx, tc, shard, []string{defaultFrontProxyClient})
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resources.SecondaryDeploymentName(shard),
+				Namespace: nsName,
+			}, pdb)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 	})
 })
