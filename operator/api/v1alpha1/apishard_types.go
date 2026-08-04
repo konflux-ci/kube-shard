@@ -115,30 +115,39 @@ type ConnectionPoolConfig struct {
 // CompactionConfig controls Kine's background compaction, which removes
 // obsolete key revisions from the database to keep storage size bounded.
 type CompactionConfig struct {
-	// Interval is how often Kine runs a compaction cycle. Each cycle deletes
-	// obsolete revisions older than the most recent one per key (subject to
-	// MinRetain). Set to 0 to disable compaction entirely.
-	// Value is a Go duration string (e.g. "5m", "1h").
+	// Interval is how often Kine runs its own compaction cycle. When set
+	// to "0s" (default), Kine does not run autonomous compaction — the
+	// apiserver triggers compaction via etcd's Compact RPC instead. Set
+	// a positive duration only if you need Kine to compact independently
+	// of the apiserver.
+	// Value is a Go duration string (e.g. "0s", "5m", "1h").
 	// +optional
+	// +kubebuilder:default="0s"
 	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
 	Interval *metav1.Duration `json:"interval,omitempty"`
 	// MinRetain is the minimum number of historical revisions to preserve
 	// per key during compaction. Higher values allow longer watch histories
 	// at the cost of storage.
 	// +optional
+	// +kubebuilder:default=1000
 	// +kubebuilder:validation:Minimum=0
 	MinRetain *int64 `json:"minRetain,omitempty"`
 	// BatchSize is the number of obsolete revisions to delete per compaction
 	// cycle. Larger batches compact faster but may increase database lock
-	// contention.
+	// contention. Kine default is 1000; the operator default (500) reduces
+	// lock contention under heavy write load.
 	// +optional
+	// +kubebuilder:default=500
 	// +kubebuilder:validation:Minimum=0
 	BatchSize *int64 `json:"batchSize,omitempty"`
 	// Timeout is the maximum duration Kine allows for a single compaction
-	// transaction. Under heavy write load with large databases, the default
-	// (5s) may be too short, causing compaction to fail repeatedly.
+	// transaction. Under heavy write load with large databases, the Kine
+	// default (5s) may be too short, causing compaction to fail. The
+	// operator defaults to 30s to give the query time to complete under
+	// contention.
 	// Value is a Go duration string (e.g. "30s", "1m").
 	// +optional
+	// +kubebuilder:default="30s"
 	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
 }
