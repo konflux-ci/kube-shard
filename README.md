@@ -268,7 +268,6 @@ Options:
 -output             Output load test YAML file (required)
 -namespace          Namespace for generated PipelineRun (default: default)
 -prefix             generateName prefix (default: load-test-)
--image              Step container image (default: busybox)
 -sleep-range        Min,max sleep seconds per step (default: 1,10)
 -skip-resolve       Don't resolve bundles, use defaults (offline mode)
 -default-task-size-kb  Fallback task size in KB (default: 17)
