@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	pipelinev1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
@@ -223,9 +224,10 @@ func generatePipelineTask(t taskInfo, r *resolvedTask, prParams []pipelinev1.Par
 			sName = stepNames[i]
 		}
 		steps[i] = pipelinev1.Step{
-			Name:   sName,
-			Image:  cfg.image,
-			Script: padScript(randomInt(cfg.sleepMin, cfg.sleepMax), perStepSize),
+			Name:            sName,
+			Image:           cfg.image,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Script:          padScript(randomInt(cfg.sleepMin, cfg.sleepMax), perStepSize),
 		}
 	}
 
