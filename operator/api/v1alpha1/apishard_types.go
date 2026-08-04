@@ -134,6 +134,13 @@ type CompactionConfig struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	BatchSize *int64 `json:"batchSize,omitempty"`
+	// Timeout is the maximum duration Kine allows for a single compaction
+	// transaction. Under heavy write load with large databases, the default
+	// (5s) may be too short, causing compaction to fail repeatedly.
+	// Value is a Go duration string (e.g. "30s", "1m").
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="!self.startsWith('-')",message="duration must not be negative"
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
 }
 
 // KineSpec configures the Kine deployment that translates etcd gRPC calls
