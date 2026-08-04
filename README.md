@@ -47,6 +47,20 @@ flowchart TD
     kine -->|"SQL"| db["PostgreSQL / SQLite"]
 ```
 
+## Webhook Handling
+
+The secondary kube-apiserver runs its own admission and conversion pipeline. Since it has no Service objects in its store, webhook configurations that use `clientConfig.service` references would fail — the API server's internal service proxy can't resolve them. The operator solves this by transforming service references into direct URLs that resolve via cluster DNS.
+
+### Admission Webhooks (Mutating / Validating)
+
+The `WebhookSync` controller watches `MutatingWebhookConfiguration` and `ValidatingWebhookConfiguration` resources on the primary. It filters those targeting the sharded API groups, transforms `clientConfig.service` references to URLs (`https://<name>.<namespace>.svc:<port><path>`), and mirrors them to the secondary. Stale webhooks are garbage-collected automatically.
+
+### Conversion Webhooks (CRD)
+
+CRDs with `spec.conversion.strategy: Webhook` define a conversion webhook for multi-version support (e.g., converting between `v1` and `v1beta1`). When the operator syncs CRDs to the secondary, it applies the same service-to-URL transformation on the CRD's `spec.conversion.webhook.clientConfig`. The `caBundle` is preserved unchanged since the same TLS trust chain applies — the webhook service runs in the same cluster.
+
+This keeps multi-version conversion functional on the secondary without requiring the webhook service to be registered as a Service object on the secondary's store.
+
 ## Status
 
 Operator-managed deployment. See [docs/design.md](docs/design.md) for the full design document.

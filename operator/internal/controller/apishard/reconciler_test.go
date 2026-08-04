@@ -1761,3 +1761,111 @@ var _ = Describe("PDB auto-creation", func() {
 		})
 	})
 })
+
+var _ = Describe("transformCRDConversion", func() {
+	It("should convert service reference to URL", func() {
+		port := int32(443)
+		path := "/convert"
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Conversion: &apiextensionsv1.CustomResourceConversion{
+					Strategy: apiextensionsv1.WebhookConverter,
+					Webhook: &apiextensionsv1.WebhookConversion{
+						ConversionReviewVersions: []string{"v1"},
+						ClientConfig: &apiextensionsv1.WebhookClientConfig{
+							Service: &apiextensionsv1.ServiceReference{
+								Namespace: "openshift-pipelines",
+								Name:      "tekton-pipelines-webhook",
+								Port:      &port,
+								Path:      &path,
+							},
+							CABundle: []byte("fake-ca-bundle"),
+						},
+					},
+				},
+			},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(crd.Spec.Conversion.Strategy).To(Equal(apiextensionsv1.WebhookConverter))
+		Expect(crd.Spec.Conversion.Webhook.ClientConfig.Service).To(BeNil())
+		Expect(crd.Spec.Conversion.Webhook.ClientConfig.URL).NotTo(BeNil())
+		Expect(*crd.Spec.Conversion.Webhook.ClientConfig.URL).To(Equal(
+			"https://tekton-pipelines-webhook.openshift-pipelines.svc:443/convert",
+		))
+		Expect(crd.Spec.Conversion.Webhook.ClientConfig.CABundle).To(Equal([]byte("fake-ca-bundle")))
+	})
+
+	It("should use default port 443 when port is nil", func() {
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Conversion: &apiextensionsv1.CustomResourceConversion{
+					Strategy: apiextensionsv1.WebhookConverter,
+					Webhook: &apiextensionsv1.WebhookConversion{
+						ConversionReviewVersions: []string{"v1"},
+						ClientConfig: &apiextensionsv1.WebhookClientConfig{
+							Service: &apiextensionsv1.ServiceReference{
+								Namespace: "openshift-pipelines",
+								Name:      "tekton-pipelines-webhook",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(*crd.Spec.Conversion.Webhook.ClientConfig.URL).To(Equal(
+			"https://tekton-pipelines-webhook.openshift-pipelines.svc:443",
+		))
+	})
+
+	It("should not modify CRD with strategy None", func() {
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Conversion: &apiextensionsv1.CustomResourceConversion{
+					Strategy: apiextensionsv1.NoneConverter,
+				},
+			},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(crd.Spec.Conversion.Strategy).To(Equal(apiextensionsv1.NoneConverter))
+		Expect(crd.Spec.Conversion.Webhook).To(BeNil())
+	})
+
+	It("should not modify CRD with no conversion", func() {
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(crd.Spec.Conversion).To(BeNil())
+	})
+
+	It("should not modify CRD with URL already set", func() {
+		existingURL := "https://already-set.example.com:8443/convert"
+		crd := &apiextensionsv1.CustomResourceDefinition{
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Conversion: &apiextensionsv1.CustomResourceConversion{
+					Strategy: apiextensionsv1.WebhookConverter,
+					Webhook: &apiextensionsv1.WebhookConversion{
+						ConversionReviewVersions: []string{"v1"},
+						ClientConfig: &apiextensionsv1.WebhookClientConfig{
+							URL: &existingURL,
+						},
+					},
+				},
+			},
+		}
+
+		transformCRDConversion(crd)
+
+		Expect(crd.Spec.Conversion.Webhook.ClientConfig.Service).To(BeNil())
+		Expect(*crd.Spec.Conversion.Webhook.ClientConfig.URL).To(Equal(existingURL))
+	})
+})

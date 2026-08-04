@@ -943,21 +943,56 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 		secondaryCRD.ManagedFields = nil
 		secondaryCRD.Generation = 0
 		secondaryCRD.Finalizers = nil
+		secondaryCRD.Status = apiextensionsv1.CustomResourceDefinitionStatus{}
 
-		existing := &apiextensionsv1.CustomResourceDefinition{}
-		err := secondaryClient.Get(ctx, types.NamespacedName{Name: name}, existing)
-		if apierrors.IsNotFound(err) {
-			if createErr := secondaryClient.Create(ctx, secondaryCRD); createErr != nil {
-				logger.Error(createErr, "Failed to create CRD on secondary", "crd", name)
-				continue
-			}
-			logger.Info("Synced CRD to secondary", "crd", name)
-		} else if err != nil {
-			logger.Error(err, "Failed to check CRD on secondary", "crd", name)
+		transformCRDConversion(secondaryCRD)
+
+		if err := secondaryClient.Patch(ctx, secondaryCRD, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil { //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
+			logger.Error(err, "Failed to apply CRD on secondary", "crd", name)
+			continue
 		}
+		logger.V(1).Info("Applied CRD to secondary", "crd", name)
 	}
 
 	return nil
+}
+
+// transformCRDConversion rewrites the CRD's conversion webhook clientConfig
+// from a service reference to a direct URL. The secondary API server cannot
+// resolve service references through its own service proxy (it has no Service
+// objects), but it can reach webhook pods via cluster DNS.
+func transformCRDConversion(crd *apiextensionsv1.CustomResourceDefinition) {
+	if crd.Spec.Conversion == nil {
+		return
+	}
+	if crd.Spec.Conversion.Strategy != apiextensionsv1.WebhookConverter {
+		return
+	}
+	if crd.Spec.Conversion.Webhook == nil || crd.Spec.Conversion.Webhook.ClientConfig == nil {
+		return
+	}
+	svcRef := crd.Spec.Conversion.Webhook.ClientConfig.Service
+	if svcRef == nil {
+		return
+	}
+
+	port := int32(443)
+	if svcRef.Port != nil {
+		port = *svcRef.Port
+	}
+	path := ""
+	if svcRef.Path != nil {
+		path = *svcRef.Path
+	}
+
+	url := fmt.Sprintf("https://%s.%s.svc:%d%s",
+		svcRef.Name,
+		svcRef.Namespace,
+		port,
+		path,
+	)
+	crd.Spec.Conversion.Webhook.ClientConfig.URL = &url
+	crd.Spec.Conversion.Webhook.ClientConfig.Service = nil
 }
 
 // verifySecondaryAuth builds a client for the secondary API server using the
