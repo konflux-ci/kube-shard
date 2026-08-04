@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -929,10 +930,12 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 		return fmt.Errorf("creating secondary client: %w", err)
 	}
 
+	var errs []error
 	for _, name := range crdNames {
 		crd := &apiextensionsv1.CustomResourceDefinition{}
 		if err := r.Get(ctx, types.NamespacedName{Name: name}, crd); err != nil {
 			logger.Error(err, "Failed to get CRD from primary", "crd", name)
+			errs = append(errs, fmt.Errorf("get CRD %s from primary: %w", name, err))
 			continue
 		}
 
@@ -949,12 +952,13 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 
 		if err := secondaryClient.Patch(ctx, secondaryCRD, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil { //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
 			logger.Error(err, "Failed to apply CRD on secondary", "crd", name)
+			errs = append(errs, fmt.Errorf("apply CRD %s on secondary: %w", name, err))
 			continue
 		}
 		logger.V(1).Info("Applied CRD to secondary", "crd", name)
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // transformCRDConversion rewrites the CRD's conversion webhook clientConfig
