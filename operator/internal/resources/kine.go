@@ -107,6 +107,9 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 		if c.BatchSize != nil {
 			args = append(args, "--compact-batch-size", strconv.FormatInt(*c.BatchSize, 10))
 		}
+		if c.Timeout != nil {
+			args = append(args, "--compact-timeout", c.Timeout.Duration.String())
+		}
 	}
 
 	if shard.Spec.Kine.PollBatchSize != nil {

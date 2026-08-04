@@ -51,6 +51,7 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 				"--compact-interval",
 				"--compact-min-retain",
 				"--compact-batch-size",
+				"--compact-timeout",
 				"--poll-batch-size",
 				"--watch-progress-notify-interval",
 			},
@@ -104,6 +105,23 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 			},
 		},
 		{
+			name: "compaction timeout configured",
+			kine: kubeshardv1alpha1.KineSpec{
+				Replicas: 1,
+				Compaction: &kubeshardv1alpha1.CompactionConfig{
+					Timeout: &metav1.Duration{Duration: 30 * time.Second},
+				},
+			},
+			wantArgs: map[string]string{
+				"--compact-timeout": "30s",
+			},
+			absentArgs: []string{
+				"--compact-interval",
+				"--compact-min-retain",
+				"--compact-batch-size",
+			},
+		},
+		{
 			name: "poll batch size and watch interval",
 			kine: kubeshardv1alpha1.KineSpec{
 				Replicas:                    1,
@@ -128,6 +146,7 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 					Interval:  &metav1.Duration{Duration: 3 * time.Minute},
 					MinRetain: ptr.To[int64](500),
 					BatchSize: ptr.To[int64](100),
+					Timeout:   &metav1.Duration{Duration: 30 * time.Second},
 				},
 				PollBatchSize:               ptr.To[int64](512),
 				WatchProgressNotifyInterval: &metav1.Duration{Duration: 30 * time.Second},
@@ -139,6 +158,7 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 				"--compact-interval":                  "3m0s",
 				"--compact-min-retain":                "500",
 				"--compact-batch-size":                "100",
+				"--compact-timeout":                   "30s",
 				"--poll-batch-size":                   "512",
 				"--watch-progress-notify-interval":    "30s",
 			},

@@ -31,6 +31,13 @@ spec:
       requests:
         cpu: "2"
         memory: 8Gi
+    compaction:
+      timeout: "30s"
+      batchSize: 500
+    connectionPool:
+      maxOpenConnections: 25
+      maxIdleConnections: 10
+      maxLifetime: "30m"
   namespaceSync:
     labelSelector:
       matchLabels: {}

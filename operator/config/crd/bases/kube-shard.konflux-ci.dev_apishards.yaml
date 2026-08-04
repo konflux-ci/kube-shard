@@ -100,24 +100,30 @@ spec:
                       process.
                     properties:
                       batchSize:
+                        default: 500
                         description: |-
                           BatchSize is the number of obsolete revisions to delete per compaction
                           cycle. Larger batches compact faster but may increase database lock
-                          contention.
+                          contention. Kine default is 1000; the operator default (500) reduces
+                          lock contention under heavy write load.
                         format: int64
                         minimum: 0
                         type: integer
                       interval:
+                        default: 0s
                         description: |-
-                          Interval is how often Kine runs a compaction cycle. Each cycle deletes
-                          obsolete revisions older than the most recent one per key (subject to
-                          MinRetain). Set to 0 to disable compaction entirely.
-                          Value is a Go duration string (e.g. "5m", "1h").
+                          Interval is how often Kine runs its own compaction cycle. When set
+                          to "0s" (default), Kine does not run autonomous compaction — the
+                          apiserver triggers compaction via etcd's Compact RPC instead. Set
+                          a positive duration only if you need Kine to compact independently
+                          of the apiserver.
+                          Value is a Go duration string (e.g. "0s", "5m", "1h").
                         type: string
                         x-kubernetes-validations:
-                        - message: duration must not be negative
-                          rule: '!self.startsWith(''-'')'
+                        - message: duration must be a valid non-negative Go duration
+                          rule: duration(self) >= duration('0s')
                       minRetain:
+                        default: 1000
                         description: |-
                           MinRetain is the minimum number of historical revisions to preserve
                           per key during compaction. Higher values allow longer watch histories
@@ -125,6 +131,19 @@ spec:
                         format: int64
                         minimum: 0
                         type: integer
+                      timeout:
+                        default: 30s
+                        description: |-
+                          Timeout is the maximum duration Kine allows for a single compaction
+                          transaction. Under heavy write load with large databases, the Kine
+                          default (5s) may be too short, causing compaction to fail. The
+                          operator defaults to 30s to give the query time to complete under
+                          contention.
+                          Value is a Go duration string (e.g. "30s", "1m").
+                        type: string
+                        x-kubernetes-validations:
+                        - message: duration must be a valid non-negative Go duration
+                          rule: duration(self) >= duration('0s')
                     type: object
                   connectionPool:
                     description: ConnectionPool tunes the SQL connection pool parameters.
@@ -145,8 +164,8 @@ spec:
                           Value is a Go duration string (e.g. "30m", "1h").
                         type: string
                         x-kubernetes-validations:
-                        - message: duration must not be negative
-                          rule: '!self.startsWith(''-'')'
+                        - message: duration must be a valid non-negative Go duration
+                          rule: duration(self) >= duration('0s')
                       maxOpenConnections:
                         description: |-
                           MaxOpenConnections is the maximum number of concurrent open connections
@@ -460,8 +479,8 @@ spec:
                       Value is a Go duration string (e.g. "10s", "1m").
                     type: string
                     x-kubernetes-validations:
-                    - message: duration must not be negative
-                      rule: '!self.startsWith(''-'')'
+                    - message: duration must be a valid non-negative Go duration
+                      rule: duration(self) >= duration('0s')
                 type: object
               namespaceSync:
                 properties:
