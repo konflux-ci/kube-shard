@@ -78,6 +78,8 @@ func handleMutate(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleConvert implements the CRD conversion webhook protocol, rewriting
+// each object's apiVersion to the requested target version.
 func handleConvert(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -125,6 +127,8 @@ func handleConvert(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, review)
 }
 
+// writeJSON marshals v as JSON and writes it to the response with the
+// appropriate content-type header.
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	resp, err := json.Marshal(v)
 	if err != nil {

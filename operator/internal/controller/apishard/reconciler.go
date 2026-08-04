@@ -939,14 +939,18 @@ func (r *Reconciler) syncCRDsToSecondary(ctx context.Context, shard *kubeshardv1
 			continue
 		}
 
-		secondaryCRD := crd.DeepCopy()
-		secondaryCRD.ResourceVersion = ""
-		secondaryCRD.UID = ""
-		secondaryCRD.OwnerReferences = nil
-		secondaryCRD.ManagedFields = nil
-		secondaryCRD.Generation = 0
-		secondaryCRD.Finalizers = nil
-		secondaryCRD.Status = apiextensionsv1.CustomResourceDefinitionStatus{}
+		secondaryCRD := &apiextensionsv1.CustomResourceDefinition{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "apiextensions.k8s.io/v1",
+				Kind:       "CustomResourceDefinition",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        crd.Name,
+				Labels:      crd.Labels,
+				Annotations: crd.Annotations,
+			},
+			Spec: *crd.Spec.DeepCopy(),
+		}
 
 		transformCRDConversion(secondaryCRD)
 

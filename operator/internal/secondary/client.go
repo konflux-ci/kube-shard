@@ -59,6 +59,7 @@ type clientEntry struct {
 	host        string
 	fingerprint string
 	createdAt   time.Time
+	pinned      bool // pinned entries are never evicted by GetOrCreate
 }
 
 func NewClientProvider(scheme *runtime.Scheme) *ClientProvider {
@@ -79,7 +80,7 @@ func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client
 	entry, exists := p.clients[shardName]
 	p.mu.RUnlock()
 
-	if exists && entry.host == cfg.Host && entry.fingerprint == fp {
+	if exists && (entry.pinned || (entry.host == cfg.Host && entry.fingerprint == fp)) {
 		return entry.client, nil
 	}
 
@@ -87,7 +88,7 @@ func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if entry, exists = p.clients[shardName]; exists && entry.host == cfg.Host && entry.fingerprint == fp {
+	if entry, exists = p.clients[shardName]; exists && (entry.pinned || (entry.host == cfg.Host && entry.fingerprint == fp)) {
 		return entry.client, nil
 	}
 
@@ -106,6 +107,19 @@ func (p *ClientProvider) GetOrCreate(shardName string, cfg ClientConfig) (client
 	}
 
 	return c, nil
+}
+
+// InjectClientForTest pre-populates the cache with a pinned client for the
+// specified shard. Pinned entries are never evicted by GetOrCreate regardless
+// of host or credential changes. This is intended exclusively for testing.
+func (p *ClientProvider) InjectClientForTest(shardName string, c client.Client) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.clients[shardName] = &clientEntry{
+		client:    c,
+		pinned:    true,
+		createdAt: time.Now(),
+	}
 }
 
 // Invalidate removes a cached client for the given shard, forcing re-creation on next access.
