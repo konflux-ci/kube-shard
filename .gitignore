@@ -6,3 +6,7 @@ _output/
 .vscode/
 .worktrees/
 .superpowers/
+
+# Binaries
+operator/webhook-server
+tools/generate-from-pipeline/generate-from-pipeline

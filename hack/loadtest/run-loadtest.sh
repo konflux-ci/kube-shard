@@ -82,12 +82,16 @@ echo "Duration: ${ELAPSED}s"
 echo ""
 
 if command -v kubectl &>/dev/null; then
-  DB_SIZE=$(kubectl exec deployment/konflux-tekton-shard-postgresql -n kube-shard-operator -- \
-    psql -U kine -d kine -t -c "SELECT pg_size_pretty(pg_database_size('kine'));" 2>/dev/null | tr -d ' ')
-  ROWS=$(kubectl exec deployment/konflux-tekton-shard-postgresql -n kube-shard-operator -- \
-    psql -U kine -d kine -t -c "SELECT count(*) FROM kine;" 2>/dev/null | tr -d ' ')
-  if [[ -n "$DB_SIZE" ]]; then
-    echo "DB size:  $DB_SIZE"
-    echo "DB rows:  $ROWS"
+  PG_NS="${PG_NAMESPACE:-kube-shard-operator-tekton}"
+  PG_POD=$(kubectl get pods -n "$PG_NS" -l app.kubernetes.io/name=postgresql -o name 2>/dev/null | head -1)
+  if [[ -n "$PG_POD" ]]; then
+    DB_SIZE=$(kubectl exec -n "$PG_NS" "$PG_POD" -- \
+      psql -U kine -d kine -t -c "SELECT pg_size_pretty(pg_database_size('kine'));" 2>/dev/null | tr -d ' ')
+    ROWS=$(kubectl exec -n "$PG_NS" "$PG_POD" -- \
+      psql -U kine -d kine -t -c "SELECT count(*) FROM kine;" 2>/dev/null | tr -d ' ')
+    if [[ -n "$DB_SIZE" ]]; then
+      echo "DB size:  $DB_SIZE"
+      echo "DB rows:  $ROWS"
+    fi
   fi
 fi
