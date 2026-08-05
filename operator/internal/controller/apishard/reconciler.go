@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"strings"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -68,25 +69,41 @@ const (
 	defaultFrontProxyClient  = "front-proxy-client"
 )
 
-// managedGVKs lists all GVKs that the Reconciler may create,
-// used by the tracking client for orphan cleanup.
+// managedGVKs lists the base GVKs that the Reconciler may create,
+// used by the tracking client for orphan cleanup. ServiceMonitor is
+// appended conditionally by getManagedGVKs when Prometheus Operator is present.
 var managedGVKs = []schema.GroupVersionKind{
 	{Group: "apps", Version: "v1", Kind: "Deployment"},
 	{Group: "apps", Version: "v1", Kind: "StatefulSet"},
 	{Group: "", Version: "v1", Kind: "Service"},
 	{Group: "", Version: "v1", Kind: "Secret"},
 	{Group: "", Version: "v1", Kind: "ConfigMap"},
+	{Group: "", Version: "v1", Kind: "ServiceAccount"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
 	{Group: "policy", Version: "v1", Kind: "PodDisruptionBudget"},
 }
 
+// getManagedGVKs returns the full list of GVKs managed by the Reconciler,
+// conditionally including ServiceMonitor when the Prometheus Operator is available.
+func (r *Reconciler) getManagedGVKs() []schema.GroupVersionKind {
+	gvks := make([]schema.GroupVersionKind, len(managedGVKs))
+	copy(gvks, managedGVKs)
+	if r.ServiceMonitorAvailable {
+		gvks = append(gvks, schema.GroupVersionKind{
+			Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor",
+		})
+	}
+	return gvks
+}
+
 // Reconciler reconciles an APIShard object.
 type Reconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	ClientProvider *secondary.ClientProvider
+	Scheme                  *runtime.Scheme
+	ClientProvider          *secondary.ClientProvider
+	ServiceMonitorAvailable bool
 }
 
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards,verbs=get;list;watch;create;update;patch;delete
@@ -104,6 +121,9 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=webhooksyncs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch
 
 // Reconcile drives the desired state for a single APIShard resource. It provisions
 // the target namespace, storage backend, TLS certificates, auth configuration, and
@@ -223,6 +243,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
+	// Reconcile metrics scraping infrastructure (ServiceMonitors, RBAC)
+	if err := r.reconcileMetrics(ctx, tc, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile metrics")
+		return r.setErrorAndRequeue(ctx, &shard, err)
+	}
+
 	// Register APIService objects on the primary cluster
 	if err := r.reconcileAPIServices(ctx, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile APIServices")
@@ -237,7 +263,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// Cleanup orphaned resources only after all apply steps have completed,
 	// so the tracked set is complete and nothing gets incorrectly deleted.
-	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, managedGVKs); err != nil {
+	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, r.getManagedGVKs()); err != nil {
 		logger.Error(err, "Failed to cleanup orphans")
 	}
 
@@ -265,6 +291,13 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alph
 	ns := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: shard.Spec.TargetNamespace}, ns)
 	if err == nil {
+		if ns.Labels["openshift.io/cluster-monitoring"] != "true" {
+			if ns.Labels == nil {
+				ns.Labels = map[string]string{}
+			}
+			ns.Labels["openshift.io/cluster-monitoring"] = "true"
+			return r.Update(ctx, ns)
+		}
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -275,8 +308,9 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alph
 		ObjectMeta: metav1.ObjectMeta{
 			Name: shard.Spec.TargetNamespace,
 			Labels: map[string]string{
-				resources.LabelManagedBy: resources.ManagedByValue,
-				resources.LabelInstance:  shard.Name,
+				resources.LabelManagedBy:          resources.ManagedByValue,
+				resources.LabelInstance:           shard.Name,
+				"openshift.io/cluster-monitoring": "true",
 			},
 		},
 	}
@@ -587,6 +621,48 @@ func (r *Reconciler) reconcileAuthDelegator(ctx context.Context, tc *tracking.Cl
 
 	if err := tc.ApplyOwned(ctx, crb); err != nil {
 		return fmt.Errorf("auth-delegator ClusterRoleBinding: %w", err)
+	}
+
+	return nil
+}
+
+// reconcileMetrics ensures the metrics scraping infrastructure exists for the shard.
+// It creates the metrics-reader ServiceAccount, shared ClusterRole, per-shard
+// ClusterRoleBinding, and token Secret. If the Prometheus Operator is available,
+// it also creates ServiceMonitor resources for Kine and the secondary apiserver.
+func (r *Reconciler) reconcileMetrics(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	sa := resources.BuildMetricsReaderServiceAccount(shard)
+	if err := tc.ApplyOwned(ctx, sa); err != nil {
+		return fmt.Errorf("metrics-reader service account: %w", err)
+	}
+
+	tokenSecret := resources.BuildMetricsReaderTokenSecret(shard)
+	if err := tc.ApplyOwned(ctx, tokenSecret); err != nil {
+		return fmt.Errorf("metrics-reader token secret: %w", err)
+	}
+
+	cr := resources.BuildMetricsReaderClusterRole()
+	if err := r.Patch(ctx, cr, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil { //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
+		return fmt.Errorf("metrics-reader cluster role: %w", err)
+	}
+
+	crb := resources.BuildMetricsReaderClusterRoleBinding(shard)
+	if err := tc.ApplyOwned(ctx, crb); err != nil {
+		return fmt.Errorf("metrics-reader cluster role binding: %w", err)
+	}
+
+	if !r.ServiceMonitorAvailable {
+		return nil
+	}
+
+	kineSM := resources.BuildKineServiceMonitor(shard)
+	if err := tc.ApplyOwned(ctx, kineSM); err != nil {
+		return fmt.Errorf("kine service monitor: %w", err)
+	}
+
+	apiserverSM := resources.BuildSecondaryServiceMonitor(shard)
+	if err := tc.ApplyOwned(ctx, apiserverSM); err != nil {
+		return fmt.Errorf("apiserver service monitor: %w", err)
 	}
 
 	return nil
@@ -1213,7 +1289,7 @@ func (r *Reconciler) setErrorAndRequeue(ctx context.Context, shard *kubeshardv1a
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&kubeshardv1alpha1.APIShard{}).
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(shardpredicate.DeploymentReadinessPredicate)).
 		Owns(&appsv1.StatefulSet{}, builder.WithPredicates(shardpredicate.StatefulSetReadinessPredicate)).
@@ -1230,9 +1306,13 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			connectionSecretMapper(mgr.GetClient()),
-		)).
-		Named("apishard").
-		Complete(r)
+		))
+
+	if r.ServiceMonitorAvailable {
+		b = b.Owns(&monitoringv1.ServiceMonitor{})
+	}
+
+	return b.Named("apishard").Complete(r)
 }
 
 // requestHeaderCAMapper returns a MapFunc that triggers reconciliation of all
