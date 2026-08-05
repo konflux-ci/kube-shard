@@ -1612,11 +1612,23 @@ var _ = Describe("reconcileMetrics", func() {
 			Namespace: ns.Name,
 		}, sa)).To(Succeed())
 
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: fmt.Sprintf("%s-metrics-reader", shard.Name),
+		}, crb)).To(Succeed())
+
 		kineSM := &monitoringv1.ServiceMonitor{}
 		err = k8sClient.Get(ctx, types.NamespacedName{
 			Name:      fmt.Sprintf("%s-kine-metrics", shard.Name),
 			Namespace: ns.Name,
 		}, kineSM)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+		apiserverSM := &monitoringv1.ServiceMonitor{}
+		err = k8sClient.Get(ctx, types.NamespacedName{
+			Name:      fmt.Sprintf("%s-apiserver-metrics", shard.Name),
+			Namespace: ns.Name,
+		}, apiserverSM)
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	})
 })
