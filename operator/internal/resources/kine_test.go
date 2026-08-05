@@ -41,8 +41,9 @@ func TestBuildKineDeployment_Args(t *testing.T) {
 			name: "defaults only",
 			kine: kubeshardv1alpha1.KineSpec{Replicas: 1},
 			wantArgs: map[string]string{
-				"--endpoint":       "sqlite:///data/kine.db",
-				"--listen-address": "tcp://0.0.0.0:2379",
+				"--endpoint":             "sqlite:///data/kine.db",
+				"--listen-address":       "tcp://0.0.0.0:2379",
+				"--metrics-bind-address": ":8080",
 			},
 			absentArgs: []string{
 				"--datastore-max-idle-connections",
@@ -318,6 +319,48 @@ func TestBuildKineService_PreferSameNode_Default(t *testing.T) {
 
 	g.Expect(svc.Spec.TrafficDistribution).ToNot(BeNil())
 	g.Expect(*svc.Spec.TrafficDistribution).To(Equal(corev1.ServiceTrafficDistributionPreferSameNode))
+}
+
+func TestBuildKineDeployment_MetricsPort(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+
+	deploy := BuildKineDeployment(shard)
+	container := deploy.Spec.Template.Spec.Containers[0]
+
+	// Verify --metrics-bind-address is always set
+	args := container.Args
+	argMap := make(map[string]string)
+	for i := 0; i < len(args)-1; i += 2 {
+		argMap[args[i]] = args[i+1]
+	}
+	g.Expect(argMap).To(HaveKeyWithValue("--metrics-bind-address", ":8080"))
+
+	// Verify metrics container port is present
+	var found bool
+	for _, p := range container.Ports {
+		if p.Name == "metrics" && p.ContainerPort == 8080 {
+			found = true
+			break
+		}
+	}
+	g.Expect(found).To(BeTrue(), "expected metrics port 8080 in container ports")
+}
+
+func TestBuildKineService_MetricsPort(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+
+	svc := BuildKineService(shard)
+
+	var found bool
+	for _, p := range svc.Spec.Ports {
+		if p.Name == "metrics" && p.Port == 8080 {
+			found = true
+			break
+		}
+	}
+	g.Expect(found).To(BeTrue(), "expected metrics port 8080 in service ports")
 }
 
 func TestBuildKineDeployment_RollingUpdateStrategy(t *testing.T) {
