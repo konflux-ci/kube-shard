@@ -18,10 +18,12 @@ package apishard
 
 import (
 	"fmt"
+	"math/rand"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -43,6 +45,17 @@ import (
 	"github.com/konflux-ci/kube-shard/operator/internal/resources"
 	"github.com/konflux-ci/kube-shard/operator/internal/secondary"
 )
+
+// randString generates a random lowercase alphanumeric string of length n,
+// used to generate unique names in tests to avoid collisions.
+func randString(n int) string { //nolint:unparam
+	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
+}
 
 // newTrackingClient creates a tracking.Client configured with ownership for the given APIShard.
 func newTrackingClient(shard *kubeshardv1alpha1.APIShard) *tracking.Client {
@@ -1500,6 +1513,114 @@ var _ = Describe("connectionSecretMapper", func() {
 	})
 })
 
+var _ = Describe("reconcileMetrics", func() {
+	var (
+		shard      *kubeshardv1alpha1.APIShard
+		tc         *tracking.Client
+		reconciler *Reconciler
+		ns         *corev1.Namespace
+	)
+
+	BeforeEach(func() {
+		ns = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "metrics-test-" + randString(6)}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+		shard = &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{Name: "metrics-shard-" + randString(6)},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: ns.Name,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				Kine:      kubeshardv1alpha1.KineSpec{Replicas: 1},
+				Secondary: kubeshardv1alpha1.SecondarySpec{Replicas: 1},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+
+		reconciler = &Reconciler{
+			Client:                  k8sClient,
+			Scheme:                  k8sClient.Scheme(),
+			ServiceMonitorAvailable: true,
+		}
+		tc = newTrackingClient(shard)
+	})
+
+	AfterEach(func() {
+		crb := &rbacv1.ClusterRoleBinding{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: fmt.Sprintf("%s-metrics-reader", shard.Name)}, crb); err == nil {
+			_ = k8sClient.Delete(ctx, crb)
+		}
+		_ = k8sClient.Delete(ctx, shard)
+	})
+
+	It("creates ServiceMonitors and RBAC when ServiceMonitor CRD is available", func() {
+		err := reconciler.reconcileMetrics(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		sa := &corev1.ServiceAccount{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.MetricsReaderServiceAccountName(shard),
+			Namespace: ns.Name,
+		}, sa)).To(Succeed())
+
+		cr := &rbacv1.ClusterRole{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: resources.MetricsReaderClusterRoleName,
+		}, cr)).To(Succeed())
+		Expect(cr.Rules[0].NonResourceURLs).To(ContainElement("/metrics"))
+
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: fmt.Sprintf("%s-metrics-reader", shard.Name),
+		}, crb)).To(Succeed())
+
+		kineSM := &monitoringv1.ServiceMonitor{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      fmt.Sprintf("%s-kine-metrics", shard.Name),
+			Namespace: ns.Name,
+		}, kineSM)).To(Succeed())
+		Expect(kineSM.Spec.Endpoints[0].Port).To(Equal("metrics"))
+
+		apiserverSM := &monitoringv1.ServiceMonitor{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      fmt.Sprintf("%s-apiserver-metrics", shard.Name),
+			Namespace: ns.Name,
+		}, apiserverSM)).To(Succeed())
+		Expect(apiserverSM.Spec.Endpoints[0].Scheme).NotTo(BeNil())
+		Expect(*apiserverSM.Spec.Endpoints[0].Scheme).To(Equal(monitoringv1.SchemeHTTPS))
+	})
+
+	It("skips ServiceMonitors when CRD is unavailable", func() {
+		reconciler.ServiceMonitorAvailable = false
+
+		err := reconciler.reconcileMetrics(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		sa := &corev1.ServiceAccount{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.MetricsReaderServiceAccountName(shard),
+			Namespace: ns.Name,
+		}, sa)).To(Succeed())
+
+		kineSM := &monitoringv1.ServiceMonitor{}
+		err = k8sClient.Get(ctx, types.NamespacedName{
+			Name:      fmt.Sprintf("%s-kine-metrics", shard.Name),
+			Namespace: ns.Name,
+		}, kineSM)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	})
+})
+
 var _ = Describe("ensureNamespace", func() {
 	var reconciler *Reconciler
 
@@ -1571,6 +1692,68 @@ var _ = Describe("ensureNamespace", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-ns-labels-ns"}, ns)).To(Succeed())
 		Expect(ns.Labels).To(HaveKeyWithValue(resources.LabelManagedBy, resources.ManagedByValue))
 		Expect(ns.Labels).To(HaveKeyWithValue(resources.LabelInstance, "test-ns-labels"))
+	})
+
+	It("adds OpenShift cluster-monitoring label to new namespace", func() {
+		nsName := "ns-label-new-" + randString(6)
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{Name: "ns-label-shard-" + randString(6)},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		err := reconciler.ensureNamespace(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		ns := &corev1.Namespace{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, ns)).To(Succeed())
+		Expect(ns.Labels).To(HaveKeyWithValue("openshift.io/cluster-monitoring", "true"))
+	})
+
+	It("adds OpenShift cluster-monitoring label to existing namespace", func() {
+		nsName := "ns-existing-" + randString(6)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{Name: "ns-label-exist-" + randString(6)},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		err := reconciler.ensureNamespace(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, ns)).To(Succeed())
+		Expect(ns.Labels).To(HaveKeyWithValue("openshift.io/cluster-monitoring", "true"))
 	})
 })
 
