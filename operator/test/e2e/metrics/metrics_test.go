@@ -128,6 +128,10 @@ spec:
 			ep := endpoints[0].(map[string]interface{})
 			portName := ep["port"].(string)
 			path := ep["path"].(string)
+			scheme := "http"
+			if s, ok := ep["scheme"].(string); ok && s != "" {
+				scheme = s
+			}
 
 			By("resolving port from the Kine Service")
 			cmd = exec.Command("kubectl", "get", "service",
@@ -143,12 +147,17 @@ spec:
 			Expect(resolvedPort).ToNot(BeZero(), "port %s not found in Kine Service", portName)
 
 			By("scraping metrics from the Kine endpoint via curl pod")
-			metricsURL := fmt.Sprintf("http://%s-kine.%s.svc:%d%s",
-				shardName, shardNamespace, resolvedPort, path)
-			cmd = exec.Command("kubectl", "run", "curl-kine-metrics", "--rm", "-i",
+			metricsURL := fmt.Sprintf("%s://%s-kine.%s.svc:%d%s",
+				scheme, shardName, shardNamespace, resolvedPort, path)
+			curlArgs := []string{"-s", "-f"}
+			if scheme == "https" {
+				curlArgs = append(curlArgs, "-k")
+			}
+			curlArgs = append(curlArgs, metricsURL)
+			kubectlArgs := append([]string{"run", "curl-kine-metrics", "--rm", "-i",
 				"--restart=Never", "--image=curlimages/curl:latest",
-				"-n", shardNamespace,
-				"--", "curl", "-s", "-f", metricsURL)
+				"-n", shardNamespace, "--", "curl"}, curlArgs...)
+			cmd = exec.Command("kubectl", kubectlArgs...)
 			curlOutput, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(curlOutput)).To(ContainSubstring("go_goroutines"))
@@ -175,6 +184,10 @@ spec:
 			ep := endpoints[0].(map[string]interface{})
 			portName := ep["port"].(string)
 			path := ep["path"].(string)
+			scheme := "https"
+			if s, ok := ep["scheme"].(string); ok && s != "" {
+				scheme = s
+			}
 			tokenSecretName := extractAuthSecretName(ep)
 
 			By("getting the bearer token from the secret")
@@ -199,14 +212,19 @@ spec:
 			Expect(resolvedPort).ToNot(BeZero(), "port %s not found in apiserver Service", portName)
 
 			By("scraping metrics from the apiserver endpoint via curl pod")
-			metricsURL := fmt.Sprintf("https://%s-apiserver.%s.svc:%d%s",
-				shardName, shardNamespace, resolvedPort, path)
-			cmd = exec.Command("kubectl", "run", "curl-apiserver-metrics", "--rm", "-i",
-				"--restart=Never", "--image=curlimages/curl:latest",
-				"-n", shardNamespace,
-				"--", "curl", "-s", "-f", "-k",
+			metricsURL := fmt.Sprintf("%s://%s-apiserver.%s.svc:%d%s",
+				scheme, shardName, shardNamespace, resolvedPort, path)
+			curlArgs := []string{"-s", "-f"}
+			if scheme == "https" {
+				curlArgs = append(curlArgs, "-k")
+			}
+			curlArgs = append(curlArgs,
 				"-H", fmt.Sprintf("Authorization: Bearer %s", tokenOutput),
 				metricsURL)
+			kubectlArgs := append([]string{"run", "curl-apiserver-metrics", "--rm", "-i",
+				"--restart=Never", "--image=curlimages/curl:latest",
+				"-n", shardNamespace, "--", "curl"}, curlArgs...)
+			cmd = exec.Command("kubectl", kubectlArgs...)
 			curlOutput, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(curlOutput)).To(ContainSubstring("apiserver_request_total"))
@@ -219,11 +237,19 @@ spec:
 				Skip("Prometheus Operator is installed; skipping negative test")
 			}
 
+			By("verifying no Kine ServiceMonitor exists")
 			cmd := exec.Command("kubectl", "get", "servicemonitor",
 				fmt.Sprintf("%s-kine-metrics", shardName),
 				"-n", shardNamespace)
 			_, err := utils.Run(cmd)
-			Expect(err).To(HaveOccurred(), "ServiceMonitor should not exist without Prometheus Operator")
+			Expect(err).To(HaveOccurred(), "Kine ServiceMonitor should not exist without Prometheus Operator")
+
+			By("verifying no apiserver ServiceMonitor exists")
+			cmd = exec.Command("kubectl", "get", "servicemonitor",
+				fmt.Sprintf("%s-apiserver-metrics", shardName),
+				"-n", shardNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "Apiserver ServiceMonitor should not exist without Prometheus Operator")
 		})
 	})
 })
