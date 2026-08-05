@@ -1,0 +1,46 @@
+apiVersion: operator.tekton.dev/v1alpha1
+kind: TektonConfig
+metadata:
+  name: config
+spec:
+  profile: all
+  targetNamespace: openshift-pipelines
+  pipeline:
+    await-sidecar-readiness: true
+    coschedule: workspaces
+    default-service-account: pipeline
+    disable-creds-init: false
+    enable-api-fields: beta
+    enable-bundles-resolver: true
+    enable-cel-in-whenexpression: false
+    enable-cluster-resolver: true
+    enable-custom-tasks: true
+    enable-git-resolver: true
+    enable-hub-resolver: true
+    enable-param-enum: false
+    enable-provenance-in-status: true
+    enable-step-actions: true
+    enforce-nonfalsifiability: none
+    keep-pod-on-cancel: false
+    max-result-size: 4096
+    params:
+    - name: enableMetrics
+      value: "true"
+    performance:
+      buckets: 4
+      disable-ha: false
+      replicas: 4
+      statefulset-ordinals: true
+      threads-per-controller: 8
+    require-git-ssh-secret-known-hosts: false
+    results-from: termination-message
+    running-in-environment-with-injected-sidecars: true
+    send-cloudevents-for-runs: true
+    set-security-context: false
+    trusted-resources-verification-no-match-policy: ignore
+  pruner:
+    disabled: false
+    keep: 10
+    resources:
+    - pipelinerun
+    schedule: "*/5 * * * *"
