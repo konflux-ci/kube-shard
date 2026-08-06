@@ -69,9 +69,10 @@ const (
 	defaultFrontProxyClient  = "front-proxy-client"
 )
 
-// managedGVKs lists the base GVKs that the Reconciler may create,
-// used by the tracking client for orphan cleanup. ServiceMonitor is
-// appended conditionally by getManagedGVKs when Prometheus Operator is present.
+// managedGVKs lists the GVKs that the Reconciler may create, used by the
+// tracking client for orphan cleanup. ServiceMonitor is included
+// unconditionally because the tracking client skips GVKs whose CRDs are
+// not installed on the cluster.
 var managedGVKs = []schema.GroupVersionKind{
 	{Group: "apps", Version: "v1", Kind: "Deployment"},
 	{Group: "apps", Version: "v1", Kind: "StatefulSet"},
@@ -83,19 +84,7 @@ var managedGVKs = []schema.GroupVersionKind{
 	{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
 	{Group: "policy", Version: "v1", Kind: "PodDisruptionBudget"},
-}
-
-// getManagedGVKs returns the full list of GVKs managed by the Reconciler,
-// conditionally including ServiceMonitor when the Prometheus Operator is available.
-func (r *Reconciler) getManagedGVKs() []schema.GroupVersionKind {
-	gvks := make([]schema.GroupVersionKind, len(managedGVKs))
-	copy(gvks, managedGVKs)
-	if r.ServiceMonitorAvailable {
-		gvks = append(gvks, schema.GroupVersionKind{
-			Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor",
-		})
-	}
-	return gvks
+	{Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor"},
 }
 
 // Reconciler reconciles an APIShard object.
@@ -263,7 +252,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// Cleanup orphaned resources only after all apply steps have completed,
 	// so the tracked set is complete and nothing gets incorrectly deleted.
-	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, r.getManagedGVKs()); err != nil {
+	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, managedGVKs); err != nil {
 		logger.Error(err, "Failed to cleanup orphans")
 	}
 
@@ -283,28 +272,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{}, nil
 }
 
-// ensureNamespace creates the target namespace if it doesn't already exist.
+// ensureNamespace creates the target namespace or updates its labels using
+// server-side apply. This is idempotent — a single SSA patch handles both
+// initial creation and label drift correction.
+//
 // This deliberately does NOT use the tracking client because ApplyOwned sets an
 // owner reference — if the APIShard were deleted, garbage collection would
 // cascade-delete the namespace and all workloads inside it.
 func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alpha1.APIShard) error {
-	ns := &corev1.Namespace{}
-	err := r.Get(ctx, types.NamespacedName{Name: shard.Spec.TargetNamespace}, ns)
-	if err == nil {
-		if ns.Labels["openshift.io/cluster-monitoring"] != "true" {
-			if ns.Labels == nil {
-				ns.Labels = map[string]string{}
-			}
-			ns.Labels["openshift.io/cluster-monitoring"] = "true"
-			return r.Update(ctx, ns)
-		}
-		return nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	ns = &corev1.Namespace{
+	ns := &corev1.Namespace{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: shard.Spec.TargetNamespace,
 			Labels: map[string]string{
@@ -314,7 +291,7 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alph
 			},
 		},
 	}
-	return r.Create(ctx, ns)
+	return r.Patch(ctx, ns, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership) //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
 }
 
 // reconcileStorage validates or provisions the storage backend, then deploys Kine.

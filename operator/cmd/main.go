@@ -29,8 +29,6 @@ import (
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
@@ -210,31 +208,18 @@ func main() {
 
 	clientProvider := secondary.NewClientProvider(scheme)
 
-	serviceMonitorAvailable := false
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
 	if err != nil {
 		setupLog.Error(err, "unable to create discovery client")
 		os.Exit(1)
 	}
-	apiResourceList, err := discoveryClient.ServerResourcesForGroupVersion("monitoring.coreos.com/v1")
+	serviceMonitorAvailable, err := apishard.DiscoverServiceMonitor(discoveryClient)
 	if err != nil {
-		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
-			setupLog.Info("ServiceMonitor CRD not found; skipping Prometheus integration")
-		} else {
-			setupLog.Error(err, "unable to discover monitoring.coreos.com/v1 resources; skipping Prometheus integration")
-		}
+		setupLog.Error(err, "unable to discover monitoring.coreos.com/v1 resources; skipping Prometheus integration")
+	} else if serviceMonitorAvailable {
+		setupLog.Info("ServiceMonitor CRD detected; Prometheus integration enabled")
 	} else {
-		for _, r := range apiResourceList.APIResources {
-			if r.Kind == "ServiceMonitor" {
-				serviceMonitorAvailable = true
-				break
-			}
-		}
-		if serviceMonitorAvailable {
-			setupLog.Info("ServiceMonitor CRD detected; Prometheus integration enabled")
-		} else {
-			setupLog.Info("ServiceMonitor CRD not found; skipping Prometheus integration")
-		}
+		setupLog.Info("ServiceMonitor CRD not found; skipping Prometheus integration")
 	}
 
 	if err = (&apishard.Reconciler{
