@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	skipPrometheusInstall               = os.Getenv("PROMETHEUS_INSTALL_SKIP") == "true"
+	skipPrometheusInstall                = os.Getenv("PROMETHEUS_INSTALL_SKIP") == "true"
 	isPrometheusOperatorAlreadyInstalled = false
 )
 

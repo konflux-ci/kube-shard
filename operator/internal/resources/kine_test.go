@@ -321,6 +321,7 @@ func TestBuildKineService_PreferSameNode_Default(t *testing.T) {
 	g.Expect(*svc.Spec.TrafficDistribution).To(Equal(corev1.ServiceTrafficDistributionPreferSameNode))
 }
 
+// TestBuildKineDeployment_MetricsPort verifies that the Kine deployment exposes the metrics bind address and container port.
 func TestBuildKineDeployment_MetricsPort(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -347,6 +348,7 @@ func TestBuildKineDeployment_MetricsPort(t *testing.T) {
 	g.Expect(found).To(BeTrue(), "expected metrics port 8080 in container ports")
 }
 
+// TestBuildKineService_MetricsPort verifies that the Kine service includes the metrics port.
 func TestBuildKineService_MetricsPort(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()

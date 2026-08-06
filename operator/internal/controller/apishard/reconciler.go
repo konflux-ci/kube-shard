@@ -657,6 +657,10 @@ func (r *Reconciler) reconcileMetrics(ctx context.Context, tc *tracking.Client, 
 
 	kineSM := resources.BuildKineServiceMonitor(shard)
 	if err := tc.ApplyOwned(ctx, kineSM); err != nil {
+		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			log.FromContext(ctx).Info("ServiceMonitor CRD no longer available; skipping ServiceMonitor creation")
+			return nil
+		}
 		return fmt.Errorf("kine service monitor: %w", err)
 	}
 

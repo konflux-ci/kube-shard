@@ -60,12 +60,16 @@ var _ = BeforeSuite(func() {
 	Expect(monitoringv1.AddToScheme(scheme.Scheme)).To(Succeed())
 
 	By("bootstrapping test environment")
+	crdPaths := []string{
+		filepath.Join("..", "..", "..", "config", "crd", "bases"),
+	}
+	monitoringCRDPath := filepath.Join("..", "..", "..", "config", "crd", "monitoring")
+	if _, err := os.Stat(monitoringCRDPath); err == nil {
+		crdPaths = append(crdPaths, monitoringCRDPath)
+	}
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "..", "config", "crd", "bases"),
-			filepath.Join("..", "..", "..", "config", "crd", "monitoring"),
-		},
-		ErrorIfCRDPathMissing: false,
+		CRDDirectoryPaths:     crdPaths,
+		ErrorIfCRDPathMissing: true,
 	}
 
 	if dir := getFirstFoundEnvTestBinaryDir(); dir != "" {

@@ -10,6 +10,7 @@ import (
 	"k8s.io/utils/ptr"
 )
 
+// TestBuildKineServiceMonitor verifies that the Kine ServiceMonitor is correctly built with expected selectors and endpoint config.
 func TestBuildKineServiceMonitor(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -31,6 +32,7 @@ func TestBuildKineServiceMonitor(t *testing.T) {
 	g.Expect(ep.Interval).To(Equal(monitoringv1.Duration("30s")))
 }
 
+// TestBuildSecondaryServiceMonitor verifies that the apiserver ServiceMonitor includes HTTPS, bearer token auth, and TLS config.
 func TestBuildSecondaryServiceMonitor(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -56,6 +58,7 @@ func TestBuildSecondaryServiceMonitor(t *testing.T) {
 	g.Expect(*ep.TLSConfig.InsecureSkipVerify).To(BeTrue())
 }
 
+// TestBuildMetricsReaderServiceAccount verifies the metrics-reader ServiceAccount name and namespace.
 func TestBuildMetricsReaderServiceAccount(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -66,6 +69,7 @@ func TestBuildMetricsReaderServiceAccount(t *testing.T) {
 	g.Expect(sa.Namespace).To(Equal("test-ns"))
 }
 
+// TestBuildMetricsReaderClusterRole verifies the shared ClusterRole grants GET on /metrics.
 func TestBuildMetricsReaderClusterRole(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -77,6 +81,7 @@ func TestBuildMetricsReaderClusterRole(t *testing.T) {
 	g.Expect(cr.Rules[0].Verbs).To(ContainElement("get"))
 }
 
+// TestBuildMetricsReaderClusterRoleBinding verifies the per-shard ClusterRoleBinding references the correct role and subject.
 func TestBuildMetricsReaderClusterRoleBinding(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -95,6 +100,7 @@ func TestBuildMetricsReaderClusterRoleBinding(t *testing.T) {
 	g.Expect(crb.Subjects[0].Namespace).To(Equal("test-ns"))
 }
 
+// TestBuildMetricsReaderTokenSecret verifies the token Secret type and ServiceAccount annotation.
 func TestBuildMetricsReaderTokenSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
