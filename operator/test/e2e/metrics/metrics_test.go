@@ -45,6 +45,14 @@ var _ = Describe("APIShard Metrics", Ordered, func() {
 			_, _ = utils.Run(cmd)
 		}
 
+		By("waiting for APIShard to be fully deleted")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "apishard", shardName, "--no-headers")
+			output, _ := utils.Run(cmd)
+			g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")),
+				fmt.Sprintf("apishard %s should be deleted", shardName))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
 		By("waiting for namespace to be fully deleted")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "ns", shardNamespace, "--no-headers")

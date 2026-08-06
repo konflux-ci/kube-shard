@@ -17,6 +17,13 @@ const (
 	metricsScrapeInterval        = monitoringv1.Duration("30s")
 )
 
+// pkiSecretName returns the name of the Secret holding the shard's CA and
+// serving certificates. Duplicated from the certs package to avoid an import
+// cycle (certs already imports resources).
+func pkiSecretName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-pki", shard.Name)
+}
+
 // MetricsReaderServiceAccountName returns the name of the per-shard ServiceAccount
 // used by Prometheus to authenticate against the secondary apiserver's /metrics endpoint.
 func MetricsReaderServiceAccountName(shard *kubeshardv1alpha1.APIShard) string {
@@ -105,11 +112,23 @@ func BuildSecondaryServiceMonitor(shard *kubeshardv1alpha1.APIShard) *monitoring
 									},
 								},
 							},
-							TLSConfig: &monitoringv1.TLSConfig{
-								SafeTLSConfig: monitoringv1.SafeTLSConfig{
-									InsecureSkipVerify: ptr.To(true),
+						TLSConfig: &monitoringv1.TLSConfig{
+							SafeTLSConfig: monitoringv1.SafeTLSConfig{
+								CA: monitoringv1.SecretOrConfigMap{
+									Secret: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: pkiSecretName(shard),
+										},
+										Key: "ca.crt",
+									},
 								},
+								ServerName: ptr.To(fmt.Sprintf(
+									"%s.%s.svc",
+									SecondaryServiceName(shard),
+									shard.Spec.TargetNamespace,
+								)),
 							},
+						},
 						},
 					},
 				},

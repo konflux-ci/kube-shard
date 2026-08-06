@@ -55,7 +55,11 @@ func TestBuildSecondaryServiceMonitor(t *testing.T) {
 	g.Expect(ep.Authorization.Credentials.Name).To(Equal("test-shard-metrics-reader-token"))
 	g.Expect(ep.Authorization.Credentials.Key).To(Equal("token"))
 	g.Expect(ep.TLSConfig).ToNot(BeNil())
-	g.Expect(*ep.TLSConfig.InsecureSkipVerify).To(BeTrue())
+	g.Expect(ep.TLSConfig.InsecureSkipVerify).To(BeNil())
+	g.Expect(ep.TLSConfig.CA.Secret).ToNot(BeNil())
+	g.Expect(ep.TLSConfig.CA.Secret.Name).To(Equal("test-shard-pki"))
+	g.Expect(ep.TLSConfig.CA.Secret.Key).To(Equal("ca.crt"))
+	g.Expect(ep.TLSConfig.ServerName).To(Equal(ptr.To("test-shard-apiserver.test-ns.svc")))
 }
 
 // TestBuildMetricsReaderServiceAccount verifies the metrics-reader ServiceAccount name and namespace.
