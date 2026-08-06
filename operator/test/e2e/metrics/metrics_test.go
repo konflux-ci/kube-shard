@@ -160,7 +160,7 @@ spec:
 			cmd = exec.Command("kubectl", kubectlArgs...)
 			curlOutput, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(curlOutput)).To(ContainSubstring("go_goroutines"))
+			Expect(curlOutput).To(ContainSubstring("go_goroutines"))
 		})
 	})
 
@@ -227,7 +227,7 @@ spec:
 			cmd = exec.Command("kubectl", kubectlArgs...)
 			curlOutput, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(curlOutput)).To(ContainSubstring("apiserver_request_total"))
+			Expect(curlOutput).To(ContainSubstring("apiserver_request_total"))
 		})
 	})
 
