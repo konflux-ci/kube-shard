@@ -33,6 +33,7 @@ const (
 	DefaultSecondaryImage = "registry.k8s.io/kube-apiserver:v1.36.2"
 	SecondaryPort         = 6443
 	tmpVolumeName         = "tmp"
+	varRunKubeVolumeName  = "var-run-kubernetes"
 )
 
 // SecondaryServiceAccountName returns the name of the ServiceAccount used by
@@ -229,6 +230,10 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 									Name:      tmpVolumeName,
 									MountPath: "/tmp",
 								},
+								{
+									Name:      varRunKubeVolumeName,
+									MountPath: "/var/run/kubernetes",
+								},
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
@@ -285,6 +290,12 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 						},
 						{
 							Name: tmpVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: varRunKubeVolumeName,
 							VolumeSource: corev1.VolumeSource{
 								EmptyDir: &corev1.EmptyDirVolumeSource{},
 							},
