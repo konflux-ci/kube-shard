@@ -10,7 +10,7 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// TestBuildKineServiceMonitor verifies that the Kine ServiceMonitor is correctly built with expected selectors and endpoint config.
+// TestBuildKineServiceMonitor verifies selectors and endpoint config.
 func TestBuildKineServiceMonitor(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -32,7 +32,8 @@ func TestBuildKineServiceMonitor(t *testing.T) {
 	g.Expect(ep.Interval).To(Equal(monitoringv1.Duration("30s")))
 }
 
-// TestBuildSecondaryServiceMonitor verifies that the apiserver ServiceMonitor includes HTTPS, bearer token auth, and TLS config.
+// TestBuildSecondaryServiceMonitor verifies HTTPS, bearer token auth,
+// and TLS config on the apiserver ServiceMonitor.
 func TestBuildSecondaryServiceMonitor(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()

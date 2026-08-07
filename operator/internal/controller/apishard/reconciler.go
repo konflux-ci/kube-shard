@@ -603,11 +603,19 @@ func (r *Reconciler) reconcileAuthDelegator(ctx context.Context, tc *tracking.Cl
 	return nil
 }
 
-// reconcileMetrics ensures the metrics scraping infrastructure exists for the shard.
-// It creates the metrics-reader ServiceAccount, shared ClusterRole, per-shard
-// ClusterRoleBinding, and token Secret. If the Prometheus Operator is available,
-// it also creates ServiceMonitor resources for Kine and the secondary apiserver.
-func (r *Reconciler) reconcileMetrics(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+// reconcileMetrics ensures the metrics scraping infrastructure exists for the
+// shard. All resources (RBAC, token Secret, ServiceMonitors) are created only
+// when the Prometheus Operator is available, avoiding unused credentials with
+// cluster-wide /metrics access when no ServiceMonitor would consume them.
+func (r *Reconciler) reconcileMetrics(
+	ctx context.Context,
+	tc *tracking.Client,
+	shard *kubeshardv1alpha1.APIShard,
+) error {
+	if !r.ServiceMonitorAvailable {
+		return nil
+	}
+
 	sa := resources.BuildMetricsReaderServiceAccount(shard)
 	if err := tc.ApplyOwned(ctx, sa); err != nil {
 		return fmt.Errorf("metrics-reader service account: %w", err)
@@ -619,7 +627,9 @@ func (r *Reconciler) reconcileMetrics(ctx context.Context, tc *tracking.Client, 
 	}
 
 	cr := resources.BuildMetricsReaderClusterRole()
-	if err := r.Patch(ctx, cr, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil { //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
+	//nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
+	if err := r.Patch(ctx, cr, client.Apply,
+		client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
 		return fmt.Errorf("metrics-reader cluster role: %w", err)
 	}
 
@@ -628,14 +638,12 @@ func (r *Reconciler) reconcileMetrics(ctx context.Context, tc *tracking.Client, 
 		return fmt.Errorf("metrics-reader cluster role binding: %w", err)
 	}
 
-	if !r.ServiceMonitorAvailable {
-		return nil
-	}
-
 	kineSM := resources.BuildKineServiceMonitor(shard)
 	if err := tc.ApplyOwned(ctx, kineSM); err != nil {
 		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
-			log.FromContext(ctx).Info("ServiceMonitor CRD no longer available; skipping ServiceMonitor creation")
+			log.FromContext(ctx).Info(
+				"ServiceMonitor CRD no longer available; skipping ServiceMonitor creation",
+			)
 			return nil
 		}
 		return fmt.Errorf("kine service monitor: %w", err)

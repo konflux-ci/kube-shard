@@ -1600,22 +1600,18 @@ var _ = Describe("reconcileMetrics", func() {
 		Expect(*apiserverSM.Spec.Endpoints[0].Scheme).To(Equal(monitoringv1.SchemeHTTPS))
 	})
 
-	It("skips ServiceMonitors when CRD is unavailable", func() {
+	It("skips all metrics resources when CRD is unavailable", func() {
 		reconciler.ServiceMonitorAvailable = false
 
 		err := reconciler.reconcileMetrics(ctx, tc, shard)
 		Expect(err).NotTo(HaveOccurred())
 
 		sa := &corev1.ServiceAccount{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{
+		err = k8sClient.Get(ctx, types.NamespacedName{
 			Name:      resources.MetricsReaderServiceAccountName(shard),
 			Namespace: ns.Name,
-		}, sa)).To(Succeed())
-
-		crb := &rbacv1.ClusterRoleBinding{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{
-			Name: fmt.Sprintf("%s-metrics-reader", shard.Name),
-		}, crb)).To(Succeed())
+		}, sa)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 
 		kineSM := &monitoringv1.ServiceMonitor{}
 		err = k8sClient.Get(ctx, types.NamespacedName{
