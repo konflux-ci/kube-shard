@@ -27,9 +27,11 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"k8s.io/utils/ptr"
@@ -60,6 +62,7 @@ func init() {
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 
 	utilruntime.Must(kubeshardv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(monitoringv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -205,10 +208,25 @@ func main() {
 
 	clientProvider := secondary.NewClientProvider(scheme)
 
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create discovery client")
+		os.Exit(1)
+	}
+	serviceMonitorAvailable, err := apishard.DiscoverServiceMonitor(discoveryClient)
+	if err != nil {
+		setupLog.Error(err, "unable to discover monitoring.coreos.com/v1 resources; skipping Prometheus integration")
+	} else if serviceMonitorAvailable {
+		setupLog.Info("ServiceMonitor CRD detected; Prometheus integration enabled")
+	} else {
+		setupLog.Info("ServiceMonitor CRD not found; skipping Prometheus integration")
+	}
+
 	if err = (&apishard.Reconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		ClientProvider: clientProvider,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		ClientProvider:          clientProvider,
+		ServiceMonitorAvailable: serviceMonitorAvailable,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "APIShard")
 		os.Exit(1)

@@ -24,6 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -56,10 +57,18 @@ var _ = BeforeSuite(func() {
 
 	Expect(kubeshardv1alpha1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(apiextensionsv1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(monitoringv1.AddToScheme(scheme.Scheme)).To(Succeed())
 
 	By("bootstrapping test environment")
+	crdPaths := []string{
+		filepath.Join("..", "..", "..", "config", "crd", "bases"),
+	}
+	monitoringCRDPath := filepath.Join("..", "..", "..", "config", "crd", "monitoring")
+	if _, err := os.Stat(monitoringCRDPath); err == nil {
+		crdPaths = append(crdPaths, monitoringCRDPath)
+	}
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     crdPaths,
 		ErrorIfCRDPathMissing: true,
 	}
 

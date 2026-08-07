@@ -32,6 +32,7 @@ import (
 const (
 	DefaultKineImage = "ghcr.io/k3s-io/kine:v0.16.3"
 	KinePort         = 2379
+	KineMetricsPort  = 8080
 	dataVolumeName   = "data"
 )
 
@@ -81,6 +82,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 	args := []string{
 		"--endpoint", KineEndpoint(shard),
 		"--listen-address", fmt.Sprintf("tcp://0.0.0.0:%d", KinePort),
+		"--metrics-bind-address", fmt.Sprintf(":%d", KineMetricsPort),
 	}
 
 	if shard.Spec.Kine.ConnectionPool != nil {
@@ -209,6 +211,11 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 									ContainerPort: int32(KinePort),
 									Protocol:      corev1.ProtocolTCP,
 								},
+								{
+									Name:          "metrics",
+									ContainerPort: int32(KineMetricsPort),
+									Protocol:      corev1.ProtocolTCP,
+								},
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
@@ -268,6 +275,12 @@ func BuildKineService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 					Name:       "grpc",
 					Port:       int32(KinePort),
 					TargetPort: intstr.FromInt32(int32(KinePort)),
+					Protocol:   corev1.ProtocolTCP,
+				},
+				{
+					Name:       "metrics",
+					Port:       int32(KineMetricsPort),
+					TargetPort: intstr.FromInt32(int32(KineMetricsPort)),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},
