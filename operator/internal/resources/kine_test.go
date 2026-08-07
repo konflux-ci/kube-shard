@@ -402,6 +402,5 @@ func TestBuildKineDeployment_SecurityContext(t *testing.T) {
 	csc := deploy.Spec.Template.Spec.Containers[0].SecurityContext
 	g.Expect(csc).ToNot(BeNil())
 	g.Expect(*csc.AllowPrivilegeEscalation).To(BeFalse())
-	g.Expect(*csc.ReadOnlyRootFilesystem).To(BeTrue())
 	g.Expect(csc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
 }

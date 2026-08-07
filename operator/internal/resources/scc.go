@@ -70,7 +70,7 @@ func BuildAPIServerSCC(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstruct
 			"allowedCapabilities":      []interface{}{"NET_BIND_SERVICE"},
 			"defaultAddCapabilities":   nil,
 			"requiredDropCapabilities": []interface{}{"ALL"},
-			"readOnlyRootFilesystem":   false,
+			"readOnlyRootFilesystem":   false, // not enforced by this SCC
 			"runAsUser":                map[string]interface{}{"type": "MustRunAsRange"},
 			"seLinuxContext":           map[string]interface{}{"type": "MustRunAs"},
 			"fsGroup":                  map[string]interface{}{"type": "MustRunAs"},

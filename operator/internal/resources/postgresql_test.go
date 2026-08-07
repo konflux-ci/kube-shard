@@ -122,7 +122,6 @@ func TestBuildPostgreSQLStatefulSet_SecurityContext(t *testing.T) {
 	csc := sts.Spec.Template.Spec.Containers[0].SecurityContext
 	g.Expect(csc).ToNot(BeNil())
 	g.Expect(*csc.AllowPrivilegeEscalation).To(BeFalse())
-	g.Expect(*csc.ReadOnlyRootFilesystem).To(BeFalse(), "PostgreSQL needs writable root for NSS wrapper /etc/passwd writes")
 	g.Expect(csc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
 }
 

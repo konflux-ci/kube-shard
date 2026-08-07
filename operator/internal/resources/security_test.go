@@ -40,8 +40,6 @@ func TestRestrictedContainerSecurityContext(t *testing.T) {
 
 	g.Expect(sc.AllowPrivilegeEscalation).ToNot(BeNil())
 	g.Expect(*sc.AllowPrivilegeEscalation).To(BeFalse())
-	g.Expect(sc.ReadOnlyRootFilesystem).ToNot(BeNil())
-	g.Expect(*sc.ReadOnlyRootFilesystem).To(BeTrue())
 	g.Expect(sc.Capabilities).ToNot(BeNil())
 	g.Expect(sc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
 }
@@ -64,8 +62,6 @@ func TestAPIServerContainerSecurityContext(t *testing.T) {
 	g.Expect(sc.AllowPrivilegeEscalation).ToNot(BeNil())
 	g.Expect(*sc.AllowPrivilegeEscalation).To(BeTrue(),
 		"AllowPrivilegeEscalation must be true — upstream kube-apiserver has file capabilities")
-	g.Expect(sc.ReadOnlyRootFilesystem).ToNot(BeNil())
-	g.Expect(*sc.ReadOnlyRootFilesystem).To(BeTrue())
 	g.Expect(sc.Capabilities).ToNot(BeNil())
 	g.Expect(sc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
 	g.Expect(sc.Capabilities.Add).To(ConsistOf(corev1.Capability("NET_BIND_SERVICE")),

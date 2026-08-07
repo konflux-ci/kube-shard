@@ -173,7 +173,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 						{
 							Name:            "postgresql",
 							Image:           DefaultPostgreSQLImage,
-							SecurityContext: RestrictedContainerSecurityContextWritableRoot(),
+							SecurityContext: RestrictedContainerSecurityContext(),
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "tcp",

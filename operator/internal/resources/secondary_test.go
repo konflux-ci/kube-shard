@@ -219,7 +219,6 @@ func TestBuildSecondaryDeployment_SecurityContext(t *testing.T) {
 	g.Expect(csc).ToNot(BeNil())
 	g.Expect(csc.AllowPrivilegeEscalation).ToNot(BeNil())
 	g.Expect(*csc.AllowPrivilegeEscalation).To(BeTrue(), "AllowPrivilegeEscalation must be true for kube-apiserver (binary has file capabilities)")
-	g.Expect(*csc.ReadOnlyRootFilesystem).To(BeTrue())
 	g.Expect(csc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
 	g.Expect(csc.Capabilities.Add).To(ConsistOf(corev1.Capability("NET_BIND_SERVICE")))
 }

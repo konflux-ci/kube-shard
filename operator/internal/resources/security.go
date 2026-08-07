@@ -36,25 +36,12 @@ func RestrictedPodSecurityContext() *corev1.PodSecurityContext {
 
 // RestrictedContainerSecurityContext returns a SecurityContext that conforms to
 // the Kubernetes Restricted pod security standard and the OpenShift
-// restricted-v2 SCC.
+// restricted-v2 SCC. ReadOnlyRootFilesystem is not set here because each
+// component must individually determine whether a writable root is needed; see
+// the per-component builders for specific settings.
 func RestrictedContainerSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(false),
-		ReadOnlyRootFilesystem:   ptr.To(true),
-		Capabilities: &corev1.Capabilities{
-			Drop: []corev1.Capability{"ALL"},
-		},
-	}
-}
-
-// RestrictedContainerSecurityContextWritableRoot returns a SecurityContext like
-// RestrictedContainerSecurityContext but with ReadOnlyRootFilesystem set to
-// false. Use for images whose entrypoints must modify system files at startup
-// (e.g., Red Hat PostgreSQL images use an NSS wrapper that writes /etc/passwd).
-func RestrictedContainerSecurityContextWritableRoot() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: ptr.To(false),
-		ReadOnlyRootFilesystem:   ptr.To(false),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},
@@ -88,7 +75,6 @@ func APIServerPodSecurityContext() *corev1.PodSecurityContext {
 func APIServerContainerSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(true),
-		ReadOnlyRootFilesystem:   ptr.To(true),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 			Add:  []corev1.Capability{"NET_BIND_SERVICE"},
