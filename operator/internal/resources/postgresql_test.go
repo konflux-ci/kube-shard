@@ -19,6 +19,7 @@ package resources
 import (
 	"testing"
 
+	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -36,10 +37,17 @@ func TestBuildPostgreSQLStatefulSet_NoPersistence_UsesEmptyDir(t *testing.T) {
 		t.Errorf("expected 0 VCTs when persistence is nil, got %d", len(sts.Spec.VolumeClaimTemplates))
 	}
 	volumes := sts.Spec.Template.Spec.Volumes
-	if len(volumes) != 1 {
-		t.Fatalf("expected 1 volume, got %d", len(volumes))
+	var dataVol *corev1.Volume
+	for i := range volumes {
+		if volumes[i].Name == "data" {
+			dataVol = &volumes[i]
+			break
+		}
 	}
-	if volumes[0].EmptyDir == nil {
+	if dataVol == nil {
+		t.Fatal("expected 'data' volume")
+	}
+	if dataVol.EmptyDir == nil {
 		t.Error("expected EmptyDir volume source when persistence is nil")
 	}
 }
@@ -57,8 +65,12 @@ func TestBuildPostgreSQLStatefulSet_WithPersistence_UsesVCT(t *testing.T) {
 
 	sts := BuildPostgreSQLStatefulSet(shard)
 
-	if len(sts.Spec.Template.Spec.Volumes) != 0 {
-		t.Errorf("expected 0 volumes when persistence is set (data via VCT), got %d", len(sts.Spec.Template.Spec.Volumes))
+	// Only the tmp volume should be present; data comes from VCT
+	if len(sts.Spec.Template.Spec.Volumes) != 1 {
+		t.Errorf("expected 1 volume (tmp) when persistence is set (data via VCT), got %d", len(sts.Spec.Template.Spec.Volumes))
+	}
+	if sts.Spec.Template.Spec.Volumes[0].Name != "tmp" {
+		t.Errorf("expected tmp volume, got %q", sts.Spec.Template.Spec.Volumes[0].Name)
 	}
 
 	if len(sts.Spec.VolumeClaimTemplates) != 1 {
@@ -125,4 +137,54 @@ func TestBuildPostgreSQLStatefulSet_PodTemplate(t *testing.T) {
 	if dataMount.MountPath != "/var/lib/postgresql/data" {
 		t.Errorf("data mount path = %q, want '/var/lib/postgresql/data'", dataMount.MountPath)
 	}
+}
+
+func TestBuildPostgreSQLStatefulSet_SecurityContext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
+	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
+
+	sts := BuildPostgreSQLStatefulSet(shard)
+
+	podSC := sts.Spec.Template.Spec.SecurityContext
+	g.Expect(podSC).ToNot(BeNil())
+	g.Expect(*podSC.RunAsNonRoot).To(BeTrue())
+	g.Expect(podSC.RunAsUser).To(BeNil(), "RunAsUser must not be set so OpenShift can assign from the namespace range")
+	g.Expect(podSC.FSGroup).To(BeNil(), "FSGroup must not be set; OpenShift restricted-v2 assigns from the namespace range")
+	g.Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+	csc := sts.Spec.Template.Spec.Containers[0].SecurityContext
+	g.Expect(csc).ToNot(BeNil())
+	g.Expect(*csc.AllowPrivilegeEscalation).To(BeFalse())
+	g.Expect(*csc.ReadOnlyRootFilesystem).To(BeFalse(), "PostgreSQL needs writable root for NSS wrapper /etc/passwd writes")
+	g.Expect(csc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+}
+
+func TestBuildPostgreSQLStatefulSet_TmpVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
+	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
+
+	sts := BuildPostgreSQLStatefulSet(shard)
+
+	var tmpVol *corev1.Volume
+	for i := range sts.Spec.Template.Spec.Volumes {
+		if sts.Spec.Template.Spec.Volumes[i].Name == "tmp" {
+			tmpVol = &sts.Spec.Template.Spec.Volumes[i]
+			break
+		}
+	}
+	g.Expect(tmpVol).ToNot(BeNil(), "expected tmp volume")
+	g.Expect(tmpVol.EmptyDir).ToNot(BeNil())
+
+	var tmpMount *corev1.VolumeMount
+	for i := range sts.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if sts.Spec.Template.Spec.Containers[0].VolumeMounts[i].MountPath == "/tmp" {
+			tmpMount = &sts.Spec.Template.Spec.Containers[0].VolumeMounts[i]
+			break
+		}
+	}
+	g.Expect(tmpMount).ToNot(BeNil(), "expected /tmp volume mount")
 }

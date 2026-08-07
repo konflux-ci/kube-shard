@@ -222,11 +222,21 @@ func main() {
 		setupLog.Info("ServiceMonitor CRD not found; skipping Prometheus integration")
 	}
 
+	sccAvailable, err := apishard.DiscoverSCC(discoveryClient)
+	if err != nil {
+		setupLog.Error(err, "unable to discover security.openshift.io/v1 resources; skipping SCC management")
+	} else if sccAvailable {
+		setupLog.Info("SecurityContextConstraints API detected; SCC management enabled")
+	} else {
+		setupLog.Info("SecurityContextConstraints API not found; skipping SCC management")
+	}
+
 	if err = (&apishard.Reconciler{
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
 		ClientProvider:          clientProvider,
 		ServiceMonitorAvailable: serviceMonitorAvailable,
+		SCCAvailable:            sccAvailable,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "APIShard")
 		os.Exit(1)

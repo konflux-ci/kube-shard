@@ -201,3 +201,69 @@ func TestBuildSecondaryDeployment_RollingUpdateStrategy(t *testing.T) {
 	g.Expect(*strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromInt32(0)))
 	g.Expect(*strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromInt32(1)))
 }
+
+func TestBuildSecondaryDeployment_SecurityContext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+
+	podSC := deploy.Spec.Template.Spec.SecurityContext
+	g.Expect(podSC).ToNot(BeNil())
+	g.Expect(*podSC.RunAsNonRoot).To(BeTrue())
+	g.Expect(podSC.RunAsUser).To(BeNil())
+	g.Expect(podSC.SeccompProfile).ToNot(BeNil())
+	g.Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+	csc := deploy.Spec.Template.Spec.Containers[0].SecurityContext
+	g.Expect(csc).ToNot(BeNil())
+	g.Expect(csc.AllowPrivilegeEscalation).ToNot(BeNil())
+	g.Expect(*csc.AllowPrivilegeEscalation).To(BeTrue(), "AllowPrivilegeEscalation must be true for kube-apiserver (binary has file capabilities)")
+	g.Expect(*csc.ReadOnlyRootFilesystem).To(BeTrue())
+	g.Expect(csc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+	g.Expect(csc.Capabilities.Add).To(ConsistOf(corev1.Capability("NET_BIND_SERVICE")))
+}
+
+func TestBuildSecondaryDeployment_TmpVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+
+	var tmpVol *corev1.Volume
+	for i := range deploy.Spec.Template.Spec.Volumes {
+		if deploy.Spec.Template.Spec.Volumes[i].Name == "tmp" {
+			tmpVol = &deploy.Spec.Template.Spec.Volumes[i]
+			break
+		}
+	}
+	g.Expect(tmpVol).ToNot(BeNil(), "expected tmp volume")
+	g.Expect(tmpVol.EmptyDir).ToNot(BeNil())
+
+	var tmpMount *corev1.VolumeMount
+	for i := range deploy.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if deploy.Spec.Template.Spec.Containers[0].VolumeMounts[i].MountPath == "/tmp" {
+			tmpMount = &deploy.Spec.Template.Spec.Containers[0].VolumeMounts[i]
+			break
+		}
+	}
+	g.Expect(tmpMount).ToNot(BeNil(), "expected /tmp volume mount")
+}
+
+func TestBuildSecondaryDeployment_DedicatedServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+
+	g.Expect(deploy.Spec.Template.Spec.ServiceAccountName).To(Equal(SecondaryServiceAccountName(shard)))
+	g.Expect(deploy.Spec.Template.Spec.ServiceAccountName).ToNot(Equal("default"))
+}
+
+func TestBuildSecondaryServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	sa := BuildSecondaryServiceAccount(shard)
+
+	g.Expect(sa.Name).To(Equal(SecondaryServiceAccountName(shard)))
+	g.Expect(sa.Namespace).To(Equal(shard.Spec.TargetNamespace))
+	g.Expect(sa.Labels).To(HaveKeyWithValue(LabelComponent, ComponentAPIServer))
+	g.Expect(sa.Labels).To(HaveKeyWithValue(LabelManagedBy, ManagedByValue))
+}

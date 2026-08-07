@@ -734,8 +734,58 @@ var _ = Describe("reconcileAuthDelegator", func() {
 		Expect(crb.RoleRef.Kind).To(Equal("ClusterRole"))
 		Expect(crb.Subjects).To(HaveLen(1))
 		Expect(crb.Subjects[0].Kind).To(Equal("ServiceAccount"))
-		Expect(crb.Subjects[0].Name).To(Equal("default"))
+		Expect(crb.Subjects[0].Name).To(Equal(resources.SecondaryServiceAccountName(shard)))
 		Expect(crb.Subjects[0].Namespace).To(Equal(nsName))
+	})
+})
+
+var _ = Describe("reconcileAPIServerSCC", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	It("is a no-op when SCCAvailable is false", func() {
+		reconciler.SCCAvailable = false
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-scc-noop",
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "default",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, shard)
+		}()
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileAPIServerSCC(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		cr := &rbacv1.ClusterRole{}
+		err = k8sClient.Get(ctx, types.NamespacedName{
+			Name: resources.APIServerSCCClusterRoleName(shard),
+		}, cr)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "ClusterRole should not be created when SCC is unavailable")
 	})
 })
 

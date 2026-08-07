@@ -125,3 +125,37 @@ func TestDiscoverServiceMonitor_EmptyResources(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(found).To(BeFalse())
 }
+
+// TestDiscoverSCC_Present verifies that DiscoverSCC returns true when
+// security.openshift.io/v1 contains SecurityContextConstraints.
+func TestDiscoverSCC_Present(t *testing.T) {
+	g := NewGomegaWithT(t)
+	client := &fakeGVDiscoverer{
+		resources: &metav1.APIResourceList{
+			GroupVersion: "security.openshift.io/v1",
+			APIResources: []metav1.APIResource{
+				{Kind: "SecurityContextConstraints"},
+			},
+		},
+	}
+
+	found, err := DiscoverSCC(client)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+}
+
+// TestDiscoverSCC_GroupNotFound verifies that DiscoverSCC returns false
+// when the security.openshift.io API group is not available (non-OpenShift cluster).
+func TestDiscoverSCC_GroupNotFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+	client := &fakeGVDiscoverer{
+		err: apierrors.NewNotFound(
+			schema.GroupResource{Group: "security.openshift.io", Resource: ""},
+			"security.openshift.io/v1",
+		),
+	}
+
+	found, err := DiscoverSCC(client)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeFalse())
+}

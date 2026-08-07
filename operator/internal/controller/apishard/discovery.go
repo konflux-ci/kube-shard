@@ -35,3 +35,23 @@ func DiscoverServiceMonitor(client GroupVersionDiscoverer) (bool, error) {
 	}
 	return false, nil
 }
+
+// DiscoverSCC checks whether the SecurityContextConstraints API from OpenShift
+// is available on the cluster. It returns true when the API is present, false
+// when absent, and a non-nil error only for unexpected discovery failures.
+func DiscoverSCC(client GroupVersionDiscoverer) (bool, error) {
+	apiResourceList, err := client.ServerResourcesForGroupVersion("security.openshift.io/v1")
+	if err != nil {
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("querying security.openshift.io/v1: %w", err)
+	}
+
+	for _, r := range apiResourceList.APIResources {
+		if r.Kind == "SecurityContextConstraints" {
+			return true, nil
+		}
+	}
+	return false, nil
+}

@@ -376,3 +376,21 @@ func TestBuildKineDeployment_RollingUpdateStrategy(t *testing.T) {
 	g.Expect(*strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromInt32(0)))
 	g.Expect(*strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromInt32(1)))
 }
+
+func TestBuildKineDeployment_SecurityContext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildKineDeployment(shard)
+
+	podSC := deploy.Spec.Template.Spec.SecurityContext
+	g.Expect(podSC).ToNot(BeNil())
+	g.Expect(*podSC.RunAsNonRoot).To(BeTrue())
+	g.Expect(podSC.RunAsUser).To(BeNil())
+	g.Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+	csc := deploy.Spec.Template.Spec.Containers[0].SecurityContext
+	g.Expect(csc).ToNot(BeNil())
+	g.Expect(*csc.AllowPrivilegeEscalation).To(BeFalse())
+	g.Expect(*csc.ReadOnlyRootFilesystem).To(BeTrue())
+	g.Expect(csc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+}
