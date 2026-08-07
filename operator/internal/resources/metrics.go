@@ -112,23 +112,23 @@ func BuildSecondaryServiceMonitor(shard *kubeshardv1alpha1.APIShard) *monitoring
 									},
 								},
 							},
-						TLSConfig: &monitoringv1.TLSConfig{
-							SafeTLSConfig: monitoringv1.SafeTLSConfig{
-								CA: monitoringv1.SecretOrConfigMap{
-									Secret: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: pkiSecretName(shard),
+							TLSConfig: &monitoringv1.TLSConfig{
+								SafeTLSConfig: monitoringv1.SafeTLSConfig{
+									CA: monitoringv1.SecretOrConfigMap{
+										Secret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: pkiSecretName(shard),
+											},
+											Key: "ca.crt",
 										},
-										Key: "ca.crt",
 									},
+									ServerName: ptr.To(fmt.Sprintf(
+										"%s.%s.svc",
+										SecondaryServiceName(shard),
+										shard.Spec.TargetNamespace,
+									)),
 								},
-								ServerName: ptr.To(fmt.Sprintf(
-									"%s.%s.svc",
-									SecondaryServiceName(shard),
-									shard.Spec.TargetNamespace,
-								)),
 							},
-						},
 						},
 					},
 				},
