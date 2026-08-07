@@ -31,6 +31,11 @@ func TestBuildAPIServerSCC(t *testing.T) {
 	g.Expect(scc.GetAPIVersion()).To(Equal("security.openshift.io/v1"))
 	g.Expect(scc.GetName()).To(Equal(APIServerSCCName(shard)))
 
+	labels := scc.GetLabels()
+	g.Expect(labels).To(HaveKeyWithValue(LabelInstance, shard.Name))
+	g.Expect(labels).To(HaveKeyWithValue(LabelManagedBy, ManagedByValue))
+	g.Expect(labels).To(HaveKeyWithValue(LabelComponent, ComponentAPIServer))
+
 	privEsc, found := unstructuredNestedBool(scc.Object, "allowPrivilegeEscalation")
 	g.Expect(found).To(BeTrue())
 	g.Expect(privEsc).To(BeTrue(), "SCC must allow privilege escalation for kube-apiserver file capabilities")
@@ -85,6 +90,8 @@ func unstructuredNestedBool(obj map[string]interface{}, fields ...string) (bool,
 	return b, true
 }
 
+// nestedField traverses a nested map[string]interface{} using the given field
+// path and returns the leaf value.
 func nestedField(obj map[string]interface{}, fields ...string) (interface{}, bool) {
 	var current interface{} = obj
 	for _, field := range fields {

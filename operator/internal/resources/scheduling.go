@@ -18,7 +18,8 @@ const (
 	ComponentStorage   = "storage"
 	ComponentDatabase  = "database"
 
-	NameKine = "kine"
+	NameKine      = "kine"
+	NameAPIServer = "kube-apiserver"
 )
 
 // isColocateEnabled returns true if component colocation is enabled for the shard.

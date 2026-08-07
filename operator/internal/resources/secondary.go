@@ -65,7 +65,7 @@ func SecondaryEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 func BuildSecondaryServiceAccount(shard *kubeshardv1alpha1.APIShard) *corev1.ServiceAccount {
 	name := SecondaryServiceAccountName(shard)
 	labels := map[string]string{
-		LabelName:      "kube-apiserver",
+		LabelName:      NameAPIServer,
 		LabelInstance:  shard.Name,
 		LabelManagedBy: ManagedByValue,
 		LabelComponent: ComponentAPIServer,
@@ -98,7 +98,7 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 	}
 
 	labels := map[string]string{
-		LabelName:      "kube-apiserver",
+		LabelName:      NameAPIServer,
 		LabelInstance:  shard.Name,
 		LabelManagedBy: ManagedByValue,
 		LabelComponent: ComponentAPIServer,
@@ -196,9 +196,9 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 					Affinity:                      BuildSecondaryAffinity(shard),
 					Containers: []corev1.Container{
 						{
-							Name:            "kube-apiserver",
+							Name:            NameAPIServer,
 							Image:           image,
-							Command:         []string{"kube-apiserver"},
+							Command:         []string{NameAPIServer},
 							Args:            args,
 							Resources:       shard.Spec.Secondary.Resources,
 							SecurityContext: APIServerContainerSecurityContext(),
@@ -302,7 +302,7 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 func BuildSecondaryService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	name := SecondaryServiceName(shard)
 	labels := map[string]string{
-		LabelName:      "kube-apiserver",
+		LabelName:      NameAPIServer,
 		LabelInstance:  shard.Name,
 		LabelManagedBy: ManagedByValue,
 		LabelComponent: ComponentAPIServer,

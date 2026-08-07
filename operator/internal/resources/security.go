@@ -62,11 +62,12 @@ func RestrictedContainerSecurityContextWritableRoot() *corev1.SecurityContext {
 }
 
 // APIServerPodSecurityContext returns a PodSecurityContext for the secondary
-// kube-apiserver. Identical to RestrictedPodSecurityContext; kept separate so
-// kube-apiserver-specific constraints can diverge independently if needed.
+// kube-apiserver. Unlike RestrictedPodSecurityContext, RunAsNonRoot is omitted
+// because the upstream kube-apiserver image sets USER 0 (root). On OpenShift
+// the custom SCC's MustRunAsRange strategy assigns a non-root UID automatically;
+// on vanilla Kubernetes the process runs as root, which is the upstream default.
 func APIServerPodSecurityContext() *corev1.PodSecurityContext {
 	return &corev1.PodSecurityContext{
-		RunAsNonRoot: ptr.To(true),
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},

@@ -643,9 +643,7 @@ func (r *Reconciler) reconcileAPIServerSCC(ctx context.Context, tc *tracking.Cli
 	}
 
 	scc := resources.BuildAPIServerSCC(shard)
-	//nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
-	if err := r.Patch(ctx, scc, client.Apply,
-		client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+	if err := tc.ApplyOwned(ctx, scc); err != nil {
 		return fmt.Errorf("apiserver SCC: %w", err)
 	}
 

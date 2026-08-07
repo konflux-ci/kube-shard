@@ -209,7 +209,8 @@ func TestBuildSecondaryDeployment_SecurityContext(t *testing.T) {
 
 	podSC := deploy.Spec.Template.Spec.SecurityContext
 	g.Expect(podSC).ToNot(BeNil())
-	g.Expect(*podSC.RunAsNonRoot).To(BeTrue())
+	g.Expect(podSC.RunAsNonRoot).To(BeNil(),
+		"RunAsNonRoot must be unset — upstream kube-apiserver image USER is 0")
 	g.Expect(podSC.RunAsUser).To(BeNil())
 	g.Expect(podSC.SeccompProfile).ToNot(BeNil())
 	g.Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))

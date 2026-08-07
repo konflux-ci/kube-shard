@@ -27,32 +27,28 @@ import (
 )
 
 func TestBuildPostgreSQLStatefulSet_NoPersistence_UsesEmptyDir(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
 	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
 
 	sts := BuildPostgreSQLStatefulSet(shard)
 
-	if len(sts.Spec.VolumeClaimTemplates) != 0 {
-		t.Errorf("expected 0 VCTs when persistence is nil, got %d", len(sts.Spec.VolumeClaimTemplates))
-	}
-	volumes := sts.Spec.Template.Spec.Volumes
+	g.Expect(sts.Spec.VolumeClaimTemplates).To(BeEmpty(), "expected 0 VCTs when persistence is nil")
+
 	var dataVol *corev1.Volume
-	for i := range volumes {
-		if volumes[i].Name == "data" {
-			dataVol = &volumes[i]
+	for i := range sts.Spec.Template.Spec.Volumes {
+		if sts.Spec.Template.Spec.Volumes[i].Name == "data" {
+			dataVol = &sts.Spec.Template.Spec.Volumes[i]
 			break
 		}
 	}
-	if dataVol == nil {
-		t.Fatal("expected 'data' volume")
-	}
-	if dataVol.EmptyDir == nil {
-		t.Error("expected EmptyDir volume source when persistence is nil")
-	}
+	g.Expect(dataVol).ToNot(BeNil(), "expected 'data' volume")
+	g.Expect(dataVol.EmptyDir).ToNot(BeNil(), "expected EmptyDir volume source when persistence is nil")
 }
 
 func TestBuildPostgreSQLStatefulSet_WithPersistence_UsesVCT(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
 	storageClass := "gp3-csi"
@@ -65,64 +61,37 @@ func TestBuildPostgreSQLStatefulSet_WithPersistence_UsesVCT(t *testing.T) {
 
 	sts := BuildPostgreSQLStatefulSet(shard)
 
-	// Only the tmp volume should be present; data comes from VCT
-	if len(sts.Spec.Template.Spec.Volumes) != 1 {
-		t.Errorf("expected 1 volume (tmp) when persistence is set (data via VCT), got %d", len(sts.Spec.Template.Spec.Volumes))
-	}
-	if sts.Spec.Template.Spec.Volumes[0].Name != "tmp" {
-		t.Errorf("expected tmp volume, got %q", sts.Spec.Template.Spec.Volumes[0].Name)
-	}
+	g.Expect(sts.Spec.Template.Spec.Volumes).To(HaveLen(1), "only tmp volume expected when persistence is set (data via VCT)")
+	g.Expect(sts.Spec.Template.Spec.Volumes[0].Name).To(Equal("tmp"))
 
-	if len(sts.Spec.VolumeClaimTemplates) != 1 {
-		t.Fatalf("expected 1 VCT, got %d", len(sts.Spec.VolumeClaimTemplates))
-	}
+	g.Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
 	vct := sts.Spec.VolumeClaimTemplates[0]
-	if vct.Name != "data" {
-		t.Errorf("VCT name = %q, want 'data'", vct.Name)
-	}
+	g.Expect(vct.Name).To(Equal("data"))
 
 	expectedSize := resource.MustParse("50Gi")
 	gotSize := vct.Spec.Resources.Requests[corev1.ResourceStorage]
-	if !gotSize.Equal(expectedSize) {
-		t.Errorf("VCT size = %s, want %s", gotSize.String(), expectedSize.String())
-	}
-
-	if vct.Spec.StorageClassName == nil || *vct.Spec.StorageClassName != storageClass {
-		t.Errorf("VCT storageClassName = %v, want %q", vct.Spec.StorageClassName, storageClass)
-	}
-
-	if len(vct.Spec.AccessModes) != 1 || vct.Spec.AccessModes[0] != corev1.ReadWriteOnce {
-		t.Errorf("VCT access modes = %v, want [ReadWriteOnce]", vct.Spec.AccessModes)
-	}
+	g.Expect(gotSize.Equal(expectedSize)).To(BeTrue(), "VCT size = %s, want %s", gotSize.String(), expectedSize.String())
+	g.Expect(vct.Spec.StorageClassName).ToNot(BeNil())
+	g.Expect(*vct.Spec.StorageClassName).To(Equal(storageClass))
+	g.Expect(vct.Spec.AccessModes).To(ConsistOf(corev1.ReadWriteOnce))
 }
 
 func TestBuildPostgreSQLStatefulSet_PodTemplate(t *testing.T) {
+	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
 	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
 
 	sts := BuildPostgreSQLStatefulSet(shard)
 
-	if sts.Name != PostgreSQLStatefulSetName(shard) {
-		t.Errorf("name = %q, want %q", sts.Name, PostgreSQLStatefulSetName(shard))
-	}
-	if sts.Namespace != shard.Spec.TargetNamespace {
-		t.Errorf("namespace = %q, want %q", sts.Namespace, shard.Spec.TargetNamespace)
-	}
-	if sts.Spec.ServiceName != PostgreSQLServiceName(shard) {
-		t.Errorf("ServiceName = %q, want %q", sts.Spec.ServiceName, PostgreSQLServiceName(shard))
-	}
+	g.Expect(sts.Name).To(Equal(PostgreSQLStatefulSetName(shard)))
+	g.Expect(sts.Namespace).To(Equal(shard.Spec.TargetNamespace))
+	g.Expect(sts.Spec.ServiceName).To(Equal(PostgreSQLServiceName(shard)))
 
 	containers := sts.Spec.Template.Spec.Containers
-	if len(containers) != 1 {
-		t.Fatalf("expected 1 container, got %d", len(containers))
-	}
-	if containers[0].Name != "postgresql" {
-		t.Errorf("container name = %q, want 'postgresql'", containers[0].Name)
-	}
-	if containers[0].Image != DefaultPostgreSQLImage {
-		t.Errorf("container image = %q, want %q", containers[0].Image, DefaultPostgreSQLImage)
-	}
+	g.Expect(containers).To(HaveLen(1))
+	g.Expect(containers[0].Name).To(Equal("postgresql"))
+	g.Expect(containers[0].Image).To(Equal(DefaultPostgreSQLImage))
 
 	var dataMount *corev1.VolumeMount
 	for i := range containers[0].VolumeMounts {
@@ -131,12 +100,8 @@ func TestBuildPostgreSQLStatefulSet_PodTemplate(t *testing.T) {
 			break
 		}
 	}
-	if dataMount == nil {
-		t.Fatal("expected 'data' volume mount")
-	}
-	if dataMount.MountPath != "/var/lib/postgresql/data" {
-		t.Errorf("data mount path = %q, want '/var/lib/postgresql/data'", dataMount.MountPath)
-	}
+	g.Expect(dataMount).ToNot(BeNil(), "expected 'data' volume mount")
+	g.Expect(dataMount.MountPath).To(Equal("/var/lib/postgresql/data"))
 }
 
 func TestBuildPostgreSQLStatefulSet_SecurityContext(t *testing.T) {

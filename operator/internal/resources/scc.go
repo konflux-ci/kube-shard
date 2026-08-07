@@ -50,9 +50,16 @@ func BuildAPIServerSCC(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstruct
 
 	scc := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion":               "security.openshift.io/v1",
-			"kind":                     "SecurityContextConstraints",
-			"metadata":                 map[string]interface{}{"name": name},
+			"apiVersion": "security.openshift.io/v1",
+			"kind":       "SecurityContextConstraints",
+			"metadata": map[string]interface{}{
+				"name": name,
+				"labels": map[string]interface{}{
+					LabelInstance:  shard.Name,
+					LabelManagedBy: ManagedByValue,
+					LabelComponent: ComponentAPIServer,
+				},
+			},
 			"allowPrivilegeEscalation": true,
 			"allowPrivilegedContainer": false,
 			"allowHostDirVolumePlugin": false,

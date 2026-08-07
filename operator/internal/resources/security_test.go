@@ -50,8 +50,8 @@ func TestAPIServerPodSecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	psc := APIServerPodSecurityContext()
 
-	g.Expect(psc.RunAsNonRoot).ToNot(BeNil())
-	g.Expect(*psc.RunAsNonRoot).To(BeTrue())
+	g.Expect(psc.RunAsNonRoot).To(BeNil(),
+		"RunAsNonRoot must be unset — upstream image USER is 0; OpenShift SCC assigns non-root UID")
 	g.Expect(psc.RunAsUser).To(BeNil())
 	g.Expect(psc.SeccompProfile).ToNot(BeNil())
 	g.Expect(psc.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))

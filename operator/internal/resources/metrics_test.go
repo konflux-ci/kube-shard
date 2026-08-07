@@ -44,7 +44,7 @@ func TestBuildSecondaryServiceMonitor(t *testing.T) {
 	g.Expect(sm.Namespace).To(Equal("test-ns"))
 	g.Expect(sm.Labels).To(HaveKeyWithValue(LabelManagedBy, ManagedByValue))
 
-	g.Expect(sm.Spec.Selector.MatchLabels).To(HaveKeyWithValue(LabelName, "kube-apiserver"))
+	g.Expect(sm.Spec.Selector.MatchLabels).To(HaveKeyWithValue(LabelName, NameAPIServer))
 	g.Expect(sm.Spec.Selector.MatchLabels).To(HaveKeyWithValue(LabelInstance, "test-shard"))
 
 	g.Expect(sm.Spec.Endpoints).To(HaveLen(1))
