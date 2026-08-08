@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -336,6 +337,14 @@ func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, sha
 	logger := log.FromContext(ctx)
 
 	deployment := resources.BuildKineDeployment(shard)
+	if !r.SCCAvailable {
+		// The Kine image sets USER nobody (non-numeric). Kubernetes cannot
+		// verify a non-numeric user against runAsNonRoot, so we supply the
+		// numeric UID explicitly. On OpenShift the SCC assigns a UID from
+		// the namespace range, making this unnecessary (and the hardcoded
+		// UID would be rejected by MustRunAsRange).
+		deployment.Spec.Template.Spec.SecurityContext.RunAsUser = ptr.To(int64(65534))
+	}
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("kine deployment: %w", err)
 	}
