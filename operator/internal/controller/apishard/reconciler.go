@@ -433,6 +433,13 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 	}
 
 	sts := resources.BuildPostgreSQLStatefulSet(shard)
+	if !r.SCCAvailable {
+		// The PostgreSQL image sets USER postgres (non-numeric). Kubernetes
+		// cannot verify a non-numeric user against runAsNonRoot, so we
+		// supply the numeric UID explicitly. On OpenShift the SCC assigns
+		// a UID from the namespace range, making this unnecessary.
+		sts.Spec.Template.Spec.SecurityContext.RunAsUser = ptr.To(int64(999))
+	}
 	if err := tc.ApplyOwned(ctx, sts); err != nil {
 		return fmt.Errorf("postgresql statefulset: %w", err)
 	}
