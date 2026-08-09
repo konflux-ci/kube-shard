@@ -101,9 +101,9 @@ spec:
   targetNamespace: kube-shard-operator
   apiGroups:
   - group: tekton.dev
-    versions: ["v1", "v1beta1"]
+    versions: ["v1", "v1beta1", "v1alpha1"]
   - group: resolution.tekton.dev
-    versions: ["v1beta1"]
+    versions: ["v1beta1", "v1alpha1"]
   storage:
     type: InClusterPostgreSQL
     inCluster:
