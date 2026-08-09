@@ -1251,10 +1251,6 @@ func (r *Reconciler) updateHealthStatus(ctx context.Context, tc *tracking.Client
 	}
 
 	if healthy {
-		if shard.Status.Phase != kubeshardv1alpha1.PhaseBlocked {
-			shard.Status.Phase = kubeshardv1alpha1.PhaseReady
-		}
-		shard.Status.SecondaryEndpoint = resources.SecondaryEndpoint(shard)
 		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
 			Type:               kubeshardv1alpha1.ConditionSecondaryHealthy,
 			Status:             metav1.ConditionTrue,
@@ -1262,6 +1258,36 @@ func (r *Reconciler) updateHealthStatus(ctx context.Context, tc *tracking.Client
 			Message:            "Secondary API server is healthy",
 			ObservedGeneration: shard.Generation,
 		})
+
+		available, unavailMsg := aggregation.CheckAvailability(
+			ctx, r.Client, shard.Status.RegisteredAPIServices,
+		)
+		if !available {
+			logger.V(1).Info("APIServices not yet available, keeping Provisioning",
+				"detail", unavailMsg)
+			shard.Status.Phase = kubeshardv1alpha1.PhaseProvisioning
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:               kubeshardv1alpha1.ConditionAPIServicesRegistered,
+				Status:             metav1.ConditionFalse,
+				Reason:             "APIServicesNotAvailable",
+				Message:            unavailMsg,
+				ObservedGeneration: shard.Generation,
+			})
+			return nil
+		}
+
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionAPIServicesRegistered,
+			Status:             metav1.ConditionTrue,
+			Reason:             "AllAvailable",
+			Message:            "All APIServices are available via aggregation",
+			ObservedGeneration: shard.Generation,
+		})
+
+		if shard.Status.Phase != kubeshardv1alpha1.PhaseBlocked {
+			shard.Status.Phase = kubeshardv1alpha1.PhaseReady
+		}
+		shard.Status.SecondaryEndpoint = resources.SecondaryEndpoint(shard)
 
 		if r.verifySecondaryAuth(ctx, shard) {
 			if err := r.reconcileNamespaceSync(ctx, tc, shard); err != nil {
@@ -1360,7 +1386,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&kubeshardv1alpha1.NamespaceSync{}).
 		Owns(&kubeshardv1alpha1.WebhookSync{}).
-		Owns(&apiregistrationv1.APIService{}, builder.WithPredicates(shardpredicate.IgnoreStatusUpdatesPredicate)).
+		Owns(&apiregistrationv1.APIService{}, builder.WithPredicates(shardpredicate.APIServiceAvailabilityPredicate)).
 		Owns(&rbacv1.ClusterRoleBinding{}).
 		Watches(&apiextensionsv1.CustomResourceDefinition{}, &crdEventHandler{client: r.Client}).
 		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(
