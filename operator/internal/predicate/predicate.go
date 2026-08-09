@@ -21,6 +21,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -118,6 +119,40 @@ var StatefulSetReadinessPredicate = predicate.Funcs{
 		}
 		newCounts, _ := extractReplicaCounts(e.ObjectNew)
 		return oldCounts != newCounts
+	},
+	CreateFunc:  func(e event.CreateEvent) bool { return true },
+	DeleteFunc:  func(e event.DeleteEvent) bool { return true },
+	GenericFunc: func(e event.GenericEvent) bool { return true },
+}
+
+// apiServiceAvailableStatus extracts the Available condition status from an
+// APIService, returning an empty string if the condition is absent.
+func apiServiceAvailableStatus(obj client.Object) apiregistrationv1.ConditionStatus {
+	apiSvc, ok := obj.(*apiregistrationv1.APIService)
+	if !ok {
+		return ""
+	}
+	for _, c := range apiSvc.Status.Conditions {
+		if c.Type == apiregistrationv1.Available {
+			return c.Status
+		}
+	}
+	return ""
+}
+
+// APIServiceAvailabilityPredicate extends IgnoreStatusUpdatesPredicate by also
+// triggering when the kube-aggregator changes the Available condition on an
+// APIService. This lets the controller react to aggregation readiness without
+// polling.
+var APIServiceAvailabilityPredicate = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		if e.ObjectOld == nil || e.ObjectNew == nil {
+			return true
+		}
+		if generationOrMetadataChanged(e.ObjectOld, e.ObjectNew) {
+			return true
+		}
+		return apiServiceAvailableStatus(e.ObjectOld) != apiServiceAvailableStatus(e.ObjectNew)
 	},
 	CreateFunc:  func(e event.CreateEvent) bool { return true },
 	DeleteFunc:  func(e event.DeleteEvent) bool { return true },

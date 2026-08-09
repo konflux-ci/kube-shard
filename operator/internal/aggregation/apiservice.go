@@ -144,6 +144,42 @@ func Reconcile(
 	return &ReconcileResult{Registered: desired}, nil
 }
 
+// CheckAvailability verifies that all registered APIService objects have the
+// Available condition set to True by the kube-aggregator. Returns true when
+// every APIService is available, or false with a message describing the first
+// unavailable one.
+func CheckAvailability(
+	ctx context.Context,
+	c client.Client,
+	registeredNames []string,
+) (bool, string) {
+	for _, name := range registeredNames {
+		apiSvc := &apiregistrationv1.APIService{}
+		if err := c.Get(ctx, types.NamespacedName{Name: name}, apiSvc); err != nil {
+			return false, fmt.Sprintf("APIService %s not found: %v", name, err)
+		}
+		available := false
+		for _, cond := range apiSvc.Status.Conditions {
+			if cond.Type == apiregistrationv1.Available {
+				if cond.Status != apiregistrationv1.ConditionTrue {
+					return false, fmt.Sprintf(
+						"APIService %s not yet available: %s",
+						name, cond.Message,
+					)
+				}
+				available = true
+				break
+			}
+		}
+		if !available {
+			return false, fmt.Sprintf(
+				"APIService %s has no Available condition yet", name,
+			)
+		}
+	}
+	return true, ""
+}
+
 // DesiredAPIServiceNames returns the list of APIService names that should exist
 // for the given shard based on its spec.
 func DesiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {

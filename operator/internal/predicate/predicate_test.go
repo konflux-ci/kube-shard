@@ -19,8 +19,10 @@ package predicate
 import (
 	"testing"
 
+	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
@@ -164,4 +166,79 @@ func TestIgnoreStatusUpdatesPredicate_LabelChange(t *testing.T) {
 	if !IgnoreStatusUpdatesPredicate.Update(e) {
 		t.Error("expected true when labels changed")
 	}
+}
+
+// --- APIServiceAvailabilityPredicate tests ---
+
+func newAPIService(
+	available apiregistrationv1.ConditionStatus,
+) *apiregistrationv1.APIService {
+	svc := &apiregistrationv1.APIService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "v1.example.com", Generation: 1,
+		},
+	}
+	if available != "" {
+		svc.Status.Conditions = []apiregistrationv1.APIServiceCondition{
+			{Type: apiregistrationv1.Available, Status: available},
+		}
+	}
+	return svc
+}
+
+func TestAPIServiceAvailabilityPredicate_TriggersOnAvailableChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldObj := newAPIService(apiregistrationv1.ConditionFalse)
+	newObj := newAPIService(apiregistrationv1.ConditionTrue)
+
+	result := APIServiceAvailabilityPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldObj,
+		ObjectNew: newObj,
+	})
+	g.Expect(result).To(BeTrue(),
+		"should trigger when Available changes from False to True")
+}
+
+func TestAPIServiceAvailabilityPredicate_IgnoresNoChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldObj := newAPIService(apiregistrationv1.ConditionTrue)
+	newObj := newAPIService(apiregistrationv1.ConditionTrue)
+
+	result := APIServiceAvailabilityPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldObj,
+		ObjectNew: newObj,
+	})
+	g.Expect(result).To(BeFalse(),
+		"should not trigger when Available stays True")
+}
+
+func TestAPIServiceAvailabilityPredicate_TriggersOnGenerationChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldObj := newAPIService(apiregistrationv1.ConditionTrue)
+	newObj := newAPIService(apiregistrationv1.ConditionTrue)
+	newObj.Generation = 2
+
+	result := APIServiceAvailabilityPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldObj,
+		ObjectNew: newObj,
+	})
+	g.Expect(result).To(BeTrue(),
+		"should trigger on generation change")
+}
+
+func TestAPIServiceAvailabilityPredicate_TriggersOnNewCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldObj := newAPIService("")
+	newObj := newAPIService(apiregistrationv1.ConditionTrue)
+
+	result := APIServiceAvailabilityPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldObj,
+		ObjectNew: newObj,
+	})
+	g.Expect(result).To(BeTrue(),
+		"should trigger when Available condition appears")
 }

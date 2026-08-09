@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -171,4 +172,84 @@ func TestReconcile_ServiceFieldAlwaysSet(t *testing.T) {
 // This is a regression test to ensure we can use Patch(Apply) in tests.
 func init() {
 	_ = client.Apply //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
+}
+
+func TestCheckAvailability_AllAvailable(t *testing.T) {
+	g := NewGomegaWithT(t)
+	scheme := newScheme()
+
+	svc := &apiregistrationv1.APIService{
+		ObjectMeta: metav1.ObjectMeta{Name: "v1.example.com"},
+		Status: apiregistrationv1.APIServiceStatus{
+			Conditions: []apiregistrationv1.APIServiceCondition{
+				{
+					Type:   apiregistrationv1.Available,
+					Status: apiregistrationv1.ConditionTrue,
+				},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
+
+	ok, msg := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	g.Expect(ok).To(BeTrue())
+	g.Expect(msg).To(BeEmpty())
+}
+
+func TestCheckAvailability_NotAvailable(t *testing.T) {
+	g := NewGomegaWithT(t)
+	scheme := newScheme()
+
+	svc := &apiregistrationv1.APIService{
+		ObjectMeta: metav1.ObjectMeta{Name: "v1.example.com"},
+		Status: apiregistrationv1.APIServiceStatus{
+			Conditions: []apiregistrationv1.APIServiceCondition{
+				{
+					Type:    apiregistrationv1.Available,
+					Status:  apiregistrationv1.ConditionFalse,
+					Message: "endpoints not found",
+				},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
+
+	ok, msg := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	g.Expect(ok).To(BeFalse())
+	g.Expect(msg).To(ContainSubstring("not yet available"))
+	g.Expect(msg).To(ContainSubstring("endpoints not found"))
+}
+
+func TestCheckAvailability_NoCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	scheme := newScheme()
+
+	svc := &apiregistrationv1.APIService{
+		ObjectMeta: metav1.ObjectMeta{Name: "v1.example.com"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
+
+	ok, msg := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	g.Expect(ok).To(BeFalse())
+	g.Expect(msg).To(ContainSubstring("no Available condition"))
+}
+
+func TestCheckAvailability_Missing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	scheme := newScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	ok, msg := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	g.Expect(ok).To(BeFalse())
+	g.Expect(msg).To(ContainSubstring("not found"))
+}
+
+func TestCheckAvailability_EmptyList(t *testing.T) {
+	g := NewGomegaWithT(t)
+	scheme := newScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	ok, msg := CheckAvailability(context.Background(), c, nil)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(msg).To(BeEmpty())
 }
