@@ -369,12 +369,6 @@ make manifests generate
 make run
 ```
 
-## Legacy PoC Scripts (Deprecated)
-
-The shell scripts in `hack/` and Kustomize manifests in `deploy/poc/` are the original proof-of-concept automation. They are kept for reference only. The operator supersedes them entirely.
-
-See [AGENTS.md](AGENTS.md) for details on the legacy PoC structure.
-
 ## License
 
 Apache-2.0
