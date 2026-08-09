@@ -140,25 +140,23 @@ Tekton's validation/mutation webhooks and Kueue's admission controller need to b
 
 The Tekton webhook controller self-manages its TLS CA and injects the `caBundle` into webhook configurations and CRD conversion specs -- but only on objects in the **primary's** store. The secondary receives these objects via a copy/sync mechanism:
 
-1. The setup script extracts fully-configured webhook configs (with `caBundle` already injected) from the primary
-2. Applies them to the secondary's store
-3. Patches CRDs on the secondary with the same `caBundle` for conversion webhook connectivity
+1. The WebhookSync controller extracts fully-configured webhook configs (with `caBundle` already injected) from the primary
+2. Applies them to the secondary's store (transforming `clientConfig.service` to `clientConfig.url`)
+3. The CRD sync transforms conversion webhook `clientConfig` the same way
 
-**Cert rotation risk:** The Tekton webhook may rotate its CA on pod restart. When this happens, the `caBundle` on the secondary becomes stale and webhook calls (both admission and CRD conversion) will fail with TLS errors.
-
-**Future automation (kube-shard-operator):** In production, the kube-shard-operator (see Phase 6) will watch webhook configurations on the primary and automatically mirror `caBundle` changes to the secondary. For the PoC, re-running `make phase3` after a Tekton webhook restart is sufficient.
+**Cert rotation:** The Tekton webhook may rotate its CA on pod restart. When this happens, the `caBundle` on the secondary becomes stale. The WebhookSync controller watches for `caBundle` changes and automatically mirrors updates to the secondary.
 
 ### CRD conversion webhooks
 
 Tekton CRDs declare `v1beta1` as a served version with `spec.conversion.strategy: Webhook`, pointing at `tekton-pipelines-webhook`. However, the Tekton webhook server does **not** implement a conversion endpoint (responds with "no controller registered for: /"). This means CRD conversion is non-functional regardless of how the webhook is configured.
 
-The Phase 3 setup disables these non-functional conversion webhooks by setting `spec.conversion.strategy: None` on all Tekton CRDs on the secondary. Only v1 (the stored version) is actively used.
+The operator handles this during CRD sync by transforming `spec.conversion.webhook.clientConfig.service` references to URL-based references, preserving the `caBundle`. If the webhook endpoint is non-functional, the conversion strategy can be set to `None` on the secondary. Only v1 (the stored version) is actively used.
 
 ### Webhook `clientConfig.service` vs `url`
 
 When a webhook config uses `clientConfig.service`, the API server looks up the Service object in its **own** store (not via DNS). Since the secondary doesn't have `tekton-pipelines-webhook` Service in its store, service-based webhook references fail.
 
-The Phase 3 setup transforms all `clientConfig.service` references to `clientConfig.url` (e.g., `https://tekton-pipelines-webhook.tekton-pipelines.svc:443/defaulting`). URL-based references use standard DNS resolution, which works because the secondary pod is in the same cluster and can resolve cluster-internal Service names.
+The WebhookSync controller transforms all `clientConfig.service` references to `clientConfig.url` (e.g., `https://tekton-pipelines-webhook.tekton-pipelines.svc:443/defaulting`). URL-based references use standard DNS resolution, which works because the secondary pod is in the same cluster and can resolve cluster-internal Service names.
 
 ## Resource Policy Enforcement
 
@@ -229,8 +227,8 @@ If the secondary is temporarily unavailable, the GC retries (does not prematurel
 
 | Environment | Backend | Purpose |
 |-------------|---------|---------|
-| kind (PoC Phase 1) | Kine + SQLite | Fastest path to validate API aggregation wiring |
-| kind (PoC Phase 2) | Kine + in-cluster PostgreSQL | Validate PostgreSQL-specific behavior |
+| kind / dev | Kine + SQLite | Local development and testing |
+| kind / dev | Kine + in-cluster PostgreSQL | PostgreSQL-specific behavior validation |
 | ROSA staging | Kine + RDS PostgreSQL | Production-representative validation |
 | ROSA production | Kine + RDS PostgreSQL (Multi-AZ) | Full production deployment |
 
@@ -273,7 +271,7 @@ Additional APIService objects for:
 
 ### Migration from CRDs to APIService
 
-CRDs and aggregated APIService objects cannot coexist for the same group/version. This was validated experimentally in the PoC:
+CRDs and aggregated APIService objects cannot coexist for the same group/version by default. This was validated experimentally:
 
 **Proven behavior:** When a CRD exists on the primary for the same group/version as an aggregated APIService (one with `spec.service` pointing to an external server), the kube-aggregator controller:
 
@@ -286,7 +284,7 @@ CRDs and aggregated APIService objects cannot coexist for the same group/version
 
 **Recovery:** Deleting the CRDs from the primary and re-applying the APIService with the `service` field restores proper aggregation and all data reappears from the secondary.
 
-**Production implication:** If the OpenShift Pipelines operator (or any Tekton installation) creates CRDs on the same cluster, it will immediately break aggregation. The operator's CRD management must be disabled on clusters using the aggregated secondary. The setup script (`hack/setup-poc.sh`) explicitly removes pre-existing Tekton CRDs before registering APIService objects.
+**Production implication:** If the OpenShift Pipelines operator (or any Tekton installation) creates CRDs on the same cluster, it will immediately break aggregation. The kube-shard operator addresses this with `forceAggregation: true` (default), which overrides the kube-aggregator's auto-register controller by setting the `automanaged` label to `"false"` on APIService objects via SSA. This allows CRDs and aggregated APIService objects to coexist without manual CRD removal.
 
 Migration sequence for existing clusters:
 
@@ -298,7 +296,7 @@ Migration sequence for existing clusters:
 6. **Import:** Restore live resources into secondary via API
 7. **Resume:** Controllers reconnect (watches re-establish through aggregation)
 
-For the kind PoC, no migration is needed -- install CRDs only on secondary from the start.
+For new deployments with `forceAggregation: true`, no migration is needed -- the operator installs CRDs on the secondary and registers APIService objects while existing CRDs remain on the primary.
 
 ## High Availability and Failure Modes
 
@@ -317,149 +315,44 @@ The blast radius of secondary API server failure is similar to today's etcd fail
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
-| **Kine watch performance at scale** -- SQL-polling watch handling 6000+ objects with 5+ concurrent watchers | High | Load test in PoC Phase 3. Kine polling interval is configurable. Upstream k3s benchmarks available. |
+| **Kine watch performance at scale** -- SQL-polling watch handling 6000+ objects with 5+ concurrent watchers | High | Load testing validated up to 1000+ PipelineRuns. Kine polling interval is configurable. Upstream k3s benchmarks available. |
 | **ROSA compatibility** -- custom APIService registration on managed ROSA | Medium | Standard K8s API; OCP uses it extensively. Validate that ROSA operators don't reconcile/remove user-created APIServices. |
 | **OpenShift Pipelines operator conflict** -- operator expects to own Tekton CRDs | High | **Validated:** CRDs on primary cause kube-aggregator to auto-manage the APIService, removing the `service` field and breaking aggregation. Operator CRD management must be disabled on Konflux clusters. Long-term: operator-native support. |
 | **Tekton controller assumptions** -- controllers relying on cross-resource resourceVersion ordering | Medium | Code review of Tekton pipeline controller. Unlikely (informer-based, not direct etcd). |
 | **Webhook certificate management** -- Tekton webhook self-generates certs | Medium | Provide certs externally (cert-manager) and disable self-cert logic. |
 | **Observability** -- etcd dashboards don't apply; need new PostgreSQL/Kine monitoring | Low | Build dashboards for Kine metrics and RDS CloudWatch. |
 
-## PoC Validation Plan
+## Validation History
 
-### Phase 1: Basic wiring (kind + SQLite)
+The design was validated incrementally through a series of phases before the operator was built. Key findings are preserved inline in the relevant sections above. The phases were:
 
-Validate API aggregation works end-to-end with Tekton controllers:
+1. **Basic wiring** (kind + SQLite) -- validated API aggregation end-to-end with Tekton controllers
+2. **Webhook authorization + RBAC** -- validated `--authorization-mode=Webhook` delegation to main cluster's SubjectAccessReview
+3. **Tekton admission webhooks** -- validated webhook mirroring with `clientConfig.service` → `clientConfig.url` transformation
+4. **Kueue + tekton-kueue integration** -- validated Kueue quota system with the aggregated API server
+5. **PostgreSQL backend** -- validated production-representative storage with Kine + PostgreSQL
+6. **Konflux integration** -- validated Tekton Chains, real Konflux pipelines, and interaction with Konflux controllers
+7. **kube-shard operator** -- replaced all manual scripts with the operator (see `operator/`)
 
-1. Create kind cluster
-2. Deploy secondary kube-apiserver with Kine (SQLite)
-3. Install Tekton CRDs on secondary only
-4. Register APIService objects on main
-5. Deploy Tekton Pipeline controller
-6. Create PipelineRun → verify runs to completion
+### Tekton Operator CRD Ownership
 
-**Success criteria:** PipelineRun completes; TaskRuns created; Pods scheduled; GC works.
+The Tekton Operator manages pipeline CRDs via `TektonInstallerSet` resources and reconciles them continuously. Since CRDs and APIService objects for the same group/version cannot coexist on the primary (the aggregator auto-manages Local APIServices when CRDs exist), this creates a conflict.
 
-### Phase 2: Webhook authorization + RBAC
+The kube-shard operator addresses this with `forceAggregation: true`, which overrides the auto-register controller by setting the `automanaged` label to `"false"` via SSA with ForceOwnership. This allows CRDs to remain on the primary while aggregation routes requests to the secondary.
 
-Validate that authorization delegation works correctly with the existing SQLite backend:
+**Design constraint:** The kube-shard operator does NOT patch upstream operator resources (e.g., TektonInstallerSets). That approach is fragile, couples kube-shard to implementation details of every upstream operator, and would need to be re-implemented for each new operator we integrate with.
 
-1. Enable `--authorization-mode=Webhook` (delegate authz to main cluster's SubjectAccessReview)
-2. Configure authorization webhook config (ServiceAccount token with `system:auth-delegator` binding)
-3. Test RBAC enforcement (verify that existing RoleBindings on the main cluster gate access to Tekton resources on the secondary)
-4. Verify that unauthorized requests are rejected
+**Alternative approaches considered:**
 
-**Success criteria:** RBAC works via webhook delegation; unauthorized users cannot create/list PipelineRuns.
+1. **Upstream Tekton Operator change** -- a flag like `tektonconfig.spec.pipeline.manageCRDs: false` to skip CRD installation. Clean for Tekton but does not generalize.
+2. **Generic "CRD guard" admission webhook** -- reject CREATE operations on CRDs for aggregated API groups. Generic but may cause operator error/retry loops.
+3. **Aggregation-aware CRD coexistence** -- upstream Kubernetes change to prefer APIService with a `service` field over auto-managed Local APIService. Would solve the problem for everyone.
 
-### Phase 3: Tekton admission webhooks
+The current `forceAggregation` approach is the implemented solution. Upstream changes remain worth pursuing for a cleaner long-term path.
 
-Validate that Tekton admission webhooks (validation + mutation) work when registered on the secondary:
+## Roadmap
 
-1. Register Tekton's ValidatingWebhookConfiguration and MutatingWebhookConfiguration on secondary
-2. Verify Tekton webhook validates/mutates PipelineRun specs correctly
-3. Verify invalid resources are rejected
-
-**Success criteria:** Tekton admission webhooks fire correctly on the secondary; invalid PipelineRuns rejected; mutation (defaults) applied.
-
-### Phase 4: Kueue + tekton-kueue integration
-
-Validate that the Kueue quota system and its admission webhooks work with the aggregated API server:
-
-1. Deploy cert-manager (required by Kueue)
-2. Deploy Kueue
-3. Deploy tekton-kueue controller
-4. Register Kueue's admission webhooks on secondary
-5. Configure ClusterQueues and LocalQueues
-6. Submit PipelineRuns and verify they are admitted/queued by Kueue
-7. Verify Kueue admission webhook correctly intercepts PipelineRun creation
-
-Reference: [konflux-ci/tekton-kueue Makefile](https://github.com/konflux-ci/tekton-kueue/blob/main/Makefile) for installing cert-manager, Kueue, and tekton-kueue.
-
-**Success criteria:** PipelineRuns are queued and admitted according to Kueue quotas; tekton-kueue correctly suspends/resumes PipelineRuns; Kueue admission webhook fires on the secondary.
-
-### Phase 5: PostgreSQL backend
-
-Switch from SQLite to a production-representative storage backend:
-
-1. Deploy in-cluster PostgreSQL
-2. Configure Kine with PostgreSQL connection string
-3. Re-run Phase 1-4 validations against PostgreSQL
-4. Validate data persistence across Kine restarts
-
-**Success criteria:** All prior validations pass with PostgreSQL; data survives pod restarts; no performance regressions.
-
-### Phase 6: Konflux integration
-
-Validate the full Konflux pipeline workflow with the aggregated API server:
-
-1. Deploy Tekton Chains -- verify TaskRun signing works
-2. Run real Konflux pipelines (build-container, integration-test)
-3. Verify Chains produces signed attestations for TaskRuns stored on the secondary
-4. Test interaction with other Konflux controllers (PaC, Integration Service)
-
-**Success criteria:** Chains signs TaskRuns; real Konflux pipelines complete; no regressions from aggregation.
-
-**Validated finding -- Tekton Operator CRD ownership:**
-
-The Tekton Operator (v0.80.0) manages pipeline CRDs via `TektonInstallerSet` resources (e.g., `pipeline-main-static-*`). The operator reconciles these CRDs continuously. Since CRDs and APIService objects for the same group/version cannot coexist on the primary (the aggregator auto-manages Local APIServices when CRDs exist), the Tekton Operator must be scaled down during Phase 6 to prevent it from re-creating the CRDs we remove.
-
-This is acceptable for PoC validation but not for production. The kube-shard-operator (Phase 7) must handle this coordination. The problem is generic: **any** operator that manages CRDs (not just Tekton) will conflict with API aggregation when we remove those CRDs from the primary.
-
-**Design constraint:** The kube-shard-operator should NOT patch upstream operator resources (e.g., TektonInstallerSets). That approach is fragile, couples kube-shard to implementation details of every upstream operator, and would need to be re-implemented for each new operator we integrate with.
-
-**Options to explore:**
-
-1. **Upstream Tekton Operator change** -- add a flag or annotation (e.g., `tektonconfig.spec.pipeline.manageCRDs: false`) that tells the Tekton Operator to skip CRD installation while still managing deployments, webhooks, and RBAC. This solves the problem cleanly for Tekton but does not generalize to other operators.
-
-2. **Generic "CRD guard" admission webhook** -- deploy a validating admission webhook on the primary that rejects CREATE operations on CRDs for aggregated API groups. Any operator attempting to re-create a removed CRD would be blocked. This is generic and works regardless of which operator manages the CRDs, but operators may enter error/retry loops.
-
-3. **Aggregation-aware CRD coexistence** -- investigate whether kube-apiserver can be configured or patched to prefer an APIService with a `service` field over a Local APIService created by a CRD. Currently the aggregator auto-manages Local APIServices when CRDs exist, making coexistence impossible. An upstream Kubernetes change here would solve the problem for everyone.
-
-4. **Operator lifecycle management** -- the kube-shard-operator scales down or pauses upstream operators that conflict, similar to what Phase 6 does manually. Simple but heavy-handed; operators stop reconciling all their resources (not just CRDs).
-
-5. **CRD finalizer/ownership approach** -- keep CRDs on the primary but configure them with a special annotation that prevents the aggregator from creating Local APIServices. This would require a Kubernetes upstream change.
-
-The preferred long-term solution is likely a combination: upstream Tekton Operator support (option 1) for the immediate need, plus a generic mechanism (option 2 or 3) for operators that don't support opt-out. This is exploration work for Phase 7 design.
-
-### Phase 7: kube-shard operator
-
-Build the kube-shard operator using [Kubebuilder](https://book.kubebuilder.io/) to replace all manual setup scripts with a declarative, reconciliation-driven approach. The operator manages the full lifecycle of the secondary API server and is generic -- not tied to Tekton or any specific CRD.
-
-**Responsibilities:**
-
-1. **Secondary API server lifecycle** -- deploy and manage the secondary kube-apiserver + Kine stack, replacing `setup-phase*.sh` scripts with a single `SecondaryAPIServer` custom resource
-2. **Generic CRD aggregation** -- accept a list of API groups/versions to aggregate (e.g., `tekton.dev`, `resolution.tekton.dev`, `appstudio.redhat.com`); install CRDs on secondary, register APIService objects on primary, remove conflicting CRDs from primary, and coordinate with upstream operators (e.g., Tekton Operator) that manage those CRDs via InstallerSets or similar mechanisms
-3. **Admission webhook synchronization** -- watch MutatingWebhookConfiguration/ValidatingWebhookConfiguration on the primary for configured labels/names, mirror them to the secondary with `clientConfig.service` → `clientConfig.url` transformation, and keep `caBundle` in sync on cert rotation
-4. **Namespace synchronization** -- watch Namespaces on main → mirror create/delete to secondary, scoped by label selector (e.g., `konflux.dev/tenant`), ignoring system namespaces
-
-
-**Success criteria:** `Shard` CR drives the entire deployment; operator handles cert rotation, webhook sync, namespace mirroring; works for any set of CRDs (not just Tekton); manual scripts are no longer required for new deployments. Multiple "`Shard` CRs should be supported on a single clusters.
-
-### Phase 8: Integration test suites
-
-Build automated test suites in Go using [Ginkgo](https://onsi.github.io/ginkgo/) and [Gomega](https://onsi.github.io/gomega/) for Tekton and Kueue integration. These will be reused in Phase 9 for scale validation:
-
-1. Scaffold test suite under `test/e2e/` using Ginkgo
-2. Tekton integration tests: create PipelineRuns with various configurations, verify completion, TaskRun creation, Pod scheduling, GC cleanup
-3. Kueue integration tests: submit PipelineRuns against ClusterQueues, verify admission/queueing/suspension/resumption
-4. Parameterize tests for concurrency level (1, 10, 100, N) to support scale runs
-5. Add metrics collection hooks (reconciliation latency, watch event counts, Kine/PostgreSQL stats)
-6. CI-friendly: tests runnable via `make test-e2e` with configurable target cluster
-
-**Success criteria:** Repeatable Ginkgo test suite that validates Tekton + Kueue integration; parameterizable for scale; produces structured metrics output.
-
-### Phase 9: Scale validation
-
-Stress-test the secondary API server under concurrent load using the test suites from Phase 8:
-
-1. Run integration tests at increasing concurrency (100, 300, 500, 1000 PipelineRuns)
-2. Measure watch latency, reconciliation time, PostgreSQL throughput, Kine resource usage
-3. Compare against etcd-backed baseline
-4. Find Kine's breaking point
-5. Validate Kueue behavior under high concurrency
-
-**Success criteria:** 1000+ concurrent PipelineRuns with <5s reconciliation latency; no watch storms; Kueue quotas enforced correctly at scale.
-
-### Phase 10: Konflux API groups aggregation (Snapshots + Releases)
+### Konflux API groups aggregation (Snapshots + Releases)
 
 Extend the secondary to serve additional Konflux-specific CRDs:
 
@@ -470,7 +363,7 @@ Extend the secondary to serve additional Konflux-specific CRDs:
 
 **Success criteria:** Snapshot and Release resources stored on secondary (PostgreSQL); controllers unaffected; GC handles cross-group ownership.
 
-### Phase 11: Production readiness (ROSA staging)
+### Production readiness (ROSA staging)
 
 1. Deploy on Konflux staging cluster (ROSA)
 2. Validate APIService survives cluster operator reconciliation
@@ -485,9 +378,9 @@ Extend the secondary to serve additional Konflux-specific CRDs:
 
 ## Scope
 
-**Phases 1-9:** `tekton.dev` and `resolution.tekton.dev` API groups only (Konflux integration in Phase 6 uses these groups with real Konflux pipelines).
+**Current:** `tekton.dev` and `resolution.tekton.dev` API groups (validated with real Konflux pipelines).
 
-**Phase 10:** Konflux-specific CRDs (Snapshot, Release) moved to the same secondary API server.
+**Next:** Konflux-specific CRDs (Snapshot, Release) moved to the same secondary API server.
 
 **Future exploration:** If proven at scale, this approach could replace KubArchive for storing historical pipeline snapshots and release resources -- the PostgreSQL backend provides native query capabilities without needing a separate archival system.
 
@@ -498,4 +391,3 @@ Extend the secondary to serve additional Konflux-specific CRDs:
 - [kubernetes/kubernetes#118858](https://github.com/kubernetes/kubernetes/issues/118858) -- Upstream CRD sharding (this approach bypasses the need)
 - [openshift/enhancements#1979](https://github.com/openshift/enhancements/pull/1979) -- Etcd sharding for built-in resources (complementary)
 - [k3s-io/kine](https://github.com/k3s-io/kine) -- Etcd API to SQL translation layer
-- [Etcd sharding impact analysis](etcd-sharding-impact-analysis.md) -- Analysis of built-in resource sharding via HyperShift

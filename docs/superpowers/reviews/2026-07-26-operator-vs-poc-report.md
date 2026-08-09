@@ -1,5 +1,7 @@
 # Operator vs PoC Scripts Comparison
 
+> **Historical document.** The PoC scripts referenced below (`setup-poc.sh`, `setup-phase*.sh`, etc.) have been removed from the repository. The operator is the sole deployment method. This document is retained for design context.
+
 **Date:** 2026-07-26
 
 ## Summary

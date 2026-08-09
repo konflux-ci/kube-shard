@@ -4,112 +4,133 @@ Instructions for AI agents working on this repository.
 
 ## Project Overview
 
-kube-shard is a secondary aggregated Kubernetes API server backed by Kine (SQLite/PostgreSQL) instead of etcd. It offloads Tekton CRDs from the main cluster's etcd to eliminate the 8 GB storage size constraint that caps PipelineRun concurrency.
+kube-shard is a secondary aggregated Kubernetes API server backed by Kine (SQLite/PostgreSQL) instead of etcd. It offloads CRDs from the main cluster's etcd to eliminate the 8 GB storage size constraint that caps PipelineRun concurrency.
 
 The full design is in [docs/design.md](docs/design.md).
 
-## Architecture (Phase 1 PoC)
+## Architecture
+
+The kube-shard operator watches `APIShard` custom resources and reconciles the full secondary API server stack:
 
 ```
-Client/Controller → Main kube-apiserver → [APIService aggregation] → Secondary kube-apiserver → Kine → SQLite
+User/GitOps → APIShard CR → kube-shard Operator → Kine Deployment + Secondary kube-apiserver + APIService objects + CRDs + NamespaceSync + WebhookSync
+```
+
+Request flow once deployed:
+
+```
+Client/Controller → Main kube-apiserver → [APIService aggregation] → Secondary kube-apiserver → Kine → PostgreSQL/SQLite
 ```
 
 Key properties:
-- **Tekton CRDs exist ONLY on the secondary** API server. They are never installed on the primary.
-- **APIService objects** on the primary route `tekton.dev` and `resolution.tekton.dev` to the secondary.
+- **Operator-managed.** A single `APIShard` CR drives deployment of the entire secondary stack.
+- **Generic.** Not tied to Tekton -- any API group backed by CRDs can be offloaded.
 - **Controllers are unchanged** -- they talk to the main API server; aggregation routes transparently.
-- **Authorization**: Phase 1 uses `AlwaysAllow` + static token. Phase 2 adds webhook delegation.
-- **Namespaces**: Phase 1 manually creates namespaces on the secondary. Phase 2 adds a sync controller.
+- **Authorization** is delegated to the main cluster via `--authorization-mode=Webhook` (SubjectAccessReview).
+- **Namespace sync** mirrors namespaces from the primary based on a label selector.
+- **Webhook sync** mirrors admission and conversion webhooks for sharded API groups.
+- **CRD coexistence** (`forceAggregation: true`) overrides the kube-aggregator's auto-register controller so existing CRDs don't need removal.
 
 ## Repository Structure
 
 ```
-docs/                       Design documents
-deploy/poc/                 Kustomize directory for the Phase 1 PoC
-  kustomization.yaml        Kustomize config (image versions managed here)
-  namespace.yaml            tekton-apiserver namespace
-  kine.yaml                 Kine Deployment + Service (SQLite)
-  secondary-apiserver.yaml  Secondary kube-apiserver Deployment + Service
-  apiservice.yaml           APIService registrations (applied separately with sed)
-  test/                     Test resources (not part of kustomize base)
-    pipeline.yaml           Test Pipeline + PipelineRun for validation
-hack/                       Scripts
-  setup-poc.sh              Main orchestration (runs all steps)
-  setup-kind.sh             Creates kind cluster (docker/podman)
-  generate-certs.sh         Generates TLS certs + static token
-  install-tekton-crds.sh    Installs Tekton CRDs on the secondary
-  validate-poc.sh           End-to-end validation test
-  teardown-poc.sh           Cleanup
-  kubectl-secondary.sh      Shim for direct kubectl to secondary
-_output/                    (gitignored) Generated certs, downloaded releases
+operator/                          Kubebuilder operator (production codebase)
+  api/v1alpha1/                    CRD types (APIShard, NamespaceSync, WebhookSync)
+  cmd/                             Operator entrypoint
+  config/                          Kustomize (CRD, RBAC, manager, prometheus, samples)
+  internal/
+    aggregation/                   APIService reconciliation + conflict detection
+    certs/                         cert-manager integration
+    condition/                     Status condition helpers
+    controller/
+      apishard/                    Main reconciler
+      namespacesync/               Namespace mirroring controller
+      webhooksync/                 Webhook mirroring controller
+    resources/                     Resource builders (Kine, secondary, PostgreSQL, metrics, PDB, SCC)
+    secondary/                     Client for secondary API server
+  test/e2e/                        E2E test suites
+  Makefile                         Build, test, deploy targets
+docs/                              Design documents and load test reports
+deploy/loadtest/                   APIShard + TektonConfig manifests for load testing
+tools/generate-from-pipeline/      Generates realistic load-test PipelineRuns from Konflux pipelines
+hack/loadtest/                     Scripts for running storage load tests
 ```
 
-## Running the PoC
+## Running the Operator
+
+All commands run from the `operator/` directory:
 
 ```bash
-# Fresh kind cluster
-make poc           # Full setup from scratch
-make test          # Validate with a PipelineRun
-make clean         # Tear down
+# Install CRDs
+make install
 
-# On an existing cluster (e.g., one already running Konflux)
-make poc-existing  # Deploys secondary stack on current context
+# Run the operator locally (outside cluster, against current kubectl context)
+make run
+
+# Build and push the operator image
+make docker-build docker-push IMG=<your-registry>/kube-shard-operator:latest
+
+# Deploy the operator to a cluster
+make deploy IMG=<your-registry>/kube-shard-operator:latest
+
+# Uninstall
+make undeploy
+make uninstall
 ```
 
-### Existing Cluster Mode
+### Create an APIShard
 
-When `USE_EXISTING_CLUSTER=true`:
-- Kind cluster creation is skipped; the current kubectl context is used
-- The front-proxy CA is extracted from the `extension-apiserver-authentication` configmap in `kube-system` (works for any kubeadm-based cluster, including kind)
-- If Tekton CRDs already exist on the primary, they are **deleted** before registering APIService objects (they cannot coexist)
-- `SKIP_TEKTON_INSTALL=true` prevents re-installing the controller (existing one is restarted)
-- `MIRROR_NAMESPACES` specifies which namespaces to create on the secondary
+```yaml
+apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: APIShard
+metadata:
+  name: tekton-shard
+spec:
+  targetNamespace: kube-shard-operator
+  apiGroups:
+  - group: tekton.dev
+    versions: ["v1", "v1beta1", "v1alpha1"]
+  - group: resolution.tekton.dev
+    versions: ["v1beta1", "v1alpha1"]
+  storage:
+    type: InClusterPostgreSQL
+  namespaceSync:
+    labelSelector:
+      matchLabels:
+        konflux.dev/type: tenant
+  secondary:
+    replicas: 1
+  kine:
+    replicas: 1
+```
 
-## Interacting with the Secondary API Server
+## Running Tests
 
-Use the shim script for direct access to the secondary (bypassing aggregation):
+From the `operator/` directory:
 
 ```bash
-# List CRDs on the secondary
-./hack/kubectl-secondary.sh get crds
+# Unit tests
+make test
 
-# Get resources stored on the secondary
-./hack/kubectl-secondary.sh get pipelineruns -A
+# E2E tests (requires a running cluster)
+make test-e2e
 
-# Create a namespace on the secondary
-./hack/kubectl-secondary.sh create namespace my-namespace
+# Generate manifests and code after API changes
+make manifests generate
+
+# Lint
+make lint
 ```
 
 ## Key Technical Notes
 
-- kube-apiserver v1.31+ **disables anonymous auth** when `--authorization-mode=AlwaysAllow`. The PoC uses `--token-auth-file` for direct authentication.
-- The `v1alpha1.tekton.dev` APIService must be registered (not just `v1` and `v1beta1`). The Tekton controller's VerificationPolicy informer blocks all reconciliation if it can't list v1alpha1 resources.
-- TCP probes are used for liveness/readiness because HTTP health endpoints require authentication when anonymous auth is disabled.
-- The front-proxy CA is extracted from the kind control plane node -- this is what the secondary uses to trust identity headers from the main API server.
-- **Disabled admission plugins** (`--disable-admission-plugins=NamespaceLifecycle,ServiceAccount`):
-  - `NamespaceLifecycle`: Namespaces are mirrored from the primary, not authoritative on the secondary. This plugin would reject requests targeting namespaces that haven't been synced yet.
-  - `ServiceAccount`: All authentication happens on the primary; the secondary receives pre-authenticated identity via request headers. Enabling this plugin would require syncing ServiceAccount objects to the secondary.
-- **Image versions** are managed centrally in `deploy/poc/kustomization.yaml`. Override with `kustomize edit set image`.
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `USE_EXISTING_CLUSTER` | `false` | Skip kind creation, deploy on current kubectl context |
-| `SKIP_TEKTON_INSTALL` | `false` | Don't install Tekton controller (use existing) |
-| `KIND_CLUSTER_NAME` | `kube-shard-poc` | Name of the kind cluster to create/use |
-| `TEKTON_VERSION` | `v0.65.2` | Tekton Pipeline release to install |
-| `FRONT_PROXY_CA` | *(auto-detected)* | Path to the cluster's front-proxy CA cert |
-| `MIRROR_NAMESPACES` | `default` | Space-separated namespaces to create on secondary |
-| `SECONDARY_PORT` | `6444` | Local port for port-forward to secondary |
-| `KEEP_PORT_FWD` | `false` | Don't kill port-forward on exit (kubectl-secondary) |
+- **Disabled admission plugins** on the secondary (`NamespaceLifecycle`, `ServiceAccount`, `ResourceQuota`): namespaces are mirrored from the primary; SA tokens are handled by the main cluster; quota enforcement is intentionally not synced (see [docs/design.md](docs/design.md) for rationale).
+- **Webhook handling:** the operator transforms `clientConfig.service` references to `clientConfig.url` because the secondary has no Service objects in its store.
+- **CRD conversion webhooks** are transformed the same way during CRD sync to the secondary.
 
 ## Development Conventions
 
 - Go module: `github.com/konflux-ci/kube-shard`
-- Scripts in `hack/` should be self-documenting with a header comment block
-- Kubernetes manifests use Kustomize (`deploy/poc/kustomization.yaml`)
 - Generated/temporary files go in `_output/` (gitignored)
-- Environment variables provide configuration; all have sensible defaults
 - **Doc comments**: Every exported and unexported function/method must have a Go doc comment. The comment must start with the function name (e.g., `// BuildKineDeployment constructs ...`).
 - **Test assertions**: Use [gomega](https://onsi.github.io/gomega/) for all test assertions. Initialize with `g := NewGomegaWithT(t)` and use `g.Expect(...)` instead of raw `t.Error`/`t.Fatal` patterns.

@@ -101,9 +101,9 @@ spec:
   targetNamespace: kube-shard-operator
   apiGroups:
   - group: tekton.dev
-    versions: ["v1", "v1beta1"]
+    versions: ["v1", "v1beta1", "v1alpha1"]
   - group: resolution.tekton.dev
-    versions: ["v1beta1"]
+    versions: ["v1beta1", "v1alpha1"]
   storage:
     type: InClusterPostgreSQL
     inCluster:
@@ -368,12 +368,6 @@ make manifests generate
 # Run the operator locally (outside cluster)
 make run
 ```
-
-## Legacy PoC Scripts (Deprecated)
-
-The shell scripts in `hack/` and Kustomize manifests in `deploy/poc/` are the original proof-of-concept automation. They are kept for reference only. The operator supersedes them entirely.
-
-See [AGENTS.md](AGENTS.md) for details on the legacy PoC structure.
 
 ## License
 
