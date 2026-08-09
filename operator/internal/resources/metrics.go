@@ -89,7 +89,7 @@ func BuildSecondaryServiceMonitor(shard *kubeshardv1alpha1.APIShard) *monitoring
 		Spec: monitoringv1.ServiceMonitorSpec{
 			Selector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					LabelName:     "kube-apiserver",
+					LabelName:     NameAPIServer,
 					LabelInstance: shard.Name,
 				},
 			},

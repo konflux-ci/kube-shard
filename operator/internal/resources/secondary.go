@@ -32,7 +32,16 @@ import (
 const (
 	DefaultSecondaryImage = "registry.k8s.io/kube-apiserver:v1.36.2"
 	SecondaryPort         = 6443
+	tmpVolumeName         = "tmp"
+	varRunKubeVolumeName  = "var-run-kubernetes"
 )
+
+// SecondaryServiceAccountName returns the name of the ServiceAccount used by
+// the secondary apiserver pods. A dedicated SA isolates the auth-delegator
+// ClusterRoleBinding from the namespace's default SA.
+func SecondaryServiceAccountName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-apiserver", shard.Name)
+}
 
 // SecondaryDeploymentName returns the name of the secondary apiserver Deployment for the given shard.
 func SecondaryDeploymentName(shard *kubeshardv1alpha1.APIShard) string {
@@ -52,6 +61,30 @@ func SecondaryEndpoint(shard *kubeshardv1alpha1.APIShard) string {
 	)
 }
 
+// BuildSecondaryServiceAccount constructs the ServiceAccount for the secondary
+// kube-apiserver pods. The auth-delegator ClusterRoleBinding references this SA.
+func BuildSecondaryServiceAccount(shard *kubeshardv1alpha1.APIShard) *corev1.ServiceAccount {
+	name := SecondaryServiceAccountName(shard)
+	labels := map[string]string{
+		LabelName:      NameAPIServer,
+		LabelInstance:  shard.Name,
+		LabelManagedBy: ManagedByValue,
+		LabelComponent: ComponentAPIServer,
+	}
+
+	return &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ServiceAccount",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: shard.Spec.TargetNamespace,
+			Labels:    labels,
+		},
+	}
+}
+
 // BuildSecondaryDeployment constructs the secondary kube-apiserver Deployment resource
 // for the given shard, including TLS, authorization webhook, and request-header configuration.
 func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAllowedNames []string) *appsv1.Deployment {
@@ -66,7 +99,7 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 	}
 
 	labels := map[string]string{
-		LabelName:      "kube-apiserver",
+		LabelName:      NameAPIServer,
 		LabelInstance:  shard.Name,
 		LabelManagedBy: ManagedByValue,
 		LabelComponent: ComponentAPIServer,
@@ -155,18 +188,21 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					ServiceAccountName:            SecondaryServiceAccountName(shard),
 					TerminationGracePeriodSeconds: ptr.To(int64(65)),
+					SecurityContext:               APIServerPodSecurityContext(),
 					NodeSelector:                  shard.Spec.Secondary.NodeSelector,
 					Tolerations:                   shard.Spec.Secondary.Tolerations,
 					TopologySpreadConstraints:     shard.Spec.Secondary.TopologySpreadConstraints,
 					Affinity:                      BuildSecondaryAffinity(shard),
 					Containers: []corev1.Container{
 						{
-							Name:      "kube-apiserver",
-							Image:     image,
-							Command:   []string{"kube-apiserver"},
-							Args:      args,
-							Resources: shard.Spec.Secondary.Resources,
+							Name:            NameAPIServer,
+							Image:           image,
+							Command:         []string{NameAPIServer},
+							Args:            args,
+							Resources:       shard.Spec.Secondary.Resources,
+							SecurityContext: APIServerContainerSecurityContext(),
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "https",
@@ -189,6 +225,14 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 									Name:      "requestheader-ca",
 									MountPath: "/etc/kubernetes/requestheader",
 									ReadOnly:  true,
+								},
+								{
+									Name:      tmpVolumeName,
+									MountPath: "/tmp",
+								},
+								{
+									Name:      varRunKubeVolumeName,
+									MountPath: "/var/run/kubernetes",
 								},
 							},
 							ReadinessProbe: &corev1.Probe{
@@ -244,6 +288,18 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 								},
 							},
 						},
+						{
+							Name: tmpVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: varRunKubeVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
 					},
 				},
 			},
@@ -257,7 +313,7 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 func BuildSecondaryService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	name := SecondaryServiceName(shard)
 	labels := map[string]string{
-		LabelName:      "kube-apiserver",
+		LabelName:      NameAPIServer,
 		LabelInstance:  shard.Name,
 		LabelManagedBy: ManagedByValue,
 		LabelComponent: ComponentAPIServer,

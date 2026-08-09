@@ -117,11 +117,29 @@ spec:
 		Expect(err).NotTo(HaveOccurred(), "Failed to create APIShard")
 
 		By("waiting for APIShard to become Ready")
+		var lastDiagTime time.Time
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName,
 				"-o", "jsonpath={.status.phase}")
 			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
+
+			if output != "Ready" && (lastDiagTime.IsZero() || time.Since(lastDiagTime) > 60*time.Second) {
+				lastDiagTime = time.Now()
+				for _, diag := range [][]string{
+					{"get", "pods", "-n", shardNamespace, "-o", "wide"},
+					{"describe", "pods", "-n", shardNamespace},
+					{"get", "events", "-n", shardNamespace, "--sort-by=.lastTimestamp"},
+					{"get", "certificates", "-n", shardNamespace},
+					{"get", "issuers", "-n", shardNamespace},
+					{"get", "apishard", shardName, "-o", "yaml"},
+					{"logs", "-n", "kube-shard-operator", "-l", "control-plane=controller-manager", "--tail=50"},
+				} {
+					diagCmd := exec.Command("kubectl", diag...)
+					_, _ = logger.Run(diagCmd)
+				}
+			}
+
 			g.Expect(output).To(Equal("Ready"))
 		}, 5*time.Minute, 10*time.Second).Should(Succeed())
 

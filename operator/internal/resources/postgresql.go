@@ -112,7 +112,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 		}
 	}
 
-	var volumes []corev1.Volume
+	volumes := make([]corev1.Volume, 0, 2)
 	var vcts []corev1.PersistentVolumeClaim
 
 	persistence := persistenceFromShard(shard)
@@ -144,6 +144,13 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 		}
 	}
 
+	volumes = append(volumes, corev1.Volume{
+		Name: "tmp",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	})
+
 	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "apps/v1",
@@ -161,13 +168,12 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					SecurityContext: &corev1.PodSecurityContext{
-						FSGroup: ptr.To(int64(26)),
-					},
+					SecurityContext: RestrictedPodSecurityContext(),
 					Containers: []corev1.Container{
 						{
-							Name:  "postgresql",
-							Image: DefaultPostgreSQLImage,
+							Name:            "postgresql",
+							Image:           DefaultPostgreSQLImage,
+							SecurityContext: RestrictedContainerSecurityContext(),
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "tcp",
@@ -195,6 +201,10 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 								{
 									Name:      dataVolumeName,
 									MountPath: "/var/lib/postgresql/data",
+								},
+								{
+									Name:      "tmp",
+									MountPath: "/tmp",
 								},
 							},
 							ReadinessProbe: &corev1.Probe{

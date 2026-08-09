@@ -221,13 +221,24 @@ func TestBuildKineDeployment_SQLiteVolume(t *testing.T) {
 	deploy := BuildKineDeployment(shard)
 
 	volumes := deploy.Spec.Template.Spec.Volumes
-	g.Expect(volumes).To(HaveLen(1))
-	g.Expect(volumes[0].Name).To(Equal("data"))
-	g.Expect(volumes[0].EmptyDir).ToNot(BeNil())
+	g.Expect(volumes).To(HaveLen(2), "expected tmp + data volumes")
+
+	var dataVol, tmpVol *corev1.Volume
+	for i := range volumes {
+		switch volumes[i].Name {
+		case "data":
+			dataVol = &volumes[i]
+		case "tmp":
+			tmpVol = &volumes[i]
+		}
+	}
+	g.Expect(dataVol).ToNot(BeNil(), "expected data volume")
+	g.Expect(dataVol.EmptyDir).ToNot(BeNil())
+	g.Expect(tmpVol).ToNot(BeNil(), "expected tmp volume")
+	g.Expect(tmpVol.EmptyDir).ToNot(BeNil())
 
 	mounts := deploy.Spec.Template.Spec.Containers[0].VolumeMounts
-	g.Expect(mounts).To(HaveLen(1))
-	g.Expect(mounts[0].MountPath).To(Equal("/data"))
+	g.Expect(mounts).To(HaveLen(2), "expected /tmp + /data mounts")
 }
 
 func TestBuildKineDeployment_SchedulingFields(t *testing.T) {
@@ -375,4 +386,21 @@ func TestBuildKineDeployment_RollingUpdateStrategy(t *testing.T) {
 	g.Expect(strategy.RollingUpdate).ToNot(BeNil())
 	g.Expect(*strategy.RollingUpdate.MaxUnavailable).To(Equal(intstr.FromInt32(0)))
 	g.Expect(*strategy.RollingUpdate.MaxSurge).To(Equal(intstr.FromInt32(1)))
+}
+
+func TestBuildKineDeployment_SecurityContext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildKineDeployment(shard)
+
+	podSC := deploy.Spec.Template.Spec.SecurityContext
+	g.Expect(podSC).ToNot(BeNil())
+	g.Expect(*podSC.RunAsNonRoot).To(BeTrue())
+	g.Expect(podSC.RunAsUser).To(BeNil())
+	g.Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+	csc := deploy.Spec.Template.Spec.Containers[0].SecurityContext
+	g.Expect(csc).ToNot(BeNil())
+	g.Expect(*csc.AllowPrivilegeEscalation).To(BeFalse())
+	g.Expect(csc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
 }

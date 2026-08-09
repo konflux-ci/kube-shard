@@ -123,8 +123,15 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 
 	var envFrom []corev1.EnvFromSource
 	var env []corev1.EnvVar
-	var volumes []corev1.Volume
-	var volumeMounts []corev1.VolumeMount
+	volumes := []corev1.Volume{
+		{
+			Name:         tmpVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
+	}
+	volumeMounts := []corev1.VolumeMount{
+		{Name: tmpVolumeName, MountPath: "/tmp"},
+	}
 
 	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeSQLite {
 		volumes = append(volumes, corev1.Volume{
@@ -192,19 +199,21 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					SecurityContext:           RestrictedPodSecurityContext(),
 					NodeSelector:              shard.Spec.Kine.NodeSelector,
 					Tolerations:               shard.Spec.Kine.Tolerations,
 					TopologySpreadConstraints: shard.Spec.Kine.TopologySpreadConstraints,
 					Affinity:                  BuildKineAffinity(shard),
 					Containers: []corev1.Container{
 						{
-							Name:         NameKine,
-							Image:        image,
-							Args:         args,
-							Env:          env,
-							EnvFrom:      envFrom,
-							Resources:    shard.Spec.Kine.Resources,
-							VolumeMounts: volumeMounts,
+							Name:            NameKine,
+							Image:           image,
+							Args:            args,
+							Env:             env,
+							EnvFrom:         envFrom,
+							Resources:       shard.Spec.Kine.Resources,
+							SecurityContext: RestrictedContainerSecurityContext(),
+							VolumeMounts:    volumeMounts,
 							Ports: []corev1.ContainerPort{
 								{
 									Name:          "grpc",

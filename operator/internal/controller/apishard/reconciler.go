@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,11 +81,14 @@ var managedGVKs = []schema.GroupVersionKind{
 	{Group: "", Version: "v1", Kind: "Secret"},
 	{Group: "", Version: "v1", Kind: "ConfigMap"},
 	{Group: "", Version: "v1", Kind: "ServiceAccount"},
+	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
+	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "RoleBinding"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
 	{Group: "policy", Version: "v1", Kind: "PodDisruptionBudget"},
 	{Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor"},
+	{Group: "security.openshift.io", Version: "v1", Kind: "SecurityContextConstraints"},
 }
 
 // Reconciler reconciles an APIShard object.
@@ -93,6 +97,7 @@ type Reconciler struct {
 	Scheme                  *runtime.Scheme
 	ClientProvider          *secondary.ClientProvider
 	ServiceMonitorAvailable bool
+	SCCAvailable            bool
 }
 
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards,verbs=get;list;watch;create;update;patch;delete
@@ -112,7 +117,9 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=get;list;watch;create;update;patch;delete;use
 
 // Reconcile drives the desired state for a single APIShard resource. It provisions
 // the target namespace, storage backend, TLS certificates, auth configuration, and
@@ -207,9 +214,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
+	// Create dedicated ServiceAccount for the secondary apiserver
+	if err := r.reconcileSecondaryServiceAccount(ctx, tc, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile secondary service account")
+		return r.setErrorAndRequeue(ctx, &shard, err)
+	}
+
 	// Bind the secondary's ServiceAccount to system:auth-delegator
 	if err := r.reconcileAuthDelegator(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile auth-delegator binding")
+		return r.setErrorAndRequeue(ctx, &shard, err)
+	}
+
+	// On OpenShift, create a custom SCC that permits the kube-apiserver's
+	// file capabilities (the upstream binary has cap_net_bind_service set)
+	if err := r.reconcileAPIServerSCC(ctx, tc, &shard); err != nil {
+		logger.Error(err, "Failed to reconcile apiserver SCC")
 		return r.setErrorAndRequeue(ctx, &shard, err)
 	}
 
@@ -317,6 +337,14 @@ func (r *Reconciler) reconcileKine(ctx context.Context, tc *tracking.Client, sha
 	logger := log.FromContext(ctx)
 
 	deployment := resources.BuildKineDeployment(shard)
+	if !r.SCCAvailable {
+		// The Kine image sets USER nobody (non-numeric). Kubernetes cannot
+		// verify a non-numeric user against runAsNonRoot, so we supply the
+		// numeric UID explicitly. On OpenShift the SCC assigns a UID from
+		// the namespace range, making this unnecessary (and the hardcoded
+		// UID would be rejected by MustRunAsRange).
+		deployment.Spec.Template.Spec.SecurityContext.RunAsUser = ptr.To(int64(65534))
+	}
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("kine deployment: %w", err)
 	}
@@ -405,6 +433,13 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 	}
 
 	sts := resources.BuildPostgreSQLStatefulSet(shard)
+	if !r.SCCAvailable {
+		// The PostgreSQL image sets USER postgres (non-numeric). Kubernetes
+		// cannot verify a non-numeric user against runAsNonRoot, so we
+		// supply the numeric UID explicitly. On OpenShift the SCC assigns
+		// a UID from the namespace range, making this unnecessary.
+		sts.Spec.Template.Spec.SecurityContext.RunAsUser = ptr.To(int64(999))
+	}
 	if err := tc.ApplyOwned(ctx, sts); err != nil {
 		return fmt.Errorf("postgresql statefulset: %w", err)
 	}
@@ -563,6 +598,17 @@ contexts:
 	return nil
 }
 
+// reconcileSecondaryServiceAccount creates a dedicated ServiceAccount for the
+// secondary apiserver pods, isolating auth-delegator permissions from the
+// namespace's default SA.
+func (r *Reconciler) reconcileSecondaryServiceAccount(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	sa := resources.BuildSecondaryServiceAccount(shard)
+	if err := tc.ApplyOwned(ctx, sa); err != nil {
+		return fmt.Errorf("secondary service account: %w", err)
+	}
+	return nil
+}
+
 // reconcileAuthDelegator creates a ClusterRoleBinding that grants the secondary
 // API server's ServiceAccount the system:auth-delegator role. This allows the
 // secondary to delegate SubjectAccessReview calls to the primary cluster when
@@ -586,7 +632,7 @@ func (r *Reconciler) reconcileAuthDelegator(ctx context.Context, tc *tracking.Cl
 		Subjects: []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
-				Name:      "default",
+				Name:      resources.SecondaryServiceAccountName(shard),
 				Namespace: shard.Spec.TargetNamespace,
 			},
 		},
@@ -598,6 +644,33 @@ func (r *Reconciler) reconcileAuthDelegator(ctx context.Context, tc *tracking.Cl
 
 	if err := tc.ApplyOwned(ctx, crb); err != nil {
 		return fmt.Errorf("auth-delegator ClusterRoleBinding: %w", err)
+	}
+
+	return nil
+}
+
+// reconcileAPIServerSCC creates a custom SecurityContextConstraints, ClusterRole,
+// and RoleBinding on OpenShift clusters so the kube-apiserver pod can run without
+// the restricted-v2 SCC's allowPrivilegeEscalation=false constraint. On
+// non-OpenShift clusters this is a no-op.
+func (r *Reconciler) reconcileAPIServerSCC(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
+	if !r.SCCAvailable {
+		return nil
+	}
+
+	scc := resources.BuildAPIServerSCC(shard)
+	if err := tc.ApplyOwned(ctx, scc); err != nil {
+		return fmt.Errorf("apiserver SCC: %w", err)
+	}
+
+	cr := resources.BuildAPIServerSCCClusterRole(shard)
+	if err := tc.ApplyOwned(ctx, cr); err != nil {
+		return fmt.Errorf("apiserver SCC cluster role: %w", err)
+	}
+
+	rb := resources.BuildAPIServerSCCRoleBinding(shard)
+	if err := tc.ApplyOwned(ctx, rb); err != nil {
+		return fmt.Errorf("apiserver SCC role binding: %w", err)
 	}
 
 	return nil
