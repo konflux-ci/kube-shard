@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -141,18 +142,22 @@ func Reconcile(
 }
 
 // CheckAvailability verifies that all registered APIService objects have the
-// Available condition set to True by the kube-aggregator. Returns true when
-// every APIService is available, or false with a message describing the first
-// unavailable one.
+// Available condition set to True by the kube-aggregator. It returns three
+// values: available (true when every APIService is ready), a human-readable
+// message for the first unavailable one, and an error for transient failures
+// (non-NotFound Get errors) that should trigger a retry.
 func CheckAvailability(
 	ctx context.Context,
 	c client.Client,
 	registeredNames []string,
-) (bool, string) {
+) (bool, string, error) {
 	for _, name := range registeredNames {
 		apiSvc := &apiregistrationv1.APIService{}
 		if err := c.Get(ctx, types.NamespacedName{Name: name}, apiSvc); err != nil {
-			return false, fmt.Sprintf("APIService %s not found: %v", name, err)
+			if apierrors.IsNotFound(err) {
+				return false, fmt.Sprintf("APIService %s not found", name), nil
+			}
+			return false, "", fmt.Errorf("get APIService %s: %w", name, err)
 		}
 		available := false
 		for _, cond := range apiSvc.Status.Conditions {
@@ -161,7 +166,7 @@ func CheckAvailability(
 					return false, fmt.Sprintf(
 						"APIService %s not yet available: %s",
 						name, cond.Message,
-					)
+					), nil
 				}
 				available = true
 				break
@@ -170,10 +175,10 @@ func CheckAvailability(
 		if !available {
 			return false, fmt.Sprintf(
 				"APIService %s has no Available condition yet", name,
-			)
+			), nil
 		}
 	}
-	return true, ""
+	return true, "", nil
 }
 
 // DesiredAPIServiceNames returns the list of APIService names that should exist

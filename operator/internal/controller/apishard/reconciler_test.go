@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -1095,7 +1096,7 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		Expect(cond.Reason).To(Equal("NoConflicts"))
 	})
 
-	It("should sync CRDs to secondary and set CRDConflict=True when CRDs conflict", func() {
+	It("should detect conflict and set CRDSyncFailed when secondary client is unavailable", func() {
 		shard := createConflictShard("synced", "synced.example.com")
 		defer func() {
 			crd := &apiextensionsv1.CustomResourceDefinition{}
@@ -1138,7 +1139,127 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-		Expect(cond.Reason).To(Equal("CRDsSyncedToSecondary"))
+		Expect(cond.Reason).To(Equal("CRDSyncFailed"))
+		Expect(cond.Message).To(ContainSubstring("sync failed"))
+	})
+})
+
+var _ = Describe("checkAPIServiceAvailability", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	// newAvailabilityShard creates a minimal APIShard with optional CRDConflict and
+	// RegisteredAPIServices status fields for availability gate tests.
+	newAvailabilityShard := func(
+		suffix string,
+		conflictStatus metav1.ConditionStatus,
+		registeredAPIServices []string,
+	) *kubeshardv1alpha1.APIShard {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "test-avail-" + suffix,
+				Generation: 1,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-avail-" + suffix + "-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "example.com", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+			Status: kubeshardv1alpha1.APIShardStatus{
+				RegisteredAPIServices: registeredAPIServices,
+			},
+		}
+		if conflictStatus != "" {
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:   kubeshardv1alpha1.ConditionCRDConflictDetected,
+				Status: conflictStatus,
+				Reason: "Test",
+			})
+		}
+		return shard
+	}
+
+	It("should skip the check when CRDConflictDetected is not set", func() {
+		shard := newAvailabilityShard("no-conflict", "", nil)
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+	})
+
+	It("should skip the check when CRDConflictDetected is False", func() {
+		shard := newAvailabilityShard("conflict-false", metav1.ConditionFalse, nil)
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+	})
+
+	It("should set Provisioning and requeue when APIServices are not available", func() {
+		svcName := "v1.unavail-" + randString(6) + ".example.com"
+		shard := newAvailabilityShard("unavail", metav1.ConditionTrue, []string{svcName})
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+		Expect(shard.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseProvisioning))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionAPIServicesRegistered)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("APIServicesNotAvailable"))
+	})
+
+	It("should set AllAvailable and not requeue when APIServices are available", func() {
+		group := "avail" + randString(4) + ".example.com"
+		svcName := "v1." + group
+		svc := &apiregistrationv1.APIService{
+			ObjectMeta: metav1.ObjectMeta{Name: svcName},
+			Spec: apiregistrationv1.APIServiceSpec{
+				Group:                group,
+				Version:              "v1",
+				GroupPriorityMinimum: 100,
+				VersionPriority:      10,
+			},
+		}
+		Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+		svc.Status = apiregistrationv1.APIServiceStatus{
+			Conditions: []apiregistrationv1.APIServiceCondition{
+				{
+					Type:   apiregistrationv1.Available,
+					Status: apiregistrationv1.ConditionTrue,
+				},
+			},
+		}
+		Expect(k8sClient.Status().Update(ctx, svc)).To(Succeed())
+
+		shard := newAvailabilityShard("avail", metav1.ConditionTrue, []string{svcName})
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionAPIServicesRegistered)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("AllAvailable"))
 	})
 })
 
