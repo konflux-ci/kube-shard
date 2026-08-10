@@ -38,7 +38,7 @@ func newScheme() *runtime.Scheme {
 	return s
 }
 
-func newTestShard(forceAggregation bool) *kubeshardv1alpha1.APIShard {
+func newTestShard() *kubeshardv1alpha1.APIShard {
 	return &kubeshardv1alpha1.APIShard{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-shard",
@@ -49,17 +49,18 @@ func newTestShard(forceAggregation bool) *kubeshardv1alpha1.APIShard {
 			APIGroups: []kubeshardv1alpha1.APIGroupSpec{
 				{Group: "example.com", Versions: []string{"v1"}},
 			},
-			ForceAggregation: forceAggregation,
 		},
 	}
 }
 
-func TestReconcile_ForceAggregation_SetsAutomanagedLabel(t *testing.T) {
+// TestReconcile_SetsAutomanagedLabel verifies that Reconcile always sets the
+// automanaged=false label on APIService objects.
+func TestReconcile_SetsAutomanagedLabel(t *testing.T) {
 	scheme := newScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	shard := newTestShard(true)
+	shard := newTestShard()
 
-	result, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager", true)
+	result, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager")
 	if err != nil {
 		t.Fatalf("Reconcile failed: %v", err)
 	}
@@ -74,34 +75,17 @@ func TestReconcile_ForceAggregation_SetsAutomanagedLabel(t *testing.T) {
 
 	val, ok := apiSvc.Labels[AutoManagedLabelKey]
 	if !ok {
-		t.Fatal("expected automanaged label to be present when forceAggregation=true")
+		t.Fatal("expected automanaged label to be present")
 	}
 	if val != "false" {
 		t.Fatalf("expected automanaged label value 'false', got %q", val)
 	}
 }
 
-func TestReconcile_NoForce_DoesNotSetAutomanagedLabel(t *testing.T) {
-	scheme := newScheme()
-	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	shard := newTestShard(false)
-
-	_, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager", false)
-	if err != nil {
-		t.Fatalf("Reconcile failed: %v", err)
-	}
-
-	apiSvc := &apiregistrationv1.APIService{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "v1.example.com"}, apiSvc); err != nil {
-		t.Fatalf("failed to get APIService: %v", err)
-	}
-
-	if _, ok := apiSvc.Labels[AutoManagedLabelKey]; ok {
-		t.Fatal("expected automanaged label to NOT be present when forceAggregation=false")
-	}
-}
-
-func TestReconcile_ForceAggregation_OverridesExistingAutomanagedTrue(t *testing.T) {
+// TestReconcile_OverridesExistingAutomanagedTrue verifies that Reconcile overrides
+// an existing automanaged=true label set by the kube-aggregator auto-register
+// controller with automanaged=false.
+func TestReconcile_OverridesExistingAutomanagedTrue(t *testing.T) {
 	scheme := newScheme()
 
 	existing := &apiregistrationv1.APIService{
@@ -120,9 +104,9 @@ func TestReconcile_ForceAggregation_OverridesExistingAutomanagedTrue(t *testing.
 	}
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
-	shard := newTestShard(true)
+	shard := newTestShard()
 
-	_, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager", true)
+	_, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager")
 	if err != nil {
 		t.Fatalf("Reconcile failed: %v", err)
 	}
@@ -138,16 +122,18 @@ func TestReconcile_ForceAggregation_OverridesExistingAutomanagedTrue(t *testing.
 	}
 
 	if apiSvc.Spec.Service == nil {
-		t.Fatal("expected service field to be set after force reconcile")
+		t.Fatal("expected service field to be set after reconcile")
 	}
 }
 
+// TestReconcile_ServiceFieldAlwaysSet verifies that the APIService spec always
+// includes the Service reference pointing to the secondary API server.
 func TestReconcile_ServiceFieldAlwaysSet(t *testing.T) {
 	scheme := newScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	shard := newTestShard(false)
+	shard := newTestShard()
 
-	_, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager", false)
+	_, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager")
 	if err != nil {
 		t.Fatalf("Reconcile failed: %v", err)
 	}

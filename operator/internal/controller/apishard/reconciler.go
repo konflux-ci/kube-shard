@@ -804,7 +804,7 @@ func (r *Reconciler) reconcileAPIServices(ctx context.Context, shard *kubeshardv
 
 	caBundle := secret.Data["ca.crt"]
 
-	result, err := aggregation.Reconcile(ctx, r.Client, r.Scheme, shard, caBundle, shard.Status.RegisteredAPIServices, fieldManager, shard.Spec.ForceAggregation)
+	result, err := aggregation.Reconcile(ctx, r.Client, r.Scheme, shard, caBundle, shard.Status.RegisteredAPIServices, fieldManager)
 	if err != nil {
 		return err
 	}
@@ -1209,24 +1209,13 @@ func (r *Reconciler) reconcileCRDConflicts(ctx context.Context, shard *kubeshard
 		if syncErr := r.syncCRDsToSecondary(ctx, shard, conflictResult.ConflictingCRDs); syncErr != nil {
 			logger.Error(syncErr, "Failed to sync conflicting CRDs to secondary")
 		}
-		if shard.Spec.ForceAggregation {
-			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-				Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
-				Status:             metav1.ConditionTrue,
-				Reason:             "ForcedAggregation",
-				Message:            conflictResult.Message + "; aggregation forced via spec.forceAggregation",
-				ObservedGeneration: shard.Generation,
-			})
-		} else {
-			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-				Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
-				Status:             metav1.ConditionTrue,
-				Reason:             "CRDsExistOnPrimary",
-				Message:            conflictResult.Message,
-				ObservedGeneration: shard.Generation,
-			})
-			shard.Status.Phase = kubeshardv1alpha1.PhaseBlocked
-		}
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
+			Status:             metav1.ConditionTrue,
+			Reason:             "CRDsSyncedToSecondary",
+			Message:            conflictResult.Message + "; CRDs synced to secondary",
+			ObservedGeneration: shard.Generation,
+		})
 		return
 	}
 
@@ -1237,9 +1226,6 @@ func (r *Reconciler) reconcileCRDConflicts(ctx context.Context, shard *kubeshard
 		Message:            "No conflicting CRDs detected on primary",
 		ObservedGeneration: shard.Generation,
 	})
-	if shard.Status.Phase == kubeshardv1alpha1.PhaseBlocked {
-		shard.Status.Phase = ""
-	}
 }
 
 // updateHealthStatus checks deployment health, verifies APIService availability
@@ -1283,9 +1269,7 @@ func (r *Reconciler) updateHealthStatus(
 		return result, nil
 	}
 
-	if shard.Status.Phase != kubeshardv1alpha1.PhaseBlocked {
-		shard.Status.Phase = kubeshardv1alpha1.PhaseReady
-	}
+	shard.Status.Phase = kubeshardv1alpha1.PhaseReady
 	shard.Status.SecondaryEndpoint = resources.SecondaryEndpoint(shard)
 
 	if r.verifySecondaryAuth(ctx, shard) {
