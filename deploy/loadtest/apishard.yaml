@@ -21,7 +21,6 @@ spec:
     versions:
     - v1alpha1
   colocateComponents: true
-  forceAggregation: true
   kine:
     replicas: 3
     resources:

@@ -1058,7 +1058,7 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		}
 	})
 
-	createConflictShard := func(suffix, group string, forceAggregation bool) *kubeshardv1alpha1.APIShard {
+	createConflictShard := func(suffix, group string) *kubeshardv1alpha1.APIShard {
 		shard := &kubeshardv1alpha1.APIShard{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-conflict-" + suffix,
@@ -1076,20 +1076,15 @@ var _ = Describe("reconcileCRDConflicts", func() {
 						MatchLabels: map[string]string{"type": "tenant"},
 					},
 				},
-				ForceAggregation: forceAggregation,
 			},
 		}
 		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
-		// The CRD has +kubebuilder:default=true with omitempty, so false
-		// cannot survive an API round-trip via the Go client. Override
-		// in-memory to simulate the state from a YAML-applied manifest.
-		shard.Spec.ForceAggregation = forceAggregation
 		return shard
 	}
 
 	It("should set CRDConflict=False when no conflicting CRDs exist", func() {
-		shard := createConflictShard("none", "noconflict.example.com", false)
+		shard := createConflictShard("none", "noconflict.example.com")
 		defer func() { _ = k8sClient.Delete(ctx, shard) }()
 
 		reconciler.reconcileCRDConflicts(ctx, shard)
@@ -1100,11 +1095,11 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		Expect(cond.Reason).To(Equal("NoConflicts"))
 	})
 
-	It("should set phase to Blocked when CRDs conflict and forceAggregation is false", func() {
-		shard := createConflictShard("blocked", "blocked.example.com", false)
+	It("should sync CRDs to secondary and set CRDConflict=True when CRDs conflict", func() {
+		shard := createConflictShard("synced", "synced.example.com")
 		defer func() {
 			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "widgets.blocked.example.com"}, crd); err == nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gadgets.synced.example.com"}, crd); err == nil {
 				_ = k8sClient.Delete(ctx, crd)
 			}
 			_ = k8sClient.Delete(ctx, shard)
@@ -1112,57 +1107,10 @@ var _ = Describe("reconcileCRDConflicts", func() {
 
 		crd := &apiextensionsv1.CustomResourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "widgets.blocked.example.com",
+				Name: "gadgets.synced.example.com",
 			},
 			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-				Group: "blocked.example.com",
-				Names: apiextensionsv1.CustomResourceDefinitionNames{
-					Plural:   "widgets",
-					Singular: "widget",
-					Kind:     "Widget",
-				},
-				Scope: apiextensionsv1.NamespaceScoped,
-				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
-					{
-						Name:    "v1",
-						Served:  true,
-						Storage: true,
-						Schema: &apiextensionsv1.CustomResourceValidation{
-							OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-								Type: "object",
-							},
-						},
-					},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, crd)).To(Succeed())
-
-		reconciler.reconcileCRDConflicts(ctx, shard)
-
-		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
-		Expect(cond).NotTo(BeNil())
-		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-		Expect(cond.Reason).To(Equal("CRDsExistOnPrimary"))
-		Expect(shard.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseBlocked))
-	})
-
-	It("should set ForcedAggregation reason when forceAggregation is true", func() {
-		shard := createConflictShard("forced", "forced.example.com", true)
-		defer func() {
-			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gadgets.forced.example.com"}, crd); err == nil {
-				_ = k8sClient.Delete(ctx, crd)
-			}
-			_ = k8sClient.Delete(ctx, shard)
-		}()
-
-		crd := &apiextensionsv1.CustomResourceDefinition{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "gadgets.forced.example.com",
-			},
-			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-				Group: "forced.example.com",
+				Group: "synced.example.com",
 				Names: apiextensionsv1.CustomResourceDefinitionNames{
 					Plural:   "gadgets",
 					Singular: "gadget",
@@ -1190,8 +1138,7 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-		Expect(cond.Reason).To(Equal("ForcedAggregation"))
-		Expect(shard.Status.Phase).NotTo(Equal(kubeshardv1alpha1.PhaseBlocked))
+		Expect(cond.Reason).To(Equal("CRDsSyncedToSecondary"))
 	})
 })
 

@@ -8,7 +8,7 @@ kube-shard runs a secondary `kube-apiserver` on a Kubernetes cluster, backed by 
 
 Controllers and clients are unaware of the split -- they talk to the main kube-apiserver as usual, and aggregation transparently routes requests to the correct backend.
 
-**CRD coexistence:** By default (`forceAggregation: true`), the operator overrides the kube-aggregator's auto-register controller so that APIService objects for offloaded groups remain effective even when CRDs for the same groups exist on the primary. This means existing CRDs do not need to be removed before enabling aggregation. Set `forceAggregation: false` if you prefer the operator to block and require manual CRD removal instead.
+**CRD coexistence:** The operator overrides the kube-aggregator's auto-register controller so that APIService objects for offloaded groups remain effective even when CRDs for the same groups exist on the primary. This means existing CRDs do not need to be removed before enabling aggregation — conflicting CRDs are automatically synced to the secondary.
 
 ## Why
 
@@ -193,7 +193,7 @@ The operator defines three CRDs:
 | `kine.replicas` | Replica count for Kine |
 | `kine.image` | Container image for Kine |
 | `kine.resources` | CPU/memory requests and limits for the Kine container |
-| `forceAggregation` | Override kube-aggregator auto-register controller to allow CRD coexistence (default: `true`) |
+
 
 ## Resource Sizing and Kine Compaction
 
