@@ -1312,15 +1312,15 @@ func (r *Reconciler) updateHealthStatus(
 }
 
 // checkAPIServiceAvailability gates the Ready phase on APIService availability
-// when CRDs have been successfully synced to the secondary
-// (CRDConflictDetected=True with reason CRDsSyncedToSecondary). This prevents
-// the shard from reporting Ready before the kube-aggregator has verified that
-// the backend can serve the aggregated APIs — the race condition behind #59.
+// when CRDs have been synced to the secondary. This prevents the shard from
+// reporting Ready before the kube-aggregator has verified that the backend can
+// serve the aggregated APIs — the race condition behind #59.
 //
-// The gate is skipped when: no CRD conflict exists (greenfield path), the
-// conflict condition is False, or the CRD sync failed (CRDSyncFailed reason —
-// APIServices can never become Available without CRDs on the secondary). On
-// skip, any stale APIServicesRegistered condition is removed.
+// Three paths:
+//  1. CRDsSyncedToSecondary — gate on APIService availability.
+//  2. CRDSyncFailed — keep Provisioning and requeue so the sync is retried;
+//     the shard must not reach Ready because the secondary lacks the CRDs.
+//  3. No conflict / conflict False — greenfield path, skip the gate.
 func (r *Reconciler) checkAPIServiceAvailability(
 	ctx context.Context,
 	shard *kubeshardv1alpha1.APIShard,
@@ -1331,6 +1331,14 @@ func (r *Reconciler) checkAPIServiceAvailability(
 		shard.Status.Conditions,
 		kubeshardv1alpha1.ConditionCRDConflictDetected,
 	)
+
+	if crdConflict != nil && crdConflict.Status == metav1.ConditionTrue &&
+		crdConflict.Reason == "CRDSyncFailed" {
+		logger.V(1).Info("CRD sync failed, keeping Provisioning for retry")
+		shard.Status.Phase = kubeshardv1alpha1.PhaseProvisioning
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
 	shouldGate := crdConflict != nil &&
 		crdConflict.Status == metav1.ConditionTrue &&
 		crdConflict.Reason == "CRDsSyncedToSecondary"
