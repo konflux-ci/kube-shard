@@ -29,6 +29,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -58,6 +59,7 @@ var _ = BeforeSuite(func() {
 	Expect(kubeshardv1alpha1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(apiextensionsv1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(monitoringv1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(apiregistrationv1.AddToScheme(scheme.Scheme)).To(Succeed())
 
 	By("bootstrapping test environment")
 	crdPaths := []string{

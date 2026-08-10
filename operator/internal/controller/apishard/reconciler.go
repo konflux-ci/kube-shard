@@ -1208,6 +1208,14 @@ func (r *Reconciler) reconcileCRDConflicts(ctx context.Context, shard *kubeshard
 	if conflictResult != nil && conflictResult.HasConflict {
 		if syncErr := r.syncCRDsToSecondary(ctx, shard, conflictResult.ConflictingCRDs); syncErr != nil {
 			logger.Error(syncErr, "Failed to sync conflicting CRDs to secondary")
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
+				Status:             metav1.ConditionTrue,
+				Reason:             "CRDSyncFailed",
+				Message:            fmt.Sprintf("%s; sync failed: %v", conflictResult.Message, syncErr),
+				ObservedGeneration: shard.Generation,
+			})
+			return
 		}
 		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
 			Type:               kubeshardv1alpha1.ConditionCRDConflictDetected,
@@ -1228,11 +1236,13 @@ func (r *Reconciler) reconcileCRDConflicts(ctx context.Context, shard *kubeshard
 	})
 }
 
-// updateHealthStatus checks deployment health, verifies APIService availability
-// when CRDs have been synced to the secondary, reconciles sub-CRs when the
-// secondary is ready, and sets the SecondaryHealthy status condition. It returns
-// a non-zero RequeueAfter when the shard is still provisioning so the reconciler
-// retries without relying solely on watch predicates.
+// updateHealthStatus checks deployment health, reconciles sub-CRs when the
+// secondary is ready, verifies APIService availability when CRDs have been synced
+// to the secondary, and sets the SecondaryHealthy status condition. Sub-CR
+// reconciliation (NamespaceSync, WebhookSync) runs independently of the
+// availability gate because those controllers talk directly to the secondary. It
+// returns a non-zero RequeueAfter when the shard is still provisioning so the
+// reconciler retries without relying solely on watch predicates.
 func (r *Reconciler) updateHealthStatus(
 	ctx context.Context,
 	tc *tracking.Client,
@@ -1254,6 +1264,13 @@ func (r *Reconciler) updateHealthStatus(
 			Message:            "Secondary API server is not yet ready",
 			ObservedGeneration: shard.Generation,
 		})
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionAPIServicesRegistered,
+			Status:             metav1.ConditionFalse,
+			Reason:             "SecondaryUnhealthy",
+			Message:            "Cannot verify APIService availability while secondary is unhealthy",
+			ObservedGeneration: shard.Generation,
+		})
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
@@ -1265,11 +1282,6 @@ func (r *Reconciler) updateHealthStatus(
 		ObservedGeneration: shard.Generation,
 	})
 
-	if result := r.checkAPIServiceAvailability(ctx, shard); result.RequeueAfter > 0 {
-		return result, nil
-	}
-
-	shard.Status.Phase = kubeshardv1alpha1.PhaseReady
 	shard.Status.SecondaryEndpoint = resources.SecondaryEndpoint(shard)
 
 	if r.verifySecondaryAuth(ctx, shard) {
@@ -1284,6 +1296,11 @@ func (r *Reconciler) updateHealthStatus(
 		logger.V(1).Info("Secondary auth not ready yet, deferring sub-CR creation")
 	}
 
+	if result, err := r.checkAPIServiceAvailability(ctx, shard); err != nil || result.RequeueAfter > 0 {
+		return result, err
+	}
+
+	shard.Status.Phase = kubeshardv1alpha1.PhaseReady
 	return ctrl.Result{}, nil
 }
 
@@ -1298,7 +1315,7 @@ func (r *Reconciler) updateHealthStatus(
 func (r *Reconciler) checkAPIServiceAvailability(
 	ctx context.Context,
 	shard *kubeshardv1alpha1.APIShard,
-) ctrl.Result {
+) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	crdConflict := meta.FindStatusCondition(
@@ -1306,12 +1323,15 @@ func (r *Reconciler) checkAPIServiceAvailability(
 		kubeshardv1alpha1.ConditionCRDConflictDetected,
 	)
 	if crdConflict == nil || crdConflict.Status != metav1.ConditionTrue {
-		return ctrl.Result{}
+		return ctrl.Result{}, nil
 	}
 
-	available, unavailMsg := aggregation.CheckAvailability(
+	available, unavailMsg, err := aggregation.CheckAvailability(
 		ctx, r.Client, shard.Status.RegisteredAPIServices,
 	)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("check APIService availability: %w", err)
+	}
 	if !available {
 		logger.V(1).Info("APIServices not yet available, keeping Provisioning",
 			"detail", unavailMsg)
@@ -1323,7 +1343,7 @@ func (r *Reconciler) checkAPIServiceAvailability(
 			Message:            unavailMsg,
 			ObservedGeneration: shard.Generation,
 		})
-		return ctrl.Result{RequeueAfter: 10 * time.Second}
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
 	meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
@@ -1333,7 +1353,7 @@ func (r *Reconciler) checkAPIServiceAvailability(
 		Message:            "All APIServices are available via aggregation",
 		ObservedGeneration: shard.Generation,
 	})
-	return ctrl.Result{}
+	return ctrl.Result{}, nil
 }
 
 // checkDeploymentHealth returns true when both the Kine and secondary API server

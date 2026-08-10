@@ -18,6 +18,7 @@ package aggregation
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -27,6 +28,7 @@ import (
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 )
@@ -179,7 +181,8 @@ func TestCheckAvailability_AllAvailable(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
 
-	ok, msg := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeTrue())
 	g.Expect(msg).To(BeEmpty())
 }
@@ -204,7 +207,8 @@ func TestCheckAvailability_NotAvailable(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
 
-	ok, msg := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeFalse())
 	g.Expect(msg).To(ContainSubstring("not yet available"))
 	g.Expect(msg).To(ContainSubstring("endpoints not found"))
@@ -221,19 +225,21 @@ func TestCheckAvailability_NoCondition(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
 
-	ok, msg := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeFalse())
 	g.Expect(msg).To(ContainSubstring("no Available condition"))
 }
 
 // TestCheckAvailability_Missing verifies that CheckAvailability returns false
-// when the APIService object does not exist.
+// with no error when the APIService object does not exist (NotFound).
 func TestCheckAvailability_Missing(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	ok, msg := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeFalse())
 	g.Expect(msg).To(ContainSubstring("not found"))
 }
@@ -245,7 +251,28 @@ func TestCheckAvailability_EmptyList(t *testing.T) {
 	scheme := newScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	ok, msg := CheckAvailability(context.Background(), c, nil)
+	ok, msg, err := CheckAvailability(context.Background(), c, nil)
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeTrue())
+	g.Expect(msg).To(BeEmpty())
+}
+
+// TestCheckAvailability_TransientGetError verifies that CheckAvailability
+// returns an error (not a false-positive "not found") for non-NotFound Get
+// failures such as network timeouts.
+func TestCheckAvailability_TransientGetError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	scheme := newScheme()
+	transientErr := fmt.Errorf("connection refused")
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return transientErr
+		},
+	}).Build()
+
+	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err).To(MatchError(ContainSubstring("connection refused")))
+	g.Expect(ok).To(BeFalse())
 	g.Expect(msg).To(BeEmpty())
 }
