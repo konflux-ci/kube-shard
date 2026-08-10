@@ -1154,11 +1154,13 @@ var _ = Describe("checkAPIServiceAvailability", func() {
 		}
 	})
 
-	// newAvailabilityShard creates a minimal APIShard with optional CRDConflict and
-	// RegisteredAPIServices status fields for availability gate tests.
+	// newAvailabilityShard creates a minimal APIShard with optional CRDConflict
+	// condition (status + reason) and RegisteredAPIServices for availability
+	// gate tests.
 	newAvailabilityShard := func(
 		suffix string,
 		conflictStatus metav1.ConditionStatus,
+		conflictReason string,
 		registeredAPIServices []string,
 	) *kubeshardv1alpha1.APIShard {
 		shard := &kubeshardv1alpha1.APIShard{
@@ -1188,31 +1190,50 @@ var _ = Describe("checkAPIServiceAvailability", func() {
 			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
 				Type:   kubeshardv1alpha1.ConditionCRDConflictDetected,
 				Status: conflictStatus,
-				Reason: "Test",
+				Reason: conflictReason,
 			})
 		}
 		return shard
 	}
 
-	It("should skip the check when CRDConflictDetected is not set", func() {
-		shard := newAvailabilityShard("no-conflict", "", nil)
+	It("should skip the check and remove stale condition when no CRDConflict", func() {
+		shard := newAvailabilityShard("no-conflict", "", "", nil)
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:   kubeshardv1alpha1.ConditionAPIServicesRegistered,
+			Status: metav1.ConditionFalse,
+			Reason: "SecondaryUnhealthy",
+		})
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionAPIServicesRegistered)
+		Expect(cond).To(BeNil(), "stale condition should be removed on skip path")
+	})
+
+	It("should skip the check when CRDConflictDetected is False", func() {
+		shard := newAvailabilityShard("conflict-false", metav1.ConditionFalse, "NoConflicts", nil)
 
 		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.RequeueAfter).To(BeZero())
 	})
 
-	It("should skip the check when CRDConflictDetected is False", func() {
-		shard := newAvailabilityShard("conflict-false", metav1.ConditionFalse, nil)
+	It("should skip the check when CRDConflict reason is CRDSyncFailed", func() {
+		shard := newAvailabilityShard("sync-failed", metav1.ConditionTrue, "CRDSyncFailed", nil)
 
 		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.RequeueAfter).To(BeZero())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionAPIServicesRegistered)
+		Expect(cond).To(BeNil(), "condition should be removed when sync failed")
 	})
 
 	It("should set Provisioning and requeue when APIServices are not available", func() {
 		svcName := "v1.unavail-" + randString(6) + ".example.com"
-		shard := newAvailabilityShard("unavail", metav1.ConditionTrue, []string{svcName})
+		shard := newAvailabilityShard("unavail", metav1.ConditionTrue, "CRDsSyncedToSecondary", []string{svcName})
 
 		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
 		Expect(err).NotTo(HaveOccurred())
@@ -1250,7 +1271,7 @@ var _ = Describe("checkAPIServiceAvailability", func() {
 		}
 		Expect(k8sClient.Status().Update(ctx, svc)).To(Succeed())
 
-		shard := newAvailabilityShard("avail", metav1.ConditionTrue, []string{svcName})
+		shard := newAvailabilityShard("avail", metav1.ConditionTrue, "CRDsSyncedToSecondary", []string{svcName})
 
 		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
 		Expect(err).NotTo(HaveOccurred())

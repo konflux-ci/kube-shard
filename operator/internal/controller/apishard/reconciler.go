@@ -1264,13 +1264,20 @@ func (r *Reconciler) updateHealthStatus(
 			Message:            "Secondary API server is not yet ready",
 			ObservedGeneration: shard.Generation,
 		})
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionAPIServicesRegistered,
-			Status:             metav1.ConditionFalse,
-			Reason:             "SecondaryUnhealthy",
-			Message:            "Cannot verify APIService availability while secondary is unhealthy",
-			ObservedGeneration: shard.Generation,
-		})
+		crdConflict := meta.FindStatusCondition(
+			shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionCRDConflictDetected,
+		)
+		if crdConflict != nil && crdConflict.Status == metav1.ConditionTrue &&
+			crdConflict.Reason == "CRDsSyncedToSecondary" {
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:               kubeshardv1alpha1.ConditionAPIServicesRegistered,
+				Status:             metav1.ConditionFalse,
+				Reason:             "SecondaryUnhealthy",
+				Message:            "Cannot verify APIService availability while secondary is unhealthy",
+				ObservedGeneration: shard.Generation,
+			})
+		}
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
@@ -1305,13 +1312,15 @@ func (r *Reconciler) updateHealthStatus(
 }
 
 // checkAPIServiceAvailability gates the Ready phase on APIService availability
-// when CRDs have been synced to the secondary (CRDConflictDetected=True). This
-// prevents the shard from reporting Ready before the kube-aggregator has verified
-// that the backend can serve the aggregated APIs — the race condition behind #59.
+// when CRDs have been successfully synced to the secondary
+// (CRDConflictDetected=True with reason CRDsSyncedToSecondary). This prevents
+// the shard from reporting Ready before the kube-aggregator has verified that
+// the backend can serve the aggregated APIs — the race condition behind #59.
 //
-// When no CRDs exist on the primary yet, the APIServices may legitimately report
-// Available=False because the secondary has no CRDs installed; in that case the
-// check is skipped so the shard can reach Ready normally.
+// The gate is skipped when: no CRD conflict exists (greenfield path), the
+// conflict condition is False, or the CRD sync failed (CRDSyncFailed reason —
+// APIServices can never become Available without CRDs on the secondary). On
+// skip, any stale APIServicesRegistered condition is removed.
 func (r *Reconciler) checkAPIServiceAvailability(
 	ctx context.Context,
 	shard *kubeshardv1alpha1.APIShard,
@@ -1322,7 +1331,14 @@ func (r *Reconciler) checkAPIServiceAvailability(
 		shard.Status.Conditions,
 		kubeshardv1alpha1.ConditionCRDConflictDetected,
 	)
-	if crdConflict == nil || crdConflict.Status != metav1.ConditionTrue {
+	shouldGate := crdConflict != nil &&
+		crdConflict.Status == metav1.ConditionTrue &&
+		crdConflict.Reason == "CRDsSyncedToSecondary"
+	if !shouldGate {
+		meta.RemoveStatusCondition(
+			&shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionAPIServicesRegistered,
+		)
 		return ctrl.Result{}, nil
 	}
 
