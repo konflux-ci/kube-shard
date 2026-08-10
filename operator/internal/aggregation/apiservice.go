@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -141,31 +140,47 @@ func Reconcile(
 	return &ReconcileResult{Registered: desired}, nil
 }
 
-// CheckAvailability verifies that all registered APIService objects have the
-// Available condition set to True by the kube-aggregator. It returns three
-// values: available (true when every APIService is ready), a human-readable
-// message for the first unavailable one, and an error for transient failures
-// (non-NotFound Get errors) that should trigger a retry.
+// CheckAvailability discovers all APIService objects owned by the given shard
+// (via owner references) and verifies that each has the Available condition set
+// to True by the kube-aggregator. Owner references are used for discovery
+// instead of deriving names from the spec so the check remains correct even if
+// the APIService naming convention changes.
+//
+// It returns three values: available (true when every owned APIService is
+// ready), a human-readable message for the first unavailable one, and an error
+// for transient List failures that should trigger a retry.
 func CheckAvailability(
 	ctx context.Context,
 	c client.Client,
-	registeredNames []string,
+	ownerUID types.UID,
 ) (bool, string, error) {
-	for _, name := range registeredNames {
-		apiSvc := &apiregistrationv1.APIService{}
-		if err := c.Get(ctx, types.NamespacedName{Name: name}, apiSvc); err != nil {
-			if apierrors.IsNotFound(err) {
-				return false, fmt.Sprintf("APIService %s not found", name), nil
+	var apiServices apiregistrationv1.APIServiceList
+	if err := c.List(ctx, &apiServices); err != nil {
+		return false, "", fmt.Errorf("list APIServices: %w", err)
+	}
+
+	var owned []apiregistrationv1.APIService
+	for i := range apiServices.Items {
+		for _, ref := range apiServices.Items[i].OwnerReferences {
+			if ref.UID == ownerUID {
+				owned = append(owned, apiServices.Items[i])
+				break
 			}
-			return false, "", fmt.Errorf("get APIService %s: %w", name, err)
 		}
+	}
+
+	if len(owned) == 0 {
+		return false, "no APIServices owned by shard", nil
+	}
+
+	for _, svc := range owned {
 		available := false
-		for _, cond := range apiSvc.Status.Conditions {
+		for _, cond := range svc.Status.Conditions {
 			if cond.Type == apiregistrationv1.Available {
 				if cond.Status != apiregistrationv1.ConditionTrue {
 					return false, fmt.Sprintf(
 						"APIService %s not yet available: %s",
-						name, cond.Message,
+						svc.Name, cond.Message,
 					), nil
 				}
 				available = true
@@ -174,17 +189,11 @@ func CheckAvailability(
 		}
 		if !available {
 			return false, fmt.Sprintf(
-				"APIService %s has no Available condition yet", name,
+				"APIService %s has no Available condition yet", svc.Name,
 			), nil
 		}
 	}
 	return true, "", nil
-}
-
-// DesiredAPIServiceNames returns the list of APIService names that should exist
-// for the given shard based on its spec.
-func DesiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {
-	return desiredAPIServiceNames(shard)
 }
 
 func desiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {
