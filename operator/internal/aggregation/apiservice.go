@@ -46,10 +46,9 @@ const AutoManagedLabelKey = "kube-aggregator.kubernetes.io/automanaged"
 // Reconcile creates or updates APIService objects for the desired API groups and
 // deletes any previously registered APIServices that are no longer desired.
 //
-// When forceAggregation is true, the operator explicitly sets the automanaged
-// label to "false" via SSA with ForceOwnership. This prevents the kube-aggregator
-// auto-register controller from reclaiming the APIService when CRDs exist on the
-// primary for the same API group.
+// Each APIService is labelled automanaged=false via SSA with ForceOwnership so
+// the kube-aggregator auto-register controller does not reclaim it when CRDs
+// exist on the primary for the same API group.
 //
 // Orphan detection uses the previouslyRegistered list (from APIShard status) rather
 // than labels or owner references — this prevents an attacker with APIService write
@@ -62,7 +61,6 @@ func Reconcile(
 	caBundle []byte,
 	previouslyRegistered []string,
 	fieldManager string,
-	forceAggregation bool,
 ) (*ReconcileResult, error) {
 	logger := log.FromContext(ctx)
 
@@ -82,11 +80,9 @@ func Reconcile(
 
 			objMeta := metav1.ObjectMeta{
 				Name: name,
-			}
-			if forceAggregation {
-				objMeta.Labels = map[string]string{
+				Labels: map[string]string{
 					AutoManagedLabelKey: "false",
-				}
+				},
 			}
 
 			apiSvc := &apiregistrationv1.APIService{
@@ -144,10 +140,60 @@ func Reconcile(
 	return &ReconcileResult{Registered: desired}, nil
 }
 
-// DesiredAPIServiceNames returns the list of APIService names that should exist
-// for the given shard based on its spec.
-func DesiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {
-	return desiredAPIServiceNames(shard)
+// CheckAvailability discovers all APIService objects owned by the given shard
+// (via owner references) and verifies that each has the Available condition set
+// to True by the kube-aggregator. Owner references are used for discovery
+// instead of deriving names from the spec so the check remains correct even if
+// the APIService naming convention changes.
+//
+// It returns three values: available (true when every owned APIService is
+// ready), a human-readable message for the first unavailable one, and an error
+// for transient List failures that should trigger a retry.
+func CheckAvailability(
+	ctx context.Context,
+	c client.Client,
+	ownerUID types.UID,
+) (bool, string, error) {
+	var apiServices apiregistrationv1.APIServiceList
+	if err := c.List(ctx, &apiServices); err != nil {
+		return false, "", fmt.Errorf("list APIServices: %w", err)
+	}
+
+	var owned []apiregistrationv1.APIService
+	for i := range apiServices.Items {
+		for _, ref := range apiServices.Items[i].OwnerReferences {
+			if ref.UID == ownerUID {
+				owned = append(owned, apiServices.Items[i])
+				break
+			}
+		}
+	}
+
+	if len(owned) == 0 {
+		return false, "no APIServices owned by shard", nil
+	}
+
+	for _, svc := range owned {
+		available := false
+		for _, cond := range svc.Status.Conditions {
+			if cond.Type == apiregistrationv1.Available {
+				if cond.Status != apiregistrationv1.ConditionTrue {
+					return false, fmt.Sprintf(
+						"APIService %s not yet available: %s",
+						svc.Name, cond.Message,
+					), nil
+				}
+				available = true
+				break
+			}
+		}
+		if !available {
+			return false, fmt.Sprintf(
+				"APIService %s has no Available condition yet", svc.Name,
+			), nil
+		}
+	}
+	return true, "", nil
 }
 
 func desiredAPIServiceNames(shard *kubeshardv1alpha1.APIShard) []string {

@@ -88,14 +88,13 @@ var _ = Describe("Force Aggregation", Ordered, func() {
 		_, err = logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRD on primary")
 
-		By("creating the APIShard with forceAggregation enabled")
+		By("creating the APIShard")
 		apishardYAML := fmt.Sprintf(`apiVersion: kube-shard.konflux-ci.dev/v1alpha1
 kind: APIShard
 metadata:
   name: %s
 spec:
   targetNamespace: %s
-  forceAggregation: true
   apiGroups:
     - group: forceagg.example.com
       versions:
@@ -200,24 +199,24 @@ spec:
 		_, _ = logger.Run(cmd)
 	})
 
-	It("should not block when a conflicting CRD already exists on the primary", func() {
-		By("verifying CRDConflict condition with ForcedAggregation reason")
+	It("should sync CRDs and stay Ready when a conflicting CRD exists on the primary", func() {
+		By("verifying CRDConflict condition with CRDsSyncedToSecondary reason")
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "apishard", shardName,
 				"-o", "jsonpath={.status.conditions[?(@.type=='CRDConflict')].reason}")
 			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(Equal("ForcedAggregation"),
-				"CRDConflict reason should be ForcedAggregation when force is enabled")
+			g.Expect(output).To(Equal("CRDsSyncedToSecondary"),
+				"CRDConflict reason should be CRDsSyncedToSecondary")
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-		By("verifying phase is NOT Blocked (forceAggregation prevents blocking)")
+		By("verifying phase is Ready despite CRD conflict")
 		cmd := exec.Command("kubectl", "get", "apishard", shardName,
 			"-o", "jsonpath={.status.phase}")
 		output, err := logger.Run(cmd)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(output).NotTo(Equal("Blocked"),
-			"Phase should not be Blocked when forceAggregation is true")
+		Expect(output).To(Equal("Ready"),
+			"Phase should be Ready — CRD conflicts are handled automatically")
 	})
 
 	It("should label the APIService as automanaged=false", func() {
@@ -227,7 +226,7 @@ spec:
 			output, err := logger.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("false"),
-				"APIService should have automanaged=false when forceAggregation is enabled")
+				"APIService should always have automanaged=false")
 		}, 30*time.Second, 5*time.Second).Should(Succeed())
 	})
 
@@ -349,7 +348,7 @@ current-context: default
 			g.Expect(err).NotTo(HaveOccurred(),
 				"Failed to query Gadget directly on secondary")
 			g.Expect(output).To(Equal("hello from force-aggregation e2e"),
-				"Gadget should exist directly on the secondary, proving aggregation works with forceAggregation")
+				"Gadget should exist directly on the secondary, proving aggregation works")
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 })

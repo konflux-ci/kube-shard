@@ -44,7 +44,6 @@ const (
 
 const (
 	PhaseProvisioning = "Provisioning"
-	PhaseBlocked      = "Blocked"
 	PhaseReady        = "Ready"
 	PhaseDegraded     = "Degraded"
 	PhaseError        = "Error"

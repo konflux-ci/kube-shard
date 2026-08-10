@@ -461,7 +461,6 @@ metadata:
   name: %[1]s
 spec:
   targetNamespace: %[2]s
-  forceAggregation: true
   apiGroups:
     - group: %[3]s
       versions:
@@ -488,7 +487,6 @@ metadata:
   name: %[1]s
 spec:
   targetNamespace: %[2]s
-  forceAggregation: true
   apiGroups:
     - group: %[3]s
       versions:

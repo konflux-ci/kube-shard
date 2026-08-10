@@ -80,16 +80,6 @@ spec:
                   divergent nodeSelector or tolerations (e.g., pinning only one
                   component to infra nodes), co-location will be silently defeated.
                 type: boolean
-              forceAggregation:
-                default: true
-                description: |-
-                  ForceAggregation, when true, causes the operator to override the
-                  kube-aggregator auto-register controller by explicitly marking
-                  APIService objects as not auto-managed. This allows aggregation
-                  to work even when CRDs exist on the primary for the same API groups.
-                  When false, the operator reports the conflict and sets phase to
-                  Blocked, leaving remediation to the user.
-                type: boolean
               kine:
                 description: |-
                   KineSpec configures the Kine deployment that translates etcd gRPC calls

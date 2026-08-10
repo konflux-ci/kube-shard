@@ -29,7 +29,7 @@ Key properties:
 - **Authorization** is delegated to the main cluster via `--authorization-mode=Webhook` (SubjectAccessReview).
 - **Namespace sync** mirrors namespaces from the primary based on a label selector.
 - **Webhook sync** mirrors admission and conversion webhooks for sharded API groups.
-- **CRD coexistence** (`forceAggregation: true`) overrides the kube-aggregator's auto-register controller so existing CRDs don't need removal.
+- **CRD coexistence** -- the operator overrides the kube-aggregator's auto-register controller so existing CRDs don't need removal. Conflicting CRDs are automatically synced to the secondary.
 
 ## Repository Structure
 
