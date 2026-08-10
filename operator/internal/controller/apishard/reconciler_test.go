@@ -1218,15 +1218,13 @@ var _ = Describe("checkAPIServiceAvailability", func() {
 		Expect(result.RequeueAfter).To(BeZero())
 	})
 
-	It("should skip the check when CRDConflict reason is CRDSyncFailed", func() {
+	It("should keep Provisioning and requeue when CRD sync failed", func() {
 		shard := newAvailabilityShard("sync-failed", metav1.ConditionTrue, "CRDSyncFailed")
 
 		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.RequeueAfter).To(BeZero())
-
-		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionAPIServicesRegistered)
-		Expect(cond).To(BeNil(), "condition should be removed when sync failed")
+		Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+		Expect(shard.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseProvisioning))
 	})
 
 	It("should set Provisioning and requeue when no APIServices are owned", func() {
