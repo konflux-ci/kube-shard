@@ -170,6 +170,8 @@ func TestIgnoreStatusUpdatesPredicate_LabelChange(t *testing.T) {
 
 // --- APIServiceAvailabilityPredicate tests ---
 
+// newAPIService creates an APIService fixture with the given Available condition
+// status. An empty status means no Available condition is set.
 func newAPIService(
 	available apiregistrationv1.ConditionStatus,
 ) *apiregistrationv1.APIService {
@@ -186,6 +188,8 @@ func newAPIService(
 	return svc
 }
 
+// TestAPIServiceAvailabilityPredicate_TriggersOnAvailableChange verifies that the
+// predicate fires when the Available condition changes from False to True.
 func TestAPIServiceAvailabilityPredicate_TriggersOnAvailableChange(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -200,6 +204,8 @@ func TestAPIServiceAvailabilityPredicate_TriggersOnAvailableChange(t *testing.T)
 		"should trigger when Available changes from False to True")
 }
 
+// TestAPIServiceAvailabilityPredicate_IgnoresNoChange verifies that the predicate
+// does not fire when the Available condition status stays the same.
 func TestAPIServiceAvailabilityPredicate_IgnoresNoChange(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -214,6 +220,8 @@ func TestAPIServiceAvailabilityPredicate_IgnoresNoChange(t *testing.T) {
 		"should not trigger when Available stays True")
 }
 
+// TestAPIServiceAvailabilityPredicate_TriggersOnGenerationChange verifies that the
+// predicate fires on spec changes (generation bump), same as IgnoreStatusUpdatesPredicate.
 func TestAPIServiceAvailabilityPredicate_TriggersOnGenerationChange(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -229,6 +237,8 @@ func TestAPIServiceAvailabilityPredicate_TriggersOnGenerationChange(t *testing.T
 		"should trigger on generation change")
 }
 
+// TestAPIServiceAvailabilityPredicate_TriggersOnNewCondition verifies that the
+// predicate fires when the Available condition appears for the first time.
 func TestAPIServiceAvailabilityPredicate_TriggersOnNewCondition(t *testing.T) {
 	g := NewGomegaWithT(t)
 

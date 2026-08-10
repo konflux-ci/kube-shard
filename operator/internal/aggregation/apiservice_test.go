@@ -174,6 +174,8 @@ func init() {
 	_ = client.Apply //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
 }
 
+// TestCheckAvailability_AllAvailable verifies that CheckAvailability returns true
+// when every registered APIService has Available=True.
 func TestCheckAvailability_AllAvailable(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
@@ -196,6 +198,8 @@ func TestCheckAvailability_AllAvailable(t *testing.T) {
 	g.Expect(msg).To(BeEmpty())
 }
 
+// TestCheckAvailability_NotAvailable verifies that CheckAvailability returns false
+// with a descriptive message when an APIService has Available=False.
 func TestCheckAvailability_NotAvailable(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
@@ -220,6 +224,8 @@ func TestCheckAvailability_NotAvailable(t *testing.T) {
 	g.Expect(msg).To(ContainSubstring("endpoints not found"))
 }
 
+// TestCheckAvailability_NoCondition verifies that CheckAvailability returns false
+// when the APIService exists but has no Available condition set.
 func TestCheckAvailability_NoCondition(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
@@ -234,6 +240,8 @@ func TestCheckAvailability_NoCondition(t *testing.T) {
 	g.Expect(msg).To(ContainSubstring("no Available condition"))
 }
 
+// TestCheckAvailability_Missing verifies that CheckAvailability returns false
+// when the APIService object does not exist.
 func TestCheckAvailability_Missing(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
@@ -244,6 +252,8 @@ func TestCheckAvailability_Missing(t *testing.T) {
 	g.Expect(msg).To(ContainSubstring("not found"))
 }
 
+// TestCheckAvailability_EmptyList verifies that CheckAvailability returns true
+// when the registered names list is empty (vacuous truth).
 func TestCheckAvailability_EmptyList(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
