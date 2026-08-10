@@ -1343,7 +1343,7 @@ func (r *Reconciler) checkAPIServiceAvailability(
 	}
 
 	available, unavailMsg, err := aggregation.CheckAvailability(
-		ctx, r.Client, shard.Status.RegisteredAPIServices,
+		ctx, r.Client, shard.UID,
 	)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("check APIService availability: %w", err)

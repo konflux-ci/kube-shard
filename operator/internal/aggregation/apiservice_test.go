@@ -162,52 +162,58 @@ func init() {
 	_ = client.Apply //nolint:staticcheck // migrating to client.Client.Apply() requires ApplyConfiguration types
 }
 
+const testOwnerUID = types.UID("test-owner-uid")
+
+// newOwnedAPIService creates an APIService with an owner reference pointing to
+// testOwnerUID for use in CheckAvailability tests.
+func newOwnedAPIService(name string, conditions []apiregistrationv1.APIServiceCondition) *apiregistrationv1.APIService {
+	return &apiregistrationv1.APIService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "kube-shard.konflux-ci.dev/v1alpha1",
+					Kind:       "APIShard",
+					Name:       "test-shard",
+					UID:        testOwnerUID,
+				},
+			},
+		},
+		Status: apiregistrationv1.APIServiceStatus{
+			Conditions: conditions,
+		},
+	}
+}
+
 // TestCheckAvailability_AllAvailable verifies that CheckAvailability returns true
-// when every registered APIService has Available=True.
+// when every owned APIService has Available=True.
 func TestCheckAvailability_AllAvailable(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
 
-	svc := &apiregistrationv1.APIService{
-		ObjectMeta: metav1.ObjectMeta{Name: "v1.example.com"},
-		Status: apiregistrationv1.APIServiceStatus{
-			Conditions: []apiregistrationv1.APIServiceCondition{
-				{
-					Type:   apiregistrationv1.Available,
-					Status: apiregistrationv1.ConditionTrue,
-				},
-			},
-		},
-	}
+	svc := newOwnedAPIService("v1.example.com", []apiregistrationv1.APIServiceCondition{
+		{Type: apiregistrationv1.Available, Status: apiregistrationv1.ConditionTrue},
+	})
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
 
-	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	ok, msg, err := CheckAvailability(context.Background(), c, testOwnerUID)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeTrue())
 	g.Expect(msg).To(BeEmpty())
 }
 
 // TestCheckAvailability_NotAvailable verifies that CheckAvailability returns false
-// with a descriptive message when an APIService has Available=False.
+// with a descriptive message when an owned APIService has Available=False.
 func TestCheckAvailability_NotAvailable(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
 
-	svc := &apiregistrationv1.APIService{
-		ObjectMeta: metav1.ObjectMeta{Name: "v1.example.com"},
-		Status: apiregistrationv1.APIServiceStatus{
-			Conditions: []apiregistrationv1.APIServiceCondition{
-				{
-					Type:    apiregistrationv1.Available,
-					Status:  apiregistrationv1.ConditionFalse,
-					Message: "endpoints not found",
-				},
-			},
-		},
-	}
+	svc := newOwnedAPIService("v1.example.com", []apiregistrationv1.APIServiceCondition{
+		{Type: apiregistrationv1.Available, Status: apiregistrationv1.ConditionFalse, Message: "endpoints not found"},
+	})
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
 
-	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	ok, msg, err := CheckAvailability(context.Background(), c, testOwnerUID)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeFalse())
 	g.Expect(msg).To(ContainSubstring("not yet available"))
@@ -215,62 +221,71 @@ func TestCheckAvailability_NotAvailable(t *testing.T) {
 }
 
 // TestCheckAvailability_NoCondition verifies that CheckAvailability returns false
-// when the APIService exists but has no Available condition set.
+// when an owned APIService exists but has no Available condition set.
 func TestCheckAvailability_NoCondition(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
 
-	svc := &apiregistrationv1.APIService{
-		ObjectMeta: metav1.ObjectMeta{Name: "v1.example.com"},
-	}
+	svc := newOwnedAPIService("v1.example.com", nil)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
 
-	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	ok, msg, err := CheckAvailability(context.Background(), c, testOwnerUID)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeFalse())
 	g.Expect(msg).To(ContainSubstring("no Available condition"))
 }
 
-// TestCheckAvailability_Missing verifies that CheckAvailability returns false
-// with no error when the APIService object does not exist (NotFound).
-func TestCheckAvailability_Missing(t *testing.T) {
+// TestCheckAvailability_NoOwnedAPIServices verifies that CheckAvailability
+// returns false when no APIServices are owned by the given UID.
+func TestCheckAvailability_NoOwnedAPIServices(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	ok, msg, err := CheckAvailability(context.Background(), c, testOwnerUID)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeFalse())
-	g.Expect(msg).To(ContainSubstring("not found"))
+	g.Expect(msg).To(ContainSubstring("no APIServices owned by shard"))
 }
 
-// TestCheckAvailability_EmptyList verifies that CheckAvailability returns true
-// when the registered names list is empty (vacuous truth).
-func TestCheckAvailability_EmptyList(t *testing.T) {
+// TestCheckAvailability_IgnoresUnownedAPIServices verifies that CheckAvailability
+// only considers APIServices that have a matching owner reference, ignoring others.
+func TestCheckAvailability_IgnoresUnownedAPIServices(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
-	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	ok, msg, err := CheckAvailability(context.Background(), c, nil)
+	unowned := &apiregistrationv1.APIService{
+		ObjectMeta: metav1.ObjectMeta{Name: "v1.other.com"},
+		Status: apiregistrationv1.APIServiceStatus{
+			Conditions: []apiregistrationv1.APIServiceCondition{
+				{Type: apiregistrationv1.Available, Status: apiregistrationv1.ConditionFalse},
+			},
+		},
+	}
+	owned := newOwnedAPIService("v1.owned.example.com", []apiregistrationv1.APIServiceCondition{
+		{Type: apiregistrationv1.Available, Status: apiregistrationv1.ConditionTrue},
+	})
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(unowned, owned).Build()
+
+	ok, msg, err := CheckAvailability(context.Background(), c, testOwnerUID)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ok).To(BeTrue())
 	g.Expect(msg).To(BeEmpty())
 }
 
-// TestCheckAvailability_TransientGetError verifies that CheckAvailability
-// returns an error (not a false-positive "not found") for non-NotFound Get
-// failures such as network timeouts.
-func TestCheckAvailability_TransientGetError(t *testing.T) {
+// TestCheckAvailability_TransientListError verifies that CheckAvailability
+// returns an error for List failures such as network timeouts.
+func TestCheckAvailability_TransientListError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	scheme := newScheme()
 	transientErr := fmt.Errorf("connection refused")
 	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
-		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+		List: func(_ context.Context, _ client.WithWatch, _ client.ObjectList, _ ...client.ListOption) error {
 			return transientErr
 		},
 	}).Build()
 
-	ok, msg, err := CheckAvailability(context.Background(), c, []string{"v1.example.com"})
+	ok, msg, err := CheckAvailability(context.Background(), c, testOwnerUID)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err).To(MatchError(ContainSubstring("connection refused")))
 	g.Expect(ok).To(BeFalse())
