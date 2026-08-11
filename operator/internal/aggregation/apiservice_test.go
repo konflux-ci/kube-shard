@@ -33,6 +33,7 @@ import (
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 )
 
+// newScheme creates a runtime.Scheme with the kube-shard and APIService types registered.
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = kubeshardv1alpha1.AddToScheme(s)
@@ -40,6 +41,7 @@ func newScheme() *runtime.Scheme {
 	return s
 }
 
+// newTestShard returns a minimal APIShard fixture for Reconcile tests.
 func newTestShard() *kubeshardv1alpha1.APIShard {
 	return &kubeshardv1alpha1.APIShard{
 		ObjectMeta: metav1.ObjectMeta{
@@ -58,36 +60,26 @@ func newTestShard() *kubeshardv1alpha1.APIShard {
 // TestReconcile_SetsAutomanagedLabel verifies that Reconcile always sets the
 // automanaged=false label on APIService objects.
 func TestReconcile_SetsAutomanagedLabel(t *testing.T) {
+	g := NewGomegaWithT(t)
 	scheme := newScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	shard := newTestShard()
 
 	result, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager")
-	if err != nil {
-		t.Fatalf("Reconcile failed: %v", err)
-	}
-	if len(result.Registered) != 1 || result.Registered[0] != "v1.example.com" {
-		t.Fatalf("unexpected registered: %v", result.Registered)
-	}
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.Registered).To(Equal([]string{"v1.example.com"}))
 
 	apiSvc := &apiregistrationv1.APIService{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "v1.example.com"}, apiSvc); err != nil {
-		t.Fatalf("failed to get APIService: %v", err)
-	}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: "v1.example.com"}, apiSvc)).To(Succeed())
 
-	val, ok := apiSvc.Labels[AutoManagedLabelKey]
-	if !ok {
-		t.Fatal("expected automanaged label to be present")
-	}
-	if val != "false" {
-		t.Fatalf("expected automanaged label value 'false', got %q", val)
-	}
+	g.Expect(apiSvc.Labels).To(HaveKeyWithValue(AutoManagedLabelKey, "false"))
 }
 
 // TestReconcile_OverridesExistingAutomanagedTrue verifies that Reconcile overrides
 // an existing automanaged=true label set by the kube-aggregator auto-register
 // controller with automanaged=false.
 func TestReconcile_OverridesExistingAutomanagedTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
 	scheme := newScheme()
 
 	existing := &apiregistrationv1.APIService{
@@ -109,51 +101,32 @@ func TestReconcile_OverridesExistingAutomanagedTrue(t *testing.T) {
 	shard := newTestShard()
 
 	_, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager")
-	if err != nil {
-		t.Fatalf("Reconcile failed: %v", err)
-	}
+	g.Expect(err).NotTo(HaveOccurred())
 
 	apiSvc := &apiregistrationv1.APIService{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "v1.example.com"}, apiSvc); err != nil {
-		t.Fatalf("failed to get APIService: %v", err)
-	}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: "v1.example.com"}, apiSvc)).To(Succeed())
 
-	val := apiSvc.Labels[AutoManagedLabelKey]
-	if val != "false" {
-		t.Fatalf("expected automanaged label overridden to 'false', got %q", val)
-	}
-
-	if apiSvc.Spec.Service == nil {
-		t.Fatal("expected service field to be set after reconcile")
-	}
+	g.Expect(apiSvc.Labels).To(HaveKeyWithValue(AutoManagedLabelKey, "false"))
+	g.Expect(apiSvc.Spec.Service).NotTo(BeNil())
 }
 
 // TestReconcile_ServiceFieldAlwaysSet verifies that the APIService spec always
 // includes the Service reference pointing to the secondary API server.
 func TestReconcile_ServiceFieldAlwaysSet(t *testing.T) {
+	g := NewGomegaWithT(t)
 	scheme := newScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	shard := newTestShard()
 
 	_, err := Reconcile(context.Background(), c, scheme, shard, []byte("fake-ca"), nil, "test-manager")
-	if err != nil {
-		t.Fatalf("Reconcile failed: %v", err)
-	}
+	g.Expect(err).NotTo(HaveOccurred())
 
 	apiSvc := &apiregistrationv1.APIService{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "v1.example.com"}, apiSvc); err != nil {
-		t.Fatalf("failed to get APIService: %v", err)
-	}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: "v1.example.com"}, apiSvc)).To(Succeed())
 
-	if apiSvc.Spec.Service == nil {
-		t.Fatal("expected service field to be set")
-	}
-	if apiSvc.Spec.Service.Name != "test-shard-apiserver" {
-		t.Fatalf("unexpected service name: %s", apiSvc.Spec.Service.Name)
-	}
-	if apiSvc.Spec.Service.Namespace != "test-ns" {
-		t.Fatalf("unexpected service namespace: %s", apiSvc.Spec.Service.Namespace)
-	}
+	g.Expect(apiSvc.Spec.Service).NotTo(BeNil())
+	g.Expect(apiSvc.Spec.Service.Name).To(Equal("test-shard-apiserver"))
+	g.Expect(apiSvc.Spec.Service.Namespace).To(Equal("test-ns"))
 }
 
 // Verify that the fake client implements SSA Patch correctly for our use case.
