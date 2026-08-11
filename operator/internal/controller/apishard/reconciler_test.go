@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -1058,7 +1059,7 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		}
 	})
 
-	createConflictShard := func(suffix, group string, forceAggregation bool) *kubeshardv1alpha1.APIShard {
+	createConflictShard := func(suffix, group string) *kubeshardv1alpha1.APIShard {
 		shard := &kubeshardv1alpha1.APIShard{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-conflict-" + suffix,
@@ -1076,20 +1077,15 @@ var _ = Describe("reconcileCRDConflicts", func() {
 						MatchLabels: map[string]string{"type": "tenant"},
 					},
 				},
-				ForceAggregation: forceAggregation,
 			},
 		}
 		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
-		// The CRD has +kubebuilder:default=true with omitempty, so false
-		// cannot survive an API round-trip via the Go client. Override
-		// in-memory to simulate the state from a YAML-applied manifest.
-		shard.Spec.ForceAggregation = forceAggregation
 		return shard
 	}
 
 	It("should set CRDConflict=False when no conflicting CRDs exist", func() {
-		shard := createConflictShard("none", "noconflict.example.com", false)
+		shard := createConflictShard("none", "noconflict.example.com")
 		defer func() { _ = k8sClient.Delete(ctx, shard) }()
 
 		reconciler.reconcileCRDConflicts(ctx, shard)
@@ -1100,11 +1096,11 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		Expect(cond.Reason).To(Equal("NoConflicts"))
 	})
 
-	It("should set phase to Blocked when CRDs conflict and forceAggregation is false", func() {
-		shard := createConflictShard("blocked", "blocked.example.com", false)
+	It("should detect conflict and set CRDSyncFailed when secondary client is unavailable", func() {
+		shard := createConflictShard("synced", "synced.example.com")
 		defer func() {
 			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "widgets.blocked.example.com"}, crd); err == nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gadgets.synced.example.com"}, crd); err == nil {
 				_ = k8sClient.Delete(ctx, crd)
 			}
 			_ = k8sClient.Delete(ctx, shard)
@@ -1112,57 +1108,10 @@ var _ = Describe("reconcileCRDConflicts", func() {
 
 		crd := &apiextensionsv1.CustomResourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "widgets.blocked.example.com",
+				Name: "gadgets.synced.example.com",
 			},
 			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-				Group: "blocked.example.com",
-				Names: apiextensionsv1.CustomResourceDefinitionNames{
-					Plural:   "widgets",
-					Singular: "widget",
-					Kind:     "Widget",
-				},
-				Scope: apiextensionsv1.NamespaceScoped,
-				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
-					{
-						Name:    "v1",
-						Served:  true,
-						Storage: true,
-						Schema: &apiextensionsv1.CustomResourceValidation{
-							OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-								Type: "object",
-							},
-						},
-					},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, crd)).To(Succeed())
-
-		reconciler.reconcileCRDConflicts(ctx, shard)
-
-		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
-		Expect(cond).NotTo(BeNil())
-		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-		Expect(cond.Reason).To(Equal("CRDsExistOnPrimary"))
-		Expect(shard.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseBlocked))
-	})
-
-	It("should set ForcedAggregation reason when forceAggregation is true", func() {
-		shard := createConflictShard("forced", "forced.example.com", true)
-		defer func() {
-			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gadgets.forced.example.com"}, crd); err == nil {
-				_ = k8sClient.Delete(ctx, crd)
-			}
-			_ = k8sClient.Delete(ctx, shard)
-		}()
-
-		crd := &apiextensionsv1.CustomResourceDefinition{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "gadgets.forced.example.com",
-			},
-			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-				Group: "forced.example.com",
+				Group: "synced.example.com",
 				Names: apiextensionsv1.CustomResourceDefinitionNames{
 					Plural:   "gadgets",
 					Singular: "gadget",
@@ -1190,8 +1139,153 @@ var _ = Describe("reconcileCRDConflicts", func() {
 		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionCRDConflictDetected)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-		Expect(cond.Reason).To(Equal("ForcedAggregation"))
-		Expect(shard.Status.Phase).NotTo(Equal(kubeshardv1alpha1.PhaseBlocked))
+		Expect(cond.Reason).To(Equal("CRDSyncFailed"))
+		Expect(cond.Message).To(ContainSubstring("sync failed"))
+	})
+})
+
+var _ = Describe("checkAPIServiceAvailability", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	// newAvailabilityShard creates a minimal APIShard with a stable UID and an
+	// optional CRDConflict condition (status + reason) for availability gate
+	// tests. CheckAvailability discovers APIServices via owner references
+	// matching the shard's UID.
+	newAvailabilityShard := func(
+		suffix string,
+		conflictStatus metav1.ConditionStatus,
+		conflictReason string,
+	) *kubeshardv1alpha1.APIShard {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "test-avail-" + suffix,
+				UID:        types.UID("test-avail-" + suffix + "-uid"),
+				Generation: 1,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-avail-" + suffix + "-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "example.com", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		if conflictStatus != "" {
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:   kubeshardv1alpha1.ConditionCRDConflictDetected,
+				Status: conflictStatus,
+				Reason: conflictReason,
+			})
+		}
+		return shard
+	}
+
+	It("should skip the check and remove stale condition when no CRDConflict", func() {
+		shard := newAvailabilityShard("no-conflict", "", "")
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:   kubeshardv1alpha1.ConditionAPIServicesRegistered,
+			Status: metav1.ConditionFalse,
+			Reason: "SecondaryUnhealthy",
+		})
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionAPIServicesRegistered)
+		Expect(cond).To(BeNil(), "stale condition should be removed on skip path")
+	})
+
+	It("should skip the check when CRDConflictDetected is False", func() {
+		shard := newAvailabilityShard("conflict-false", metav1.ConditionFalse, "NoConflicts")
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+	})
+
+	It("should keep Provisioning and requeue when CRD sync failed", func() {
+		shard := newAvailabilityShard("sync-failed", metav1.ConditionTrue, "CRDSyncFailed")
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+		Expect(shard.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseProvisioning))
+	})
+
+	It("should set Provisioning and requeue when no APIServices are owned", func() {
+		shard := newAvailabilityShard("unavail", metav1.ConditionTrue, "CRDsSyncedToSecondary")
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(10 * time.Second))
+		Expect(shard.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseProvisioning))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionAPIServicesRegistered)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("APIServicesNotAvailable"))
+	})
+
+	It("should set AllAvailable and not requeue when owned APIServices are available", func() {
+		shard := newAvailabilityShard("avail", metav1.ConditionTrue, "CRDsSyncedToSecondary")
+
+		group := "avail" + randString(4) + ".example.com"
+		svcName := "v1." + group
+		svc := &apiregistrationv1.APIService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: svcName,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: kubeshardv1alpha1.GroupVersion.String(),
+						Kind:       "APIShard",
+						Name:       shard.Name,
+						UID:        shard.UID,
+					},
+				},
+			},
+			Spec: apiregistrationv1.APIServiceSpec{
+				Group:                group,
+				Version:              "v1",
+				GroupPriorityMinimum: 100,
+				VersionPriority:      10,
+			},
+		}
+		Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, svc) }()
+
+		svc.Status = apiregistrationv1.APIServiceStatus{
+			Conditions: []apiregistrationv1.APIServiceCondition{
+				{
+					Type:   apiregistrationv1.Available,
+					Status: apiregistrationv1.ConditionTrue,
+				},
+			},
+		}
+		Expect(k8sClient.Status().Update(ctx, svc)).To(Succeed())
+
+		result, err := reconciler.checkAPIServiceAvailability(ctx, shard)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionAPIServicesRegistered)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("AllAvailable"))
 	})
 })
 

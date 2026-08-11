@@ -284,7 +284,7 @@ CRDs and aggregated APIService objects cannot coexist for the same group/version
 
 **Recovery:** Deleting the CRDs from the primary and re-applying the APIService with the `service` field restores proper aggregation and all data reappears from the secondary.
 
-**Production implication:** If the OpenShift Pipelines operator (or any Tekton installation) creates CRDs on the same cluster, it will immediately break aggregation. The kube-shard operator addresses this with `forceAggregation: true` (default), which overrides the kube-aggregator's auto-register controller by setting the `automanaged` label to `"false"` on APIService objects via SSA. This allows CRDs and aggregated APIService objects to coexist without manual CRD removal.
+**Production implication:** If the OpenShift Pipelines operator (or any Tekton installation) creates CRDs on the same cluster, it will immediately break aggregation. The kube-shard operator handles this automatically by overriding the kube-aggregator's auto-register controller -- it sets the `automanaged` label to `"false"` on APIService objects via SSA and syncs conflicting CRDs to the secondary. This allows CRDs and aggregated APIService objects to coexist without manual CRD removal.
 
 Migration sequence for existing clusters:
 
@@ -296,7 +296,7 @@ Migration sequence for existing clusters:
 6. **Import:** Restore live resources into secondary via API
 7. **Resume:** Controllers reconnect (watches re-establish through aggregation)
 
-For new deployments with `forceAggregation: true`, no migration is needed -- the operator installs CRDs on the secondary and registers APIService objects while existing CRDs remain on the primary.
+For new deployments, no migration is needed -- the operator installs CRDs on the secondary and registers APIService objects while existing CRDs remain on the primary.
 
 ## High Availability and Failure Modes
 
@@ -338,7 +338,7 @@ The design was validated incrementally through a series of phases before the ope
 
 The Tekton Operator manages pipeline CRDs via `TektonInstallerSet` resources and reconciles them continuously. Since CRDs and APIService objects for the same group/version cannot coexist on the primary (the aggregator auto-manages Local APIServices when CRDs exist), this creates a conflict.
 
-The kube-shard operator addresses this with `forceAggregation: true`, which overrides the auto-register controller by setting the `automanaged` label to `"false"` via SSA with ForceOwnership. This allows CRDs to remain on the primary while aggregation routes requests to the secondary.
+The kube-shard operator handles this automatically by overriding the auto-register controller -- it sets the `automanaged` label to `"false"` via SSA with ForceOwnership. This allows CRDs to remain on the primary while aggregation routes requests to the secondary.
 
 **Design constraint:** The kube-shard operator does NOT patch upstream operator resources (e.g., TektonInstallerSets). That approach is fragile, couples kube-shard to implementation details of every upstream operator, and would need to be re-implemented for each new operator we integrate with.
 
@@ -348,7 +348,7 @@ The kube-shard operator addresses this with `forceAggregation: true`, which over
 2. **Generic "CRD guard" admission webhook** -- reject CREATE operations on CRDs for aggregated API groups. Generic but may cause operator error/retry loops.
 3. **Aggregation-aware CRD coexistence** -- upstream Kubernetes change to prefer APIService with a `service` field over auto-managed Local APIService. Would solve the problem for everyone.
 
-The current `forceAggregation` approach is the implemented solution. Upstream changes remain worth pursuing for a cleaner long-term path.
+The current approach (always overriding the auto-register controller) is the implemented solution. Upstream changes remain worth pursuing for a cleaner long-term path.
 
 ## Roadmap
 
