@@ -351,6 +351,45 @@ kubectl exec deployment/<shard>-postgresql -n <namespace> -- \
 - 42/1000 succeeded (completed within default 1h timeout)
 - 958/1000 timed out (sequential steps with random 20-300s sleep exceeded the 1h default)
 
+## Monitoring
+
+A Grafana dashboard for monitoring the kube-shard stack is available at [`deploy/grafana/shard-overview-dashboard.json`](deploy/grafana/shard-overview-dashboard.json). It includes a shard selector variable for multi-APIShard environments and covers:
+
+- **Kine SQL operations** -- per-operation rate breakdown, latency percentiles (p50/p95/p99), error tracking
+- **Read/Write path** -- watch poll, get, list, and insert latencies with conflict visibility
+- **Compaction health** -- compaction rate, latency, and insert-to-compact ratio
+- **Resource usage** -- memory, CPU, goroutines, and container restarts for Kine, KAS, and PostgreSQL pods
+- **Storage** -- PostgreSQL PVC usage vs capacity
+
+### Deploying to Grafana Operator (v5)
+
+```bash
+# Create a ConfigMap with the dashboard JSON
+kubectl create configmap kube-shard-dashboard \
+  --from-file=kube-shard-kine.json=deploy/grafana/shard-overview-dashboard.json \
+  -n <grafana-namespace> \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Create a GrafanaDashboard CR to wire it up
+cat <<EOF | kubectl apply -f -
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: kube-shard-dashboard
+  namespace: <grafana-namespace>
+spec:
+  configMapRef:
+    name: kube-shard-dashboard
+    key: kube-shard-kine.json
+  instanceSelector:
+    matchLabels:
+      dashboards: <your-grafana-instance-label>
+  resyncPeriod: 30m
+EOF
+```
+
+The dashboard requires a Prometheus datasource with access to `kine_*` metrics (from Kine ServiceMonitors) and `kubelet_volume_stats_*` metrics (from kubelet).
+
 ## Development
 
 ```bash
