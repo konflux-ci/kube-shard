@@ -11,18 +11,21 @@ import (
 	ociV1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	pipelinev1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
 // resolvedTask holds the result of resolving a single Tekton bundle from an
 // OCI registry. On success StepNames and SizeBytes describe the task; on
 // failure Err is set (SizeBytes may still be populated with the compressed
-// layer size as a fallback).
+// layer size as a fallback). StepResources is parallel to StepNames and
+// holds the ComputeResources declared on each step.
 type resolvedTask struct {
-	Name      string
-	StepNames []string
-	SizeBytes int
-	Err       error
+	Name          string
+	StepNames     []string
+	StepResources []corev1.ResourceRequirements
+	SizeBytes     int
+	Err           error
 }
 
 // resolveBundles resolves all bundle-referenced tasks concurrently, returning
@@ -94,13 +97,16 @@ func resolveBundle(t taskInfo) *resolvedTask {
 		}
 
 		stepNames := make([]string, len(task.Spec.Steps))
+		stepResources := make([]corev1.ResourceRequirements, len(task.Spec.Steps))
 		for j, s := range task.Spec.Steps {
 			stepNames[j] = s.Name
+			stepResources[j] = s.ComputeResources
 		}
 		return &resolvedTask{
-			Name:      t.name,
-			StepNames: stepNames,
-			SizeBytes: rawSize,
+			Name:          t.name,
+			StepNames:     stepNames,
+			StepResources: stepResources,
+			SizeBytes:     rawSize,
 		}
 	}
 

@@ -18,14 +18,15 @@ import (
 // bundleRef and bundleTaskName point at the OCI image; for inline tasks the
 // inlineSteps/inlineSize describe the embedded spec directly.
 type taskInfo struct {
-	name           string
-	bundleRef      string
-	bundleTaskName string
-	runAfter       []string
-	matrix         *pipelinev1.Matrix
-	isFinallyTask  bool
-	inlineSteps    int
-	inlineSize     int
+	name                string
+	bundleRef           string
+	bundleTaskName      string
+	runAfter            []string
+	matrix              *pipelinev1.Matrix
+	isFinallyTask       bool
+	inlineSteps         int
+	inlineSize          int
+	inlineStepResources []corev1.ResourceRequirements
 }
 
 // config holds the CLI-provided settings that control the generated
@@ -39,6 +40,7 @@ type config struct {
 	sleepMax          int
 	defaultTaskSizeKB int
 	defaultSteps      int
+	preserveResources bool
 }
 
 // extractTaskInfos walks the PipelineRun's inline PipelineSpec and returns a
@@ -85,6 +87,10 @@ func extractSingleTaskInfo(pt pipelinev1.PipelineTask, isFinally bool) taskInfo 
 		info.inlineSteps = len(pt.TaskSpec.Steps)
 		data, _ := yaml.Marshal(pt.TaskSpec)
 		info.inlineSize = len(data)
+		info.inlineStepResources = make([]corev1.ResourceRequirements, len(pt.TaskSpec.Steps))
+		for i, s := range pt.TaskSpec.Steps {
+			info.inlineStepResources[i] = s.ComputeResources
+		}
 	}
 
 	return info
@@ -153,8 +159,10 @@ func matrixExpansionCount(matrix *pipelinev1.Matrix) int {
 // generatePipelineRun assembles a complete PipelineRun with inline task specs
 // sized to match the resolved (or default) storage footprint. Each task's
 // steps contain padded sleep scripts so the Tekton controller produces
-// realistic TaskRun objects.
-func generatePipelineRun(tasks []taskInfo, resolved map[string]*resolvedTask, prParams []pipelinev1.Param, cfg config) *pipelinev1.PipelineRun {
+// realistic TaskRun objects. When cfg.preserveResources is true, matching
+// PipelineTaskRunSpec entries from taskRunSpecs are forwarded to the output
+// so that per-task and per-step compute resource overrides are preserved.
+func generatePipelineRun(tasks []taskInfo, resolved map[string]*resolvedTask, prParams []pipelinev1.Param, taskRunSpecs []pipelinev1.PipelineTaskRunSpec, cfg config) *pipelinev1.PipelineRun {
 	pr := &pipelinev1.PipelineRun{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "tekton.dev/v1",
@@ -169,12 +177,32 @@ func generatePipelineRun(tasks []taskInfo, resolved map[string]*resolvedTask, pr
 		},
 	}
 
+	taskRunSpecMap := make(map[string]pipelinev1.PipelineTaskRunSpec, len(taskRunSpecs))
+	for _, trs := range taskRunSpecs {
+		taskRunSpecMap[trs.PipelineTaskName] = trs
+	}
+
 	for _, t := range tasks {
 		pt := generatePipelineTask(t, resolved[t.name], prParams, cfg)
 		if t.isFinallyTask {
 			pr.Spec.PipelineSpec.Finally = append(pr.Spec.PipelineSpec.Finally, pt)
 		} else {
 			pr.Spec.PipelineSpec.Tasks = append(pr.Spec.PipelineSpec.Tasks, pt)
+		}
+		if cfg.preserveResources {
+			if trs, ok := taskRunSpecMap[t.name]; ok {
+				outTRS := pipelinev1.PipelineTaskRunSpec{PipelineTaskName: t.name}
+				if trs.ComputeResources != nil {
+					outTRS.ComputeResources = trs.ComputeResources.DeepCopy()
+				}
+				if len(trs.StepSpecs) > 0 {
+					outTRS.StepSpecs = make([]pipelinev1.TaskRunStepSpec, len(trs.StepSpecs))
+					copy(outTRS.StepSpecs, trs.StepSpecs)
+				}
+				if outTRS.ComputeResources != nil || len(outTRS.StepSpecs) > 0 {
+					pr.Spec.TaskRunSpecs = append(pr.Spec.TaskRunSpecs, outTRS)
+				}
+			}
 		}
 	}
 
@@ -184,16 +212,19 @@ func generatePipelineRun(tasks []taskInfo, resolved map[string]*resolvedTask, pr
 // generatePipelineTask builds a single PipelineTask with an inline TaskSpec
 // whose step count and total serialized size approximate the original task.
 // Resolved bundle metadata takes priority, then inline spec metrics, then
-// config defaults.
+// config defaults. When cfg.preserveResources is true the original
+// ComputeResources from each step are carried over to the generated steps.
 func generatePipelineTask(t taskInfo, r *resolvedTask, prParams []pipelinev1.Param, cfg config) pipelinev1.PipelineTask {
 	stepCount := cfg.defaultSteps
 	targetSize := cfg.defaultTaskSizeKB * 1024
 	var stepNames []string
+	var stepResources []corev1.ResourceRequirements
 
 	if r != nil && r.Err == nil {
 		if len(r.StepNames) > 0 {
 			stepCount = len(r.StepNames)
 			stepNames = r.StepNames
+			stepResources = r.StepResources
 		}
 		if r.SizeBytes > 0 {
 			targetSize = r.SizeBytes
@@ -207,6 +238,7 @@ func generatePipelineTask(t taskInfo, r *resolvedTask, prParams []pipelinev1.Par
 		if t.inlineSize > 0 {
 			targetSize = t.inlineSize
 		}
+		stepResources = t.inlineStepResources
 	}
 
 	if stepCount < 1 {
@@ -228,6 +260,9 @@ func generatePipelineTask(t taskInfo, r *resolvedTask, prParams []pipelinev1.Par
 			Image:           cfg.image,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			Script:          padScript(randomInt(cfg.sleepMin, cfg.sleepMax), perStepSize),
+		}
+		if cfg.preserveResources && i < len(stepResources) {
+			steps[i].ComputeResources = stepResources[i]
 		}
 	}
 

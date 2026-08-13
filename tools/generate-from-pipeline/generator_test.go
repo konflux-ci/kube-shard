@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	pipelinev1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -260,7 +262,7 @@ func TestGeneratePipelineRun_BasicStructure(t *testing.T) {
 		defaultSteps:      2,
 	}
 
-	pr := generatePipelineRun(tasks, nil, nil, cfg)
+	pr := generatePipelineRun(tasks, nil, nil, nil, cfg)
 
 	if pr.GenerateName != "lt-" {
 		t.Errorf("expected generateName %q, got %q", "lt-", pr.GenerateName)
@@ -414,7 +416,7 @@ func TestGeneratePipelineRun_PreservesRunAfter(t *testing.T) {
 		defaultSteps:      1,
 	}
 
-	pr := generatePipelineRun(tasks, nil, nil, cfg)
+	pr := generatePipelineRun(tasks, nil, nil, nil, cfg)
 	pipelineTasks := pr.Spec.PipelineSpec.Tasks
 
 	if len(pipelineTasks[0].RunAfter) != 0 {
@@ -568,7 +570,7 @@ func TestExtractTaskInfos_FullPipelineRun(t *testing.T) {
 		defaultSteps:      3,
 	}
 
-	outPR := generatePipelineRun(infos, resolved, pr.Spec.Params, cfg)
+	outPR := generatePipelineRun(infos, resolved, pr.Spec.Params, nil, cfg)
 	if len(outPR.Spec.PipelineSpec.Tasks) != 2 {
 		t.Fatalf("expected 2 regular tasks, got %d", len(outPR.Spec.PipelineSpec.Tasks))
 	}
@@ -582,5 +584,232 @@ func TestExtractTaskInfos_FullPipelineRun(t *testing.T) {
 	}
 	if len(buildTask.Matrix.Params[0].Value.ArrayVal) != 2 {
 		t.Errorf("expected 2 resolved matrix values, got %d", len(buildTask.Matrix.Params[0].Value.ArrayVal))
+	}
+}
+
+func TestGeneratePipelineTask_PreserveResources_Resolved(t *testing.T) {
+	ti := taskInfo{name: "build", runAfter: []string{"clone"}}
+	r := &resolvedTask{
+		Name:      "build",
+		StepNames: []string{"compile", "push"},
+		StepResources: []corev1.ResourceRequirements{
+			{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			},
+			{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
+			},
+		},
+		SizeBytes: 5000,
+	}
+	cfg := config{
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 17,
+		defaultSteps:      3,
+		preserveResources: true,
+	}
+
+	pt := generatePipelineTask(ti, r, nil, cfg)
+	if len(pt.TaskSpec.Steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(pt.TaskSpec.Steps))
+	}
+	mem := pt.TaskSpec.Steps[0].ComputeResources.Requests[corev1.ResourceMemory]
+	if mem.String() != "256Mi" {
+		t.Errorf("step 0: expected memory request 256Mi, got %s", mem.String())
+	}
+	lim := pt.TaskSpec.Steps[0].ComputeResources.Limits[corev1.ResourceMemory]
+	if lim.String() != "512Mi" {
+		t.Errorf("step 0: expected memory limit 512Mi, got %s", lim.String())
+	}
+	mem1 := pt.TaskSpec.Steps[1].ComputeResources.Requests[corev1.ResourceMemory]
+	if mem1.String() != "128Mi" {
+		t.Errorf("step 1: expected memory request 128Mi, got %s", mem1.String())
+	}
+	if pt.TaskSpec.Steps[1].ComputeResources.Limits != nil {
+		t.Errorf("step 1: expected nil limits, got %v", pt.TaskSpec.Steps[1].ComputeResources.Limits)
+	}
+}
+
+func TestGeneratePipelineTask_PreserveResources_Off(t *testing.T) {
+	ti := taskInfo{name: "build"}
+	r := &resolvedTask{
+		Name:      "build",
+		StepNames: []string{"compile"},
+		StepResources: []corev1.ResourceRequirements{
+			{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")}},
+		},
+		SizeBytes: 5000,
+	}
+	cfg := config{
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 17,
+		defaultSteps:      3,
+		preserveResources: false,
+	}
+
+	pt := generatePipelineTask(ti, r, nil, cfg)
+	if pt.TaskSpec.Steps[0].ComputeResources.Requests != nil {
+		t.Errorf("expected no resources when preserveResources=false, got %v",
+			pt.TaskSpec.Steps[0].ComputeResources.Requests)
+	}
+}
+
+func TestGeneratePipelineTask_PreserveResources_Inline(t *testing.T) {
+	ti := taskInfo{
+		name:        "inline",
+		inlineSteps: 2,
+		inlineSize:  3000,
+		inlineStepResources: []corev1.ResourceRequirements{
+			{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")}},
+			{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("32Mi")}},
+		},
+	}
+	cfg := config{
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 17,
+		defaultSteps:      3,
+		preserveResources: true,
+	}
+
+	pt := generatePipelineTask(ti, nil, nil, cfg)
+	if len(pt.TaskSpec.Steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(pt.TaskSpec.Steps))
+	}
+	mem := pt.TaskSpec.Steps[0].ComputeResources.Requests[corev1.ResourceMemory]
+	if mem.String() != "64Mi" {
+		t.Errorf("step 0: expected 64Mi, got %s", mem.String())
+	}
+	mem1 := pt.TaskSpec.Steps[1].ComputeResources.Requests[corev1.ResourceMemory]
+	if mem1.String() != "32Mi" {
+		t.Errorf("step 1: expected 32Mi, got %s", mem1.String())
+	}
+}
+
+func TestExtractSingleTaskInfo_InlineStepResources(t *testing.T) {
+	pt := pipelinev1.PipelineTask{
+		Name: "inline-resources",
+		TaskSpec: &pipelinev1.EmbeddedTask{
+			TaskSpec: pipelinev1.TaskSpec{
+				Steps: []pipelinev1.Step{
+					{
+						Name:  "step-1",
+						Image: "busybox",
+						ComputeResources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("100Mi")},
+						},
+					},
+					{
+						Name:  "step-2",
+						Image: "busybox",
+					},
+				},
+			},
+		},
+	}
+
+	info := extractSingleTaskInfo(pt, false)
+	if len(info.inlineStepResources) != 2 {
+		t.Fatalf("expected 2 inlineStepResources, got %d", len(info.inlineStepResources))
+	}
+	mem := info.inlineStepResources[0].Requests[corev1.ResourceMemory]
+	if mem.String() != "100Mi" {
+		t.Errorf("expected 100Mi, got %s", mem.String())
+	}
+	if info.inlineStepResources[1].Requests != nil {
+		t.Errorf("expected nil requests for step-2, got %v", info.inlineStepResources[1].Requests)
+	}
+}
+
+func TestGeneratePipelineRun_TaskRunSpecs(t *testing.T) {
+	tasks := []taskInfo{
+		{name: "build"},
+		{name: "test"},
+	}
+	taskRunSpecs := []pipelinev1.PipelineTaskRunSpec{
+		{
+			PipelineTaskName: "build",
+			ComputeResources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+			},
+			StepSpecs: []pipelinev1.TaskRunStepSpec{
+				{
+					Name: "compile",
+					ComputeResources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+					},
+				},
+			},
+		},
+		{
+			PipelineTaskName: "unrelated",
+			ComputeResources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("999Mi")},
+			},
+		},
+	}
+	cfg := config{
+		namespace:         "test-ns",
+		prefix:            "lt-",
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 1,
+		defaultSteps:      1,
+		preserveResources: true,
+	}
+
+	pr := generatePipelineRun(tasks, nil, nil, taskRunSpecs, cfg)
+
+	if len(pr.Spec.TaskRunSpecs) != 1 {
+		t.Fatalf("expected 1 TaskRunSpec (build only), got %d", len(pr.Spec.TaskRunSpecs))
+	}
+	trs := pr.Spec.TaskRunSpecs[0]
+	if trs.PipelineTaskName != "build" {
+		t.Errorf("expected TaskRunSpec for build, got %q", trs.PipelineTaskName)
+	}
+	mem := trs.ComputeResources.Requests[corev1.ResourceMemory]
+	if mem.String() != "1Gi" {
+		t.Errorf("expected task-level compute 1Gi, got %s", mem.String())
+	}
+	if len(trs.StepSpecs) != 1 || trs.StepSpecs[0].Name != "compile" {
+		t.Errorf("expected StepSpecs with compile, got %v", trs.StepSpecs)
+	}
+	stepLim := trs.StepSpecs[0].ComputeResources.Limits[corev1.ResourceMemory]
+	if stepLim.String() != "2Gi" {
+		t.Errorf("expected step limit 2Gi, got %s", stepLim.String())
+	}
+}
+
+func TestGeneratePipelineRun_TaskRunSpecs_Disabled(t *testing.T) {
+	tasks := []taskInfo{{name: "build"}}
+	taskRunSpecs := []pipelinev1.PipelineTaskRunSpec{
+		{
+			PipelineTaskName: "build",
+			ComputeResources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+			},
+		},
+	}
+	cfg := config{
+		namespace:         "test-ns",
+		prefix:            "lt-",
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 1,
+		defaultSteps:      1,
+		preserveResources: false,
+	}
+
+	pr := generatePipelineRun(tasks, nil, nil, taskRunSpecs, cfg)
+	if len(pr.Spec.TaskRunSpecs) != 0 {
+		t.Errorf("expected no TaskRunSpecs when preserveResources=false, got %d", len(pr.Spec.TaskRunSpecs))
 	}
 }
