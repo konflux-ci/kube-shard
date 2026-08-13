@@ -543,7 +543,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 67 },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 67 },
       "id": 60,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -568,7 +568,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 67 },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 67 },
       "id": 61,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -583,6 +583,40 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "PostgreSQL PVC disk usage vs capacity. Sustained growth towards capacity means compaction is not keeping up or the PVC needs to be expanded.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "capacity" },
+            "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }, { "id": "custom.fillOpacity", "value": 0 }, { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 67 },
+      "id": 63,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(kubelet_volume_stats_used_bytes{namespace=\"$namespace\", persistentvolumeclaim=~\".*postgresql.*\"})",
+          "legendFormat": "used"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(kubelet_volume_stats_capacity_bytes{namespace=\"$namespace\", persistentvolumeclaim=~\".*postgresql.*\"})",
+          "legendFormat": "capacity"
+        }
+      ],
+      "title": "PostgreSQL PVC Usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "description": "Container restarts for PostgreSQL pods. Restarts cause temporary Kine connection failures and watch disruptions.",
       "fieldConfig": {
         "defaults": {
@@ -592,7 +626,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 67 },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 67 },
       "id": 62,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
