@@ -26,6 +26,7 @@ type taskInfo struct {
 	isFinallyTask       bool
 	inlineSteps         int
 	inlineSize          int
+	inlineStepNames     []string
 	inlineStepResources []corev1.ResourceRequirements
 }
 
@@ -87,8 +88,10 @@ func extractSingleTaskInfo(pt pipelinev1.PipelineTask, isFinally bool) taskInfo 
 		info.inlineSteps = len(pt.TaskSpec.Steps)
 		data, _ := yaml.Marshal(pt.TaskSpec)
 		info.inlineSize = len(data)
+		info.inlineStepNames = make([]string, len(pt.TaskSpec.Steps))
 		info.inlineStepResources = make([]corev1.ResourceRequirements, len(pt.TaskSpec.Steps))
 		for i, s := range pt.TaskSpec.Steps {
+			info.inlineStepNames[i] = s.Name
 			info.inlineStepResources[i] = s.ComputeResources
 		}
 	}
@@ -238,6 +241,7 @@ func generatePipelineTask(t taskInfo, r *resolvedTask, prParams []pipelinev1.Par
 		if t.inlineSize > 0 {
 			targetSize = t.inlineSize
 		}
+		stepNames = t.inlineStepNames
 		stepResources = t.inlineStepResources
 	}
 
