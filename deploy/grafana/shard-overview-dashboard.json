@@ -358,7 +358,7 @@
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(kine_sql_total{namespace=\"$namespace\", error_code=\"\", name=\"Insert\"}[5m])) / (sum(rate(kine_sql_total{namespace=\"$namespace\", error_code=\"\", name=\"Compact\"}[5m])) > 0)",
+          "expr": "sum(rate(kine_sql_total{namespace=\"$namespace\", error_code=\"\", name=\"Insert\"}[5m])) / clamp_min(sum(rate(kine_sql_total{namespace=\"$namespace\", error_code=\"\", name=\"Compact\"}[5m])), 1e-9)",
           "legendFormat": "insert/compact ratio"
         }
       ],
@@ -426,9 +426,8 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
-          "unit": "short",
-          "custom.axisLabel": "cores"
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never", "axisLabel": "cores" },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -482,9 +481,8 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
-          "unit": "short",
-          "custom.axisLabel": "cores"
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never", "axisLabel": "cores" },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -562,9 +560,8 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
-          "unit": "short",
-          "custom.axisLabel": "cores"
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never", "axisLabel": "cores" },
+          "unit": "short"
         },
         "overrides": []
       },
