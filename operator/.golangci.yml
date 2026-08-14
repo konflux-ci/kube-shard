@@ -4,6 +4,46 @@ run:
   timeout: 5m
   allow-parallel-runners: true
 
+# NOTE: path-based exclusion rules must use the v1-style issues.exclude-rules
+# section because linters.exclusions.rules path matching is broken in
+# golangci-lint v1.x with config version "2".
+issues:
+  exclude-use-default: true
+  exclude-rules:
+    - path: "api/"
+      linters:
+        - lll
+    - path: "internal/"
+      linters:
+        - dupl
+        - lll
+    - path: "internal/certs/"
+      linters:
+        - goconst
+    - path: "_test\\.go"
+      linters:
+        - goconst
+    - path: "test/"
+      linters:
+        - goconst
+    # Ginkgo/Gomega require dot imports
+    - text: "dot-imports"
+      linters:
+        - revive
+    # Event handler interface implementations require unused parameters
+    - text: "unused-parameter"
+      linters:
+        - revive
+    # Test package directories use underscores
+    - text: "don't use an underscore in package name"
+      linters:
+        - revive
+    # Test files redefine builtins (e.g. "new") in local scope
+    - path: "_test\\.go"
+      text: "redefines-builtin-id"
+      linters:
+        - revive
+
 formatters:
   enable:
     - gofmt
@@ -35,18 +75,3 @@ linters:
     revive:
       rules:
         - name: comment-spacings
-  exclusions:
-    rules:
-      - path: "api/*"
-        linters:
-          - lll
-      - path: "internal/*"
-        linters:
-          - dupl
-          - lll
-      - path: "internal/certs/*"
-        linters:
-          - goconst
-      - path: "test/*"
-        linters:
-          - goconst
