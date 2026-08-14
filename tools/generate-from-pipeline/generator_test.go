@@ -4,7 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	. "github.com/onsi/gomega"
 	pipelinev1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -260,7 +263,7 @@ func TestGeneratePipelineRun_BasicStructure(t *testing.T) {
 		defaultSteps:      2,
 	}
 
-	pr := generatePipelineRun(tasks, nil, nil, cfg)
+	pr := generatePipelineRun(tasks, nil, nil, nil, cfg)
 
 	if pr.GenerateName != "lt-" {
 		t.Errorf("expected generateName %q, got %q", "lt-", pr.GenerateName)
@@ -414,7 +417,7 @@ func TestGeneratePipelineRun_PreservesRunAfter(t *testing.T) {
 		defaultSteps:      1,
 	}
 
-	pr := generatePipelineRun(tasks, nil, nil, cfg)
+	pr := generatePipelineRun(tasks, nil, nil, nil, cfg)
 	pipelineTasks := pr.Spec.PipelineSpec.Tasks
 
 	if len(pipelineTasks[0].RunAfter) != 0 {
@@ -568,7 +571,7 @@ func TestExtractTaskInfos_FullPipelineRun(t *testing.T) {
 		defaultSteps:      3,
 	}
 
-	outPR := generatePipelineRun(infos, resolved, pr.Spec.Params, cfg)
+	outPR := generatePipelineRun(infos, resolved, pr.Spec.Params, nil, cfg)
 	if len(outPR.Spec.PipelineSpec.Tasks) != 2 {
 		t.Fatalf("expected 2 regular tasks, got %d", len(outPR.Spec.PipelineSpec.Tasks))
 	}
@@ -583,4 +586,274 @@ func TestExtractTaskInfos_FullPipelineRun(t *testing.T) {
 	if len(buildTask.Matrix.Params[0].Value.ArrayVal) != 2 {
 		t.Errorf("expected 2 resolved matrix values, got %d", len(buildTask.Matrix.Params[0].Value.ArrayVal))
 	}
+}
+
+// TestGeneratePipelineTask_PreserveResources_Resolved verifies that step-level
+// ComputeResources from a resolved bundle task are carried over to the generated
+// PipelineTask when preserveResources is enabled.
+func TestGeneratePipelineTask_PreserveResources_Resolved(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ti := taskInfo{name: "build", runAfter: []string{"clone"}}
+	r := &resolvedTask{
+		Name:      "build",
+		StepNames: []string{"compile", "push"},
+		StepResources: []corev1.ResourceRequirements{
+			{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			},
+			{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
+			},
+		},
+		SizeBytes: 5000,
+	}
+	cfg := config{
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 17,
+		defaultSteps:      3,
+		preserveResources: true,
+	}
+
+	pt := generatePipelineTask(ti, r, nil, cfg)
+	g.Expect(pt.TaskSpec.Steps).To(HaveLen(2))
+	g.Expect(pt.TaskSpec.Steps[0].ComputeResources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("256Mi")))
+	g.Expect(pt.TaskSpec.Steps[0].ComputeResources.Limits[corev1.ResourceMemory]).To(Equal(resource.MustParse("512Mi")))
+	g.Expect(pt.TaskSpec.Steps[1].ComputeResources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("128Mi")))
+	g.Expect(pt.TaskSpec.Steps[1].ComputeResources.Limits).To(BeNil())
+}
+
+// TestGeneratePipelineTask_PreserveResources_Off verifies that no ComputeResources
+// are set on generated steps when preserveResources is disabled, even when the
+// resolved task carries resource definitions.
+func TestGeneratePipelineTask_PreserveResources_Off(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ti := taskInfo{name: "build"}
+	r := &resolvedTask{
+		Name:      "build",
+		StepNames: []string{"compile"},
+		StepResources: []corev1.ResourceRequirements{
+			{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")}},
+		},
+		SizeBytes: 5000,
+	}
+	cfg := config{
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 17,
+		defaultSteps:      3,
+		preserveResources: false,
+	}
+
+	pt := generatePipelineTask(ti, r, nil, cfg)
+	g.Expect(pt.TaskSpec.Steps[0].ComputeResources.Requests).To(BeNil())
+}
+
+// TestGeneratePipelineTask_PreserveResources_Inline verifies that step-level
+// ComputeResources from an inline TaskSpec are preserved on generated steps,
+// and that inline step names are also carried over.
+func TestGeneratePipelineTask_PreserveResources_Inline(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ti := taskInfo{
+		name:        "inline",
+		inlineSteps: 2,
+		inlineSize:  3000,
+		inlineStepNames: []string{"build-step", "push-step"},
+		inlineStepResources: []corev1.ResourceRequirements{
+			{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")}},
+			{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("32Mi")}},
+		},
+	}
+	cfg := config{
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 17,
+		defaultSteps:      3,
+		preserveResources: true,
+	}
+
+	pt := generatePipelineTask(ti, nil, nil, cfg)
+	g.Expect(pt.TaskSpec.Steps).To(HaveLen(2))
+	g.Expect(pt.TaskSpec.Steps[0].Name).To(Equal("build-step"))
+	g.Expect(pt.TaskSpec.Steps[1].Name).To(Equal("push-step"))
+	g.Expect(pt.TaskSpec.Steps[0].ComputeResources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("64Mi")))
+	g.Expect(pt.TaskSpec.Steps[1].ComputeResources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("32Mi")))
+}
+
+// TestExtractSingleTaskInfo_InlineStepResources verifies that extractSingleTaskInfo
+// captures both step names and ComputeResources from an inline TaskSpec, including
+// steps that have no resources defined.
+func TestExtractSingleTaskInfo_InlineStepResources(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	pt := pipelinev1.PipelineTask{
+		Name: "inline-resources",
+		TaskSpec: &pipelinev1.EmbeddedTask{
+			TaskSpec: pipelinev1.TaskSpec{
+				Steps: []pipelinev1.Step{
+					{
+						Name:  "step-1",
+						Image: "busybox",
+						ComputeResources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("100Mi")},
+						},
+					},
+					{
+						Name:  "step-2",
+						Image: "busybox",
+					},
+				},
+			},
+		},
+	}
+
+	info := extractSingleTaskInfo(pt, false)
+	g.Expect(info.inlineStepResources).To(HaveLen(2))
+	g.Expect(info.inlineStepResources[0].Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("100Mi")))
+	g.Expect(info.inlineStepResources[1].Requests).To(BeNil())
+	g.Expect(info.inlineStepNames).To(Equal([]string{"step-1", "step-2"}))
+}
+
+// TestGeneratePipelineRun_TaskRunSpecs verifies that PipelineRun-level
+// TaskRunSpec overrides (task-level compute resources and per-step StepSpecs)
+// are forwarded to the generated PipelineRun for matching tasks while
+// unrelated entries are filtered out.
+func TestGeneratePipelineRun_TaskRunSpecs(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	tasks := []taskInfo{
+		{name: "build"},
+		{name: "test"},
+	}
+	taskRunSpecs := []pipelinev1.PipelineTaskRunSpec{
+		{
+			PipelineTaskName: "build",
+			ComputeResources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+			},
+			StepSpecs: []pipelinev1.TaskRunStepSpec{
+				{
+					Name: "compile",
+					ComputeResources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
+					},
+				},
+			},
+		},
+		{
+			PipelineTaskName: "unrelated",
+			ComputeResources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("999Mi")},
+			},
+		},
+	}
+	cfg := config{
+		namespace:         "test-ns",
+		prefix:            "lt-",
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 1,
+		defaultSteps:      1,
+		preserveResources: true,
+	}
+
+	pr := generatePipelineRun(tasks, nil, nil, taskRunSpecs, cfg)
+
+	g.Expect(pr.Spec.TaskRunSpecs).To(HaveLen(1))
+	trs := pr.Spec.TaskRunSpecs[0]
+	g.Expect(trs.PipelineTaskName).To(Equal("build"))
+	g.Expect(trs.ComputeResources.Requests[corev1.ResourceMemory]).To(Equal(resource.MustParse("1Gi")))
+	g.Expect(trs.StepSpecs).To(HaveLen(1))
+	g.Expect(trs.StepSpecs[0].Name).To(Equal("compile"))
+	g.Expect(trs.StepSpecs[0].ComputeResources.Limits[corev1.ResourceMemory]).To(Equal(resource.MustParse("2Gi")))
+}
+
+// TestGeneratePipelineRun_TaskRunSpecs_Disabled verifies that no TaskRunSpecs
+// are forwarded to the generated PipelineRun when preserveResources is false.
+func TestGeneratePipelineRun_TaskRunSpecs_Disabled(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	tasks := []taskInfo{{name: "build"}}
+	taskRunSpecs := []pipelinev1.PipelineTaskRunSpec{
+		{
+			PipelineTaskName: "build",
+			ComputeResources: &corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+			},
+		},
+	}
+	cfg := config{
+		namespace:         "test-ns",
+		prefix:            "lt-",
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 1,
+		defaultSteps:      1,
+		preserveResources: false,
+	}
+
+	pr := generatePipelineRun(tasks, nil, nil, taskRunSpecs, cfg)
+	g.Expect(pr.Spec.TaskRunSpecs).To(BeEmpty())
+}
+
+// TestGeneratePipelineRun_InlineStepNames_MatchTaskRunSpecs verifies that
+// inline tasks preserve their original step names so that PipelineRun-level
+// StepSpecs overrides (keyed by step name) match the generated steps.
+func TestGeneratePipelineRun_InlineStepNames_MatchTaskRunSpecs(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	tasks := []taskInfo{
+		{
+			name:            "inline-task",
+			inlineSteps:     2,
+			inlineSize:      3000,
+			inlineStepNames: []string{"build", "push"},
+			inlineStepResources: []corev1.ResourceRequirements{
+				{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("64Mi")}},
+				{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("32Mi")}},
+			},
+		},
+	}
+	taskRunSpecs := []pipelinev1.PipelineTaskRunSpec{
+		{
+			PipelineTaskName: "inline-task",
+			StepSpecs: []pipelinev1.TaskRunStepSpec{
+				{
+					Name: "build",
+					ComputeResources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
+					},
+				},
+			},
+		},
+	}
+	cfg := config{
+		namespace:         "test-ns",
+		prefix:            "lt-",
+		image:             "busybox",
+		sleepMin:          1,
+		sleepMax:          1,
+		defaultTaskSizeKB: 1,
+		defaultSteps:      1,
+		preserveResources: true,
+	}
+
+	pr := generatePipelineRun(tasks, nil, nil, taskRunSpecs, cfg)
+
+	g.Expect(pr.Spec.PipelineSpec.Tasks).To(HaveLen(1))
+	steps := pr.Spec.PipelineSpec.Tasks[0].TaskSpec.Steps
+	g.Expect(steps[0].Name).To(Equal("build"))
+	g.Expect(steps[1].Name).To(Equal("push"))
+
+	g.Expect(pr.Spec.TaskRunSpecs).To(HaveLen(1))
+	g.Expect(pr.Spec.TaskRunSpecs[0].StepSpecs[0].Name).To(Equal("build"))
 }

@@ -20,6 +20,7 @@ func main() {
 	skipResolve := flag.Bool("skip-resolve", false, "Don't resolve bundles, use defaults")
 	defaultTaskSizeKB := flag.Int("default-task-size-kb", 17, "Fallback task size in KB when not resolving")
 	defaultSteps := flag.Int("default-steps", 3, "Fallback step count when not resolving")
+	preserveResources := flag.Bool("preserve-resources", false, "Preserve original memory requests/limits on generated steps")
 	flag.Parse()
 
 	if *input == "" || *output == "" {
@@ -42,6 +43,7 @@ func main() {
 		sleepMax:          sleepMax,
 		defaultTaskSizeKB: *defaultTaskSizeKB,
 		defaultSteps:      *defaultSteps,
+		preserveResources: *preserveResources,
 	}
 
 	data, err := os.ReadFile(*input)
@@ -130,7 +132,7 @@ func main() {
 			t.name, float64(size)/1024, steps, status, multiplierStr)
 	}
 
-	outPR := generatePipelineRun(tasks, resolved, prParams, cfg)
+	outPR := generatePipelineRun(tasks, resolved, prParams, pr.Spec.TaskRunSpecs, cfg)
 
 	outData, err := yaml.Marshal(outPR)
 	if err != nil {
