@@ -406,7 +406,7 @@ func TestBuildKineDeployment_SecurityContext(t *testing.T) {
 }
 
 // TestBuildKineDeployment_TLSArgs verifies that the Kine deployment includes
-// --server-cert-file, --server-key-file, and --server-ca-file flags for mTLS.
+// --server-cert-file, --server-key-file, and --trusted-ca-file flags for mTLS.
 func TestBuildKineDeployment_TLSArgs(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -422,7 +422,7 @@ func TestBuildKineDeployment_TLSArgs(t *testing.T) {
 		"/etc/kine/tls/tls.crt"))
 	g.Expect(argMap).To(HaveKeyWithValue("--server-key-file",
 		"/etc/kine/tls/tls.key"))
-	g.Expect(argMap).To(HaveKeyWithValue("--server-ca-file",
+	g.Expect(argMap).To(HaveKeyWithValue("--trusted-ca-file",
 		"/etc/kine/tls/ca.crt"))
 }
 

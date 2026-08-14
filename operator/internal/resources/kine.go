@@ -86,7 +86,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 		"--metrics-bind-address", fmt.Sprintf(":%d", KineMetricsPort),
 		"--server-cert-file", "/etc/kine/tls/tls.crt",
 		"--server-key-file", "/etc/kine/tls/tls.key",
-		"--server-ca-file", "/etc/kine/tls/ca.crt",
+		"--trusted-ca-file", "/etc/kine/tls/ca.crt",
 	}
 
 	if shard.Spec.Kine.ConnectionPool != nil {
