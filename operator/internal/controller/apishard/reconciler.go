@@ -82,6 +82,7 @@ var managedGVKs = []schema.GroupVersionKind{
 	{Group: "", Version: "v1", Kind: "Secret"},
 	{Group: "", Version: "v1", Kind: "ConfigMap"},
 	{Group: "", Version: "v1", Kind: "ServiceAccount"},
+	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "Role"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "RoleBinding"},
@@ -119,6 +120,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=get;list;watch;create;update;patch;delete;use
 
@@ -711,6 +713,16 @@ func (r *Reconciler) reconcileMetrics(
 	crb := resources.BuildMetricsReaderClusterRoleBinding(shard)
 	if err := tc.ApplyOwned(ctx, crb); err != nil {
 		return fmt.Errorf("metrics-reader cluster role binding: %w", err)
+	}
+
+	role := resources.BuildPrometheusDiscoveryRole(shard)
+	if err := tc.ApplyOwned(ctx, role); err != nil {
+		return fmt.Errorf("prometheus discovery role: %w", err)
+	}
+
+	rb := resources.BuildPrometheusDiscoveryRoleBinding(shard)
+	if err := tc.ApplyOwned(ctx, rb); err != nil {
+		return fmt.Errorf("prometheus discovery role binding: %w", err)
 	}
 
 	kineSM := resources.BuildKineServiceMonitor(shard)

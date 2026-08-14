@@ -1744,6 +1744,53 @@ var _ = Describe("reconcileMetrics", func() {
 		Expect(*apiserverSM.Spec.Endpoints[0].Scheme).To(Equal(monitoringv1.SchemeHTTPS))
 	})
 
+	It("creates Prometheus discovery Role and RoleBinding in target namespace", func() {
+		err := reconciler.reconcileMetrics(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		role := &rbacv1.Role{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PrometheusDiscoveryRoleName(shard),
+			Namespace: ns.Name,
+		}, role)).To(Succeed())
+		Expect(role.Rules).To(HaveLen(2))
+		Expect(role.Rules[0].APIGroups).To(ContainElement(""))
+		Expect(role.Rules[0].Resources).To(ConsistOf("services", "endpoints", "pods"))
+		Expect(role.Rules[0].Verbs).To(ConsistOf("get", "list", "watch"))
+		Expect(role.Rules[1].APIGroups).To(ContainElement("monitoring.coreos.com"))
+		Expect(role.Rules[1].Resources).To(ConsistOf("servicemonitors"))
+
+		rb := &rbacv1.RoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PrometheusDiscoveryRoleName(shard),
+			Namespace: ns.Name,
+		}, rb)).To(Succeed())
+		Expect(rb.RoleRef.Kind).To(Equal("Role"))
+		Expect(rb.RoleRef.Name).To(Equal(resources.PrometheusDiscoveryRoleName(shard)))
+		Expect(rb.Subjects).To(HaveLen(1))
+		Expect(rb.Subjects[0].Kind).To(Equal("ServiceAccount"))
+		Expect(rb.Subjects[0].Name).To(Equal("prometheus-k8s"))
+		Expect(rb.Subjects[0].Namespace).To(Equal("openshift-monitoring"))
+	})
+
+	It("uses custom Prometheus SA config when specified", func() {
+		shard.Spec.Monitoring = &kubeshardv1alpha1.MonitoringConfig{
+			PrometheusServiceAccountName:      "custom-prom",
+			PrometheusServiceAccountNamespace: "custom-monitoring",
+		}
+
+		err := reconciler.reconcileMetrics(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		rb := &rbacv1.RoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PrometheusDiscoveryRoleName(shard),
+			Namespace: ns.Name,
+		}, rb)).To(Succeed())
+		Expect(rb.Subjects[0].Name).To(Equal("custom-prom"))
+		Expect(rb.Subjects[0].Namespace).To(Equal("custom-monitoring"))
+	})
+
 	It("skips all metrics resources when CRD is unavailable", func() {
 		reconciler.ServiceMonitorAvailable = false
 

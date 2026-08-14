@@ -190,6 +190,22 @@ type KineSpec struct {
 	WatchProgressNotifyInterval *metav1.Duration `json:"watchProgressNotifyInterval,omitempty"`
 }
 
+// MonitoringConfig configures the Prometheus monitoring integration for the
+// shard. The operator creates RBAC resources in the target namespace so that
+// the specified Prometheus ServiceAccount can discover and scrape ServiceMonitors.
+type MonitoringConfig struct {
+	// PrometheusServiceAccountName is the name of the ServiceAccount used by
+	// Prometheus. Defaults to "prometheus-k8s" (the OpenShift convention).
+	// +optional
+	// +kubebuilder:default="prometheus-k8s"
+	PrometheusServiceAccountName string `json:"prometheusServiceAccountName,omitempty"`
+	// PrometheusServiceAccountNamespace is the namespace where the Prometheus
+	// ServiceAccount resides. Defaults to "openshift-monitoring".
+	// +optional
+	// +kubebuilder:default="openshift-monitoring"
+	PrometheusServiceAccountNamespace string `json:"prometheusServiceAccountNamespace,omitempty"`
+}
+
 type APIShardSpec struct {
 	TargetNamespace string              `json:"targetNamespace"`
 	APIGroups       []APIGroupSpec      `json:"apiGroups"`
@@ -197,6 +213,10 @@ type APIShardSpec struct {
 	NamespaceSync   NamespaceSyncConfig `json:"namespaceSync"`
 	Secondary       SecondarySpec       `json:"secondary,omitempty"`
 	Kine            KineSpec            `json:"kine,omitempty"`
+
+	// Monitoring configures the Prometheus monitoring integration.
+	// +optional
+	Monitoring *MonitoringConfig `json:"monitoring,omitempty"`
 
 	// ColocateComponents enables co-location of apiserver and Kine pods
 	// on the same nodes, combined with topology-aware routing

@@ -8,6 +8,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/utils/ptr"
+
+	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 )
 
 // TestBuildKineServiceMonitor verifies selectors and endpoint config.
@@ -118,4 +120,64 @@ func TestBuildMetricsReaderTokenSecret(t *testing.T) {
 	g.Expect(secret.Annotations).To(HaveKeyWithValue(
 		"kubernetes.io/service-account.name", "test-shard-metrics-reader",
 	))
+}
+
+// TestBuildPrometheusDiscoveryRole verifies the Role grants read access for service discovery.
+func TestBuildPrometheusDiscoveryRole(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+
+	role := BuildPrometheusDiscoveryRole(shard)
+
+	g.Expect(role.Name).To(Equal("test-shard-prometheus-discovery"))
+	g.Expect(role.Namespace).To(Equal("test-ns"))
+	g.Expect(role.Labels).To(HaveKeyWithValue(LabelManagedBy, ManagedByValue))
+	g.Expect(role.Labels).To(HaveKeyWithValue(LabelInstance, "test-shard"))
+	g.Expect(role.Rules).To(HaveLen(2))
+
+	g.Expect(role.Rules[0].APIGroups).To(ContainElement(""))
+	g.Expect(role.Rules[0].Resources).To(ConsistOf("services", "endpoints", "pods"))
+	g.Expect(role.Rules[0].Verbs).To(ConsistOf("get", "list", "watch"))
+
+	g.Expect(role.Rules[1].APIGroups).To(ContainElement("monitoring.coreos.com"))
+	g.Expect(role.Rules[1].Resources).To(ConsistOf("servicemonitors"))
+	g.Expect(role.Rules[1].Verbs).To(ConsistOf("get", "list", "watch"))
+}
+
+// TestBuildPrometheusDiscoveryRoleBinding verifies the RoleBinding references the correct Role and subject.
+func TestBuildPrometheusDiscoveryRoleBinding(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+
+	rb := BuildPrometheusDiscoveryRoleBinding(shard)
+
+	g.Expect(rb.Name).To(Equal("test-shard-prometheus-discovery"))
+	g.Expect(rb.Namespace).To(Equal("test-ns"))
+	g.Expect(rb.Labels).To(HaveKeyWithValue(LabelManagedBy, ManagedByValue))
+	g.Expect(rb.Labels).To(HaveKeyWithValue(LabelInstance, "test-shard"))
+	g.Expect(rb.RoleRef).To(Equal(rbacv1.RoleRef{
+		APIGroup: "rbac.authorization.k8s.io",
+		Kind:     "Role",
+		Name:     "test-shard-prometheus-discovery",
+	}))
+	g.Expect(rb.Subjects).To(HaveLen(1))
+	g.Expect(rb.Subjects[0].Kind).To(Equal("ServiceAccount"))
+	g.Expect(rb.Subjects[0].Name).To(Equal("prometheus-k8s"))
+	g.Expect(rb.Subjects[0].Namespace).To(Equal("openshift-monitoring"))
+}
+
+// TestBuildPrometheusDiscoveryRoleBindingCustomSA verifies that custom Prometheus SA config is respected.
+func TestBuildPrometheusDiscoveryRoleBindingCustomSA(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Monitoring = &kubeshardv1alpha1.MonitoringConfig{
+		PrometheusServiceAccountName:      "custom-prometheus",
+		PrometheusServiceAccountNamespace: "monitoring",
+	}
+
+	rb := BuildPrometheusDiscoveryRoleBinding(shard)
+
+	g.Expect(rb.Subjects).To(HaveLen(1))
+	g.Expect(rb.Subjects[0].Name).To(Equal("custom-prometheus"))
+	g.Expect(rb.Subjects[0].Namespace).To(Equal("monitoring"))
 }
