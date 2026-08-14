@@ -267,3 +267,55 @@ func TestBuildSecondaryServiceAccount(t *testing.T) {
 	g.Expect(sa.Labels).To(HaveKeyWithValue(LabelComponent, ComponentAPIServer))
 	g.Expect(sa.Labels).To(HaveKeyWithValue(LabelManagedBy, ManagedByValue))
 }
+
+// TestBuildSecondaryDeployment_EtcdTLSArgs verifies that the secondary
+// deployment connects to Kine over HTTPS and includes etcd client TLS flags.
+func TestBuildSecondaryDeployment_EtcdTLSArgs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	args := deploy.Spec.Template.Spec.Containers[0].Args
+
+	etcdServersArg := findArg(args, "--etcd-servers=")
+	g.Expect(etcdServersArg).To(HavePrefix("--etcd-servers=https://"),
+		"expected etcd-servers to use https")
+
+	g.Expect(findArg(args, "--etcd-certfile=")).To(
+		Equal("--etcd-certfile=/etc/kubernetes/etcd-client/tls.crt"))
+	g.Expect(findArg(args, "--etcd-keyfile=")).To(
+		Equal("--etcd-keyfile=/etc/kubernetes/etcd-client/tls.key"))
+	g.Expect(findArg(args, "--etcd-cafile=")).To(
+		Equal("--etcd-cafile=/etc/kubernetes/etcd-client/ca.crt"))
+}
+
+// TestBuildSecondaryDeployment_EtcdClientVolumeMount verifies that the
+// secondary deployment mounts the etcd client certificate Secret.
+func TestBuildSecondaryDeployment_EtcdClientVolumeMount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+
+	mounts := deploy.Spec.Template.Spec.Containers[0].VolumeMounts
+	var etcdMount *corev1.VolumeMount
+	for i := range mounts {
+		if mounts[i].Name == "etcd-client-cert" {
+			etcdMount = &mounts[i]
+			break
+		}
+	}
+	g.Expect(etcdMount).ToNot(BeNil(), "expected etcd-client-cert volume mount")
+	g.Expect(etcdMount.MountPath).To(Equal("/etc/kubernetes/etcd-client"))
+	g.Expect(etcdMount.ReadOnly).To(BeTrue())
+
+	volumes := deploy.Spec.Template.Spec.Volumes
+	var etcdVol *corev1.Volume
+	for i := range volumes {
+		if volumes[i].Name == "etcd-client-cert" {
+			etcdVol = &volumes[i]
+			break
+		}
+	}
+	g.Expect(etcdVol).ToNot(BeNil(), "expected etcd-client-cert volume")
+	g.Expect(etcdVol.Secret).ToNot(BeNil())
+	g.Expect(etcdVol.Secret.SecretName).To(Equal("test-shard-etcd-client-cert"))
+}

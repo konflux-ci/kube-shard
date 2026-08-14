@@ -30,10 +30,11 @@ import (
 )
 
 const (
-	DefaultKineImage = "ghcr.io/k3s-io/kine:v0.16.3"
-	KinePort         = 2379
-	KineMetricsPort  = 8080
-	dataVolumeName   = "data"
+	DefaultKineImage            = "ghcr.io/k3s-io/kine:v0.16.3"
+	KinePort                    = 2379
+	KineMetricsPort             = 8080
+	dataVolumeName              = "data"
+	kineServingCertVolumeName   = "kine-serving-cert"
 )
 
 // KineDeploymentName returns the name of the Kine Deployment for the given shard.
@@ -83,6 +84,8 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 		"--endpoint", KineEndpoint(shard),
 		"--listen-address", fmt.Sprintf("tcp://0.0.0.0:%d", KinePort),
 		"--metrics-bind-address", fmt.Sprintf(":%d", KineMetricsPort),
+		"--server-cert-file", "/etc/kine/tls/tls.crt",
+		"--server-key-file", "/etc/kine/tls/tls.key",
 	}
 
 	if shard.Spec.Kine.ConnectionPool != nil {
@@ -128,9 +131,18 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 			Name:         tmpVolumeName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
+		{
+			Name: kineServingCertVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: fmt.Sprintf("%s-kine-serving-cert", shard.Name),
+				},
+			},
+		},
 	}
 	volumeMounts := []corev1.VolumeMount{
 		{Name: tmpVolumeName, MountPath: "/tmp"},
+		{Name: kineServingCertVolumeName, MountPath: "/etc/kine/tls", ReadOnly: true},
 	}
 
 	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeSQLite {

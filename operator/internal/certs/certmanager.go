@@ -114,28 +114,105 @@ func BuildCAIssuer(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured
 
 // BuildServingCertificate creates the TLS serving certificate for the secondary API server.
 func BuildServingCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	return buildServingCert(
+		shard,
+		ServingCertificateName(shard),
+		PKISecretName(shard),
+		resources.SecondaryServiceName(shard),
+	)
+}
+
+// KineServingCertificateName returns the name of the Kine serving Certificate resource.
+func KineServingCertificateName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-kine-serving", shard.Name)
+}
+
+// KineServingSecretName returns the name of the Secret holding the Kine serving certificate.
+func KineServingSecretName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-kine-serving-cert", shard.Name)
+}
+
+// BuildKineServingCertificate creates the TLS serving certificate for the Kine
+// gRPC endpoint. The certificate includes DNS SANs matching the Kine Service
+// FQDN so the secondary kube-apiserver can verify the server identity.
+func BuildKineServingCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	return buildServingCert(
+		shard,
+		KineServingCertificateName(shard),
+		KineServingSecretName(shard),
+		resources.KineServiceName(shard),
+	)
+}
+
+// buildServingCert constructs a cert-manager Certificate for TLS serving,
+// parameterized by the certificate name, secret name, and service name.
+func buildServingCert(
+	shard *kubeshardv1alpha1.APIShard,
+	certName, secretName, svcName string,
+) *unstructured.Unstructured {
 	cert := &unstructured.Unstructured{}
 	cert.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "cert-manager.io",
 		Version: "v1",
 		Kind:    "Certificate",
 	})
-	cert.SetName(ServingCertificateName(shard))
+	cert.SetName(certName)
 	cert.SetNamespace(shard.Spec.TargetNamespace)
 	cert.SetLabels(certLabels(shard))
 
-	svcName := resources.SecondaryServiceName(shard)
 	ns := shard.Spec.TargetNamespace
 
 	cert.Object["spec"] = map[string]interface{}{
-		"secretName":  PKISecretName(shard),
-		"duration":    "8760h", // 1 year
-		"renewBefore": "720h",  // 30 days
+		"secretName":  secretName,
+		"duration":    "8760h",
+		"renewBefore": "720h",
 		"dnsNames": []interface{}{
 			svcName,
 			fmt.Sprintf("%s.%s", svcName, ns),
 			fmt.Sprintf("%s.%s.svc", svcName, ns),
 			fmt.Sprintf("%s.%s.svc.cluster.local", svcName, ns),
+		},
+		"issuerRef": map[string]interface{}{
+			"name":  IssuerName(shard),
+			"kind":  "Issuer",
+			"group": "cert-manager.io",
+		},
+	}
+
+	return cert
+}
+
+// EtcdClientCertificateName returns the name of the etcd client Certificate resource.
+func EtcdClientCertificateName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-etcd-client", shard.Name)
+}
+
+// EtcdClientSecretName returns the name of the Secret holding the etcd client certificate.
+func EtcdClientSecretName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-etcd-client-cert", shard.Name)
+}
+
+// BuildEtcdClientCertificate creates a client certificate used by the secondary
+// kube-apiserver to authenticate to Kine over mTLS. The certificate is issued
+// with the clientAuth extended key usage.
+func BuildEtcdClientCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Certificate",
+	})
+	cert.SetName(EtcdClientCertificateName(shard))
+	cert.SetNamespace(shard.Spec.TargetNamespace)
+	cert.SetLabels(certLabels(shard))
+
+	cert.Object["spec"] = map[string]interface{}{
+		"secretName":  EtcdClientSecretName(shard),
+		"commonName":  fmt.Sprintf("%s-etcd-client", shard.Name),
+		"duration":    "8760h",
+		"renewBefore": "720h",
+		"usages": []interface{}{
+			"client auth",
 		},
 		"issuerRef": map[string]interface{}{
 			"name":  IssuerName(shard),

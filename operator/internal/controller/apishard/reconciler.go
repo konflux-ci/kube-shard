@@ -544,6 +544,8 @@ func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Clie
 		certs.BuildCAIssuer(shard),
 		certs.BuildServingCertificate(shard),
 		certs.BuildAdminClientCertificate(shard),
+		certs.BuildKineServingCertificate(shard),
+		certs.BuildEtcdClientCertificate(shard),
 	}
 
 	for _, res := range certResources {

@@ -221,7 +221,7 @@ func TestBuildKineDeployment_SQLiteVolume(t *testing.T) {
 	deploy := BuildKineDeployment(shard)
 
 	volumes := deploy.Spec.Template.Spec.Volumes
-	g.Expect(volumes).To(HaveLen(2), "expected tmp + data volumes")
+	g.Expect(volumes).To(HaveLen(3), "expected tmp + kine-serving-cert + data volumes")
 
 	var dataVol, tmpVol *corev1.Volume
 	for i := range volumes {
@@ -238,7 +238,7 @@ func TestBuildKineDeployment_SQLiteVolume(t *testing.T) {
 	g.Expect(tmpVol.EmptyDir).ToNot(BeNil())
 
 	mounts := deploy.Spec.Template.Spec.Containers[0].VolumeMounts
-	g.Expect(mounts).To(HaveLen(2), "expected /tmp + /data mounts")
+	g.Expect(mounts).To(HaveLen(3), "expected /tmp + /etc/kine/tls + /data mounts")
 }
 
 func TestBuildKineDeployment_SchedulingFields(t *testing.T) {
@@ -403,4 +403,55 @@ func TestBuildKineDeployment_SecurityContext(t *testing.T) {
 	g.Expect(csc).ToNot(BeNil())
 	g.Expect(*csc.AllowPrivilegeEscalation).To(BeFalse())
 	g.Expect(csc.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+}
+
+// TestBuildKineDeployment_TLSArgs verifies that the Kine deployment includes
+// --server-cert-file and --server-key-file flags for TLS serving.
+func TestBuildKineDeployment_TLSArgs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildKineDeployment(shard)
+	args := deploy.Spec.Template.Spec.Containers[0].Args
+
+	argMap := make(map[string]string)
+	for i := 0; i < len(args)-1; i += 2 {
+		argMap[args[i]] = args[i+1]
+	}
+
+	g.Expect(argMap).To(HaveKeyWithValue("--server-cert-file",
+		"/etc/kine/tls/tls.crt"))
+	g.Expect(argMap).To(HaveKeyWithValue("--server-key-file",
+		"/etc/kine/tls/tls.key"))
+}
+
+// TestBuildKineDeployment_TLSVolumeMount verifies that the Kine deployment
+// mounts the serving certificate Secret at /etc/kine/tls.
+func TestBuildKineDeployment_TLSVolumeMount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildKineDeployment(shard)
+
+	mounts := deploy.Spec.Template.Spec.Containers[0].VolumeMounts
+	var tlsMount *corev1.VolumeMount
+	for i := range mounts {
+		if mounts[i].Name == "kine-serving-cert" {
+			tlsMount = &mounts[i]
+			break
+		}
+	}
+	g.Expect(tlsMount).ToNot(BeNil(), "expected kine-serving-cert volume mount")
+	g.Expect(tlsMount.MountPath).To(Equal("/etc/kine/tls"))
+	g.Expect(tlsMount.ReadOnly).To(BeTrue())
+
+	volumes := deploy.Spec.Template.Spec.Volumes
+	var tlsVol *corev1.Volume
+	for i := range volumes {
+		if volumes[i].Name == "kine-serving-cert" {
+			tlsVol = &volumes[i]
+			break
+		}
+	}
+	g.Expect(tlsVol).ToNot(BeNil(), "expected kine-serving-cert volume")
+	g.Expect(tlsVol.Secret).ToNot(BeNil())
+	g.Expect(tlsVol.Secret.SecretName).To(Equal("test-shard-kine-serving-cert"))
 }
