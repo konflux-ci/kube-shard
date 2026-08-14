@@ -30,11 +30,11 @@ import (
 )
 
 const (
-	DefaultSecondaryImage      = "registry.k8s.io/kube-apiserver:v1.36.2"
-	SecondaryPort              = 6443
-	tmpVolumeName              = "tmp"
-	varRunKubeVolumeName       = "var-run-kubernetes"
-	etcdClientCertVolumeName   = "etcd-client-cert"
+	DefaultSecondaryImage    = "registry.k8s.io/kube-apiserver:v1.36.2"
+	SecondaryPort            = 6443
+	tmpVolumeName            = "tmp"
+	varRunKubeVolumeName     = "var-run-kubernetes"
+	etcdClientCertVolumeName = "etcd-client-cert"
 )
 
 // SecondaryServiceAccountName returns the name of the ServiceAccount used by

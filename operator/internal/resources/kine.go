@@ -30,11 +30,11 @@ import (
 )
 
 const (
-	DefaultKineImage            = "ghcr.io/k3s-io/kine:v0.16.3"
-	KinePort                    = 2379
-	KineMetricsPort             = 8080
-	dataVolumeName              = "data"
-	kineServingCertVolumeName   = "kine-serving-cert"
+	DefaultKineImage          = "ghcr.io/k3s-io/kine:v0.16.3"
+	KinePort                  = 2379
+	KineMetricsPort           = 8080
+	dataVolumeName            = "data"
+	kineServingCertVolumeName = "kine-serving-cert"
 )
 
 // KineDeploymentName returns the name of the Kine Deployment for the given shard.
@@ -86,6 +86,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 		"--metrics-bind-address", fmt.Sprintf(":%d", KineMetricsPort),
 		"--server-cert-file", "/etc/kine/tls/tls.crt",
 		"--server-key-file", "/etc/kine/tls/tls.key",
+		"--server-ca-file", "/etc/kine/tls/ca.crt",
 	}
 
 	if shard.Spec.Kine.ConnectionPool != nil {
