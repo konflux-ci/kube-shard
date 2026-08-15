@@ -684,6 +684,12 @@ func (r *Reconciler) reconcileAPIServerSCC(ctx context.Context, tc *tracking.Cli
 // shard. All resources (RBAC, token Secret, ServiceMonitors) are created only
 // when the Prometheus Operator is available, avoiding unused credentials with
 // cluster-wide /metrics access when no ServiceMonitor would consume them.
+//
+// Before creating any resources, the function verifies that the ServiceMonitor
+// CRD is still present via the REST mapper. If the CRD was removed at runtime
+// (e.g., Prometheus Operator uninstalled between E2E test steps), it disables
+// the integration for future reconciles and returns nil. This avoids expensive
+// REST mapper refreshes and unnecessary API calls on every reconciliation cycle.
 func (r *Reconciler) reconcileMetrics(
 	ctx context.Context,
 	tc *tracking.Client,
@@ -691,6 +697,24 @@ func (r *Reconciler) reconcileMetrics(
 ) error {
 	if !r.ServiceMonitorAvailable {
 		return nil
+	}
+
+	// Verify the ServiceMonitor CRD is still registered before making any API
+	// calls. The REST mapper check is lightweight compared to attempting SSA
+	// patches against a removed CRD, which triggers full discovery refreshes.
+	_, err := r.RESTMapper().RESTMapping(
+		schema.GroupKind{Group: "monitoring.coreos.com", Kind: "ServiceMonitor"},
+		"v1",
+	)
+	if err != nil {
+		if meta.IsNoMatchError(err) {
+			log.FromContext(ctx).Info(
+				"ServiceMonitor CRD no longer available; disabling Prometheus integration",
+			)
+			r.ServiceMonitorAvailable = false
+			return nil
+		}
+		return fmt.Errorf("checking ServiceMonitor CRD availability: %w", err)
 	}
 
 	sa := resources.BuildMetricsReaderServiceAccount(shard)
