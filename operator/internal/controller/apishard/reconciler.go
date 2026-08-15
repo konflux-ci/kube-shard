@@ -535,15 +535,28 @@ func (r *Reconciler) getOrGeneratePostgresPassword(ctx context.Context, shard *k
 }
 
 // reconcileCertManager creates the cert-manager Issuer and Certificate resources
-// that provision TLS for the secondary API server. The chain is:
-// self-signed Issuer -> CA Certificate -> CA-backed Issuer -> serving Certificate.
+// that provision TLS for the secondary API server and Kine. Two independent CA
+// chains are created:
+//   - Shard CA: self-signed Issuer → CA Certificate → CA-backed Issuer →
+//     serving Certificate + admin client Certificate
+//   - Kine CA: self-signed Issuer → CA Certificate → CA-backed Issuer →
+//     Kine serving Certificate + etcd client Certificate
+//
+// The dedicated Kine CA restricts mTLS trust so that only the etcd client
+// certificate can authenticate to Kine — not the admin client cert or any
+// other shard cert.
 func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	certResources := []*unstructured.Unstructured{
+		// Shard-wide CA chain (API server serving + admin client).
 		certs.BuildSelfSignedIssuer(shard),
 		certs.BuildCACertificate(shard),
 		certs.BuildCAIssuer(shard),
 		certs.BuildServingCertificate(shard),
 		certs.BuildAdminClientCertificate(shard),
+		// Kine-dedicated CA chain (Kine serving + etcd client).
+		certs.BuildKineSelfSignedIssuer(shard),
+		certs.BuildKineCACertificate(shard),
+		certs.BuildKineCAIssuer(shard),
 		certs.BuildKineServingCertificate(shard),
 		certs.BuildEtcdClientCertificate(shard),
 	}

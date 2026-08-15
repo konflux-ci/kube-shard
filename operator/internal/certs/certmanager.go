@@ -33,6 +33,24 @@ func IssuerName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-ca-issuer", shard.Name)
 }
 
+// KineCAIssuerName returns the name of the CA-backed Issuer dedicated to Kine
+// mTLS certificates. Using a separate CA restricts Kine's trust boundary so
+// that only certificates issued by this CA (the etcd client cert) can
+// authenticate to Kine — not the admin client cert or any other shard cert.
+func KineCAIssuerName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-kine-ca-issuer", shard.Name)
+}
+
+// KineCACertificateName returns the name of the Kine CA Certificate resource.
+func KineCACertificateName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-kine-ca", shard.Name)
+}
+
+// KineCASecretName returns the name of the Secret holding the Kine CA key pair.
+func KineCASecretName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-kine-ca-keypair", shard.Name)
+}
+
 func CACertificateName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-front-proxy-ca", shard.Name)
 }
@@ -112,6 +130,79 @@ func BuildCAIssuer(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured
 	return issuer
 }
 
+// BuildKineSelfSignedIssuer creates a self-signed Issuer for generating the
+// Kine-dedicated CA. This is separate from the shard-wide self-signed issuer
+// so that the Kine CA is fully independent.
+func BuildKineSelfSignedIssuer(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Issuer",
+	})
+	issuer.SetName(fmt.Sprintf("%s-kine-selfsigned", shard.Name))
+	issuer.SetNamespace(shard.Spec.TargetNamespace)
+	issuer.SetLabels(certLabels(shard))
+
+	_ = unstructured.SetNestedMap(issuer.Object, map[string]interface{}{}, "spec", "selfSigned")
+
+	return issuer
+}
+
+// BuildKineCACertificate creates the CA Certificate for the Kine-dedicated
+// certificate chain. This CA signs the Kine serving certificate and the etcd
+// client certificate but not the admin or API server serving certificates,
+// restricting Kine's mTLS trust boundary.
+func BuildKineCACertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Certificate",
+	})
+	cert.SetName(KineCACertificateName(shard))
+	cert.SetNamespace(shard.Spec.TargetNamespace)
+	cert.SetLabels(certLabels(shard))
+
+	cert.Object["spec"] = map[string]interface{}{
+		"isCA":       true,
+		"commonName": fmt.Sprintf("%s-kine-ca", shard.Name),
+		"secretName": KineCASecretName(shard),
+		"duration":   "87600h", // 10 years
+		"issuerRef": map[string]interface{}{
+			"name":  fmt.Sprintf("%s-kine-selfsigned", shard.Name),
+			"kind":  "Issuer",
+			"group": "cert-manager.io",
+		},
+	}
+
+	return cert
+}
+
+// BuildKineCAIssuer creates an Issuer backed by the Kine CA certificate.
+// Only the Kine serving certificate and the etcd client certificate are
+// issued by this Issuer, isolating Kine's trust boundary from the rest of
+// the shard's PKI.
+func BuildKineCAIssuer(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Issuer",
+	})
+	issuer.SetName(KineCAIssuerName(shard))
+	issuer.SetNamespace(shard.Spec.TargetNamespace)
+	issuer.SetLabels(certLabels(shard))
+
+	issuer.Object["spec"] = map[string]interface{}{
+		"ca": map[string]interface{}{
+			"secretName": KineCASecretName(shard),
+		},
+	}
+
+	return issuer
+}
+
 // BuildServingCertificate creates the TLS serving certificate for the secondary API server.
 func BuildServingCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
 	return buildServingCert(
@@ -119,6 +210,7 @@ func BuildServingCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Un
 		ServingCertificateName(shard),
 		PKISecretName(shard),
 		resources.SecondaryServiceName(shard),
+		IssuerName(shard),
 	)
 }
 
@@ -133,22 +225,25 @@ func KineServingSecretName(shard *kubeshardv1alpha1.APIShard) string {
 }
 
 // BuildKineServingCertificate creates the TLS serving certificate for the Kine
-// gRPC endpoint. The certificate includes DNS SANs matching the Kine Service
-// FQDN so the secondary kube-apiserver can verify the server identity.
+// gRPC endpoint. The certificate is issued by the Kine-dedicated CA (not the
+// shard-wide CA) to restrict the mTLS trust boundary. It includes DNS SANs
+// matching the Kine Service FQDN so the secondary kube-apiserver can verify
+// the server identity.
 func BuildKineServingCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
 	return buildServingCert(
 		shard,
 		KineServingCertificateName(shard),
 		KineServingSecretName(shard),
 		resources.KineServiceName(shard),
+		KineCAIssuerName(shard),
 	)
 }
 
 // buildServingCert constructs a cert-manager Certificate for TLS serving,
-// parameterized by the certificate name, secret name, and service name.
+// parameterized by the certificate name, secret name, service name, and issuer name.
 func buildServingCert(
 	shard *kubeshardv1alpha1.APIShard,
-	certName, secretName, svcName string,
+	certName, secretName, svcName, issuerName string,
 ) *unstructured.Unstructured {
 	cert := &unstructured.Unstructured{}
 	cert.SetGroupVersionKind(schema.GroupVersionKind{
@@ -173,7 +268,7 @@ func buildServingCert(
 			fmt.Sprintf("%s.%s.svc.cluster.local", svcName, ns),
 		},
 		"issuerRef": map[string]interface{}{
-			"name":  IssuerName(shard),
+			"name":  issuerName,
 			"kind":  "Issuer",
 			"group": "cert-manager.io",
 		},
@@ -194,7 +289,8 @@ func EtcdClientSecretName(shard *kubeshardv1alpha1.APIShard) string {
 
 // BuildEtcdClientCertificate creates a client certificate used by the secondary
 // kube-apiserver to authenticate to Kine over mTLS. The certificate is issued
-// with the clientAuth extended key usage.
+// by the Kine-dedicated CA (not the shard-wide CA) so that Kine only trusts
+// this specific client identity, with the clientAuth extended key usage.
 func BuildEtcdClientCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
 	cert := &unstructured.Unstructured{}
 	cert.SetGroupVersionKind(schema.GroupVersionKind{
@@ -215,7 +311,7 @@ func BuildEtcdClientCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured
 			"client auth",
 		},
 		"issuerRef": map[string]interface{}{
-			"name":  IssuerName(shard),
+			"name":  KineCAIssuerName(shard),
 			"kind":  "Issuer",
 			"group": "cert-manager.io",
 		},
