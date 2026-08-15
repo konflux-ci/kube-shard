@@ -27,7 +27,7 @@ flowchart TB
     subgraph secondaryCP ["Secondary API Server (Konflux-managed)"]
         secKAS["kube-apiserver<br/>(secondary)"]
         kine["Kine"]
-        secKAS -->|"etcd v3 gRPC"| kine
+        secKAS -->|"etcd v3 gRPC (mTLS)"| kine
     end
 
     subgraph storage ["Storage Backend"]
@@ -80,7 +80,10 @@ The secondary kube-apiserver runs as a Deployment in a dedicated namespace (`tek
 
 | Flag | Value | Rationale |
 |------|-------|-----------|
-| `--etcd-servers` | `http://kine.tekton-apiserver.svc:2379` | Kine endpoint (in-cluster) |
+| `--etcd-servers` | `https://kine.tekton-apiserver.svc:2379` | Kine endpoint (mTLS) |
+| `--etcd-certfile` | `/etc/kubernetes/etcd-client/tls.crt` | Client certificate for Kine mTLS |
+| `--etcd-keyfile` | `/etc/kubernetes/etcd-client/tls.key` | Client key for Kine mTLS |
+| `--etcd-cafile` | `/etc/kubernetes/etcd-client/ca.crt` | CA that signed the Kine serving cert |
 | `--authorization-mode` | `Webhook` | Delegates authz to main cluster |
 | `--authorization-webhook-config-file` | `/etc/kube/authz/webhook-config.yaml` | Points to main cluster's SAR endpoint |
 | `--authorization-webhook-version` | `v1` | Required for k8s 1.36+ (default is v1beta1) |
@@ -110,10 +113,22 @@ For the authz webhook callback (secondary → main KAS SubjectAccessReview), the
 
 ### Kine Deployment
 
-Kine runs as a separate Deployment in the same namespace, exposing an etcd v3 gRPC endpoint:
+Kine runs as a separate Deployment in the same namespace, exposing an etcd v3 gRPC endpoint over TLS:
 
 - **Replicas:** 2-3 (stateless translator, can scale horizontally)
 - **Connection to PostgreSQL:** Standard connection string, TLS enforced, credentials from a Secret
+- **TLS serving:** Kine serves over TLS using a cert-manager-issued serving certificate (`--server-cert-file`, `--server-key-file`). The `--trusted-ca-file` flag enables client certificate verification, completing the mTLS handshake with the secondary kube-apiserver.
+
+#### Kine CA Chain
+
+The Kine mTLS certificates use a dedicated CA chain, separate from the shard-wide CA that signs the API server serving and admin client certificates. This restricts Kine's trust boundary so that only the etcd client certificate (issued by the Kine CA) can authenticate — the admin client cert and other shard certs are not trusted by Kine.
+
+The Kine CA chain consists of:
+1. **Self-signed Issuer** (`<shard>-kine-selfsigned`) — bootstrap issuer for the Kine CA
+2. **CA Certificate** (`<shard>-kine-ca`) — the Kine-dedicated CA, stored in Secret `<shard>-kine-ca-keypair`
+3. **CA-backed Issuer** (`<shard>-kine-ca-issuer`) — issues the Kine serving cert and etcd client cert
+4. **Kine serving Certificate** (`<shard>-kine-serving`) — TLS cert for the Kine gRPC endpoint, with DNS SANs matching the Kine Service FQDN
+5. **Etcd client Certificate** (`<shard>-etcd-client`) — client cert used by the secondary kube-apiserver, with `clientAuth` key usage
 
 ## Authentication and Authorization
 
