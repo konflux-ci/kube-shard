@@ -437,7 +437,7 @@ func runAsPrometheus(podName, apiURL string) (string, error) {
 
 	overrides := map[string]interface{}{
 		"spec": map[string]interface{}{
-			"serviceAccountName":         prometheusSAName,
+			"serviceAccountName":           prometheusSAName,
 			"automountServiceAccountToken": true,
 			"containers": []map[string]interface{}{
 				{
