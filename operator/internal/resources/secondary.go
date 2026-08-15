@@ -152,6 +152,12 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 		"--authorization-mode=Webhook",
 		"--authorization-webhook-config-file=/etc/kubernetes/auth/webhook-config.yaml",
 		"--authorization-webhook-version=v1",
+		// Token webhook authentication delegates TokenReview to the primary
+		// cluster, allowing the secondary to validate bearer tokens issued by
+		// the primary (e.g. ServiceAccount tokens used by Prometheus for
+		// metrics scraping).
+		"--authentication-token-webhook-config-file=/etc/kubernetes/auth/authn-webhook-config.yaml",
+		"--authentication-token-webhook-version=v1",
 		// kube-apiserver v1.32+ disables anonymous auth by default when the
 		// AnonymousAuthConfigurableEndpoints feature gate is enabled (beta).
 		// Re-enable it so that API discovery endpoints remain accessible to

@@ -268,6 +268,21 @@ func TestBuildSecondaryServiceAccount(t *testing.T) {
 	g.Expect(sa.Labels).To(HaveKeyWithValue(LabelManagedBy, ManagedByValue))
 }
 
+// TestBuildSecondaryDeployment_AuthenticationTokenWebhook verifies that the
+// secondary deployment includes the authentication token webhook config flag
+// so that bearer tokens issued by the primary cluster can be validated.
+func TestBuildSecondaryDeployment_AuthenticationTokenWebhook(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	args := deploy.Spec.Template.Spec.Containers[0].Args
+
+	g.Expect(findArg(args, "--authentication-token-webhook-config-file=")).To(
+		Equal("--authentication-token-webhook-config-file=/etc/kubernetes/auth/authn-webhook-config.yaml"))
+	g.Expect(findArg(args, "--authentication-token-webhook-version=")).To(
+		Equal("--authentication-token-webhook-version=v1"))
+}
+
 // TestBuildSecondaryDeployment_EtcdTLSArgs verifies that the secondary
 // deployment connects to Kine over HTTPS and includes etcd client TLS flags.
 func TestBuildSecondaryDeployment_EtcdTLSArgs(t *testing.T) {
