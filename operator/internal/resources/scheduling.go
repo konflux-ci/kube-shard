@@ -14,6 +14,7 @@ const (
 	LabelComponent = "app.kubernetes.io/component"
 
 	ManagedByValue     = "kube-shard-operator"
+	RBACAPIVersion     = "rbac.authorization.k8s.io/v1"
 	ComponentAPIServer = "apiserver"
 	ComponentStorage   = "storage"
 	ComponentDatabase  = "database"

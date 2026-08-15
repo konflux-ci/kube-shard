@@ -161,7 +161,7 @@ func BuildMetricsReaderServiceAccount(shard *kubeshardv1alpha1.APIShard) *corev1
 func BuildMetricsReaderClusterRole() *rbacv1.ClusterRole {
 	return &rbacv1.ClusterRole{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
+			APIVersion: RBACAPIVersion,
 			Kind:       "ClusterRole",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -184,7 +184,7 @@ func BuildMetricsReaderClusterRole() *rbacv1.ClusterRole {
 func BuildMetricsReaderClusterRoleBinding(shard *kubeshardv1alpha1.APIShard) *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
+			APIVersion: RBACAPIVersion,
 			Kind:       "ClusterRoleBinding",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -263,7 +263,7 @@ func PrometheusDiscoveryRoleName(shard *kubeshardv1alpha1.APIShard) string {
 func BuildPrometheusDiscoveryRole(shard *kubeshardv1alpha1.APIShard) *rbacv1.Role {
 	return &rbacv1.Role{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
+			APIVersion: RBACAPIVersion,
 			Kind:       "Role",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -294,7 +294,7 @@ func BuildPrometheusDiscoveryRole(shard *kubeshardv1alpha1.APIShard) *rbacv1.Rol
 func BuildPrometheusDiscoveryRoleBinding(shard *kubeshardv1alpha1.APIShard) *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
+			APIVersion: RBACAPIVersion,
 			Kind:       "RoleBinding",
 		},
 		ObjectMeta: metav1.ObjectMeta{

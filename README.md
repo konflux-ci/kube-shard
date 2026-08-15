@@ -193,6 +193,8 @@ The operator defines three CRDs:
 | `kine.replicas` | Replica count for Kine |
 | `kine.image` | Container image for Kine |
 | `kine.resources` | CPU/memory requests and limits for the Kine container |
+| `monitoring.prometheusServiceAccountName` | Name of the Prometheus ServiceAccount (default: `prometheus-k8s`) |
+| `monitoring.prometheusServiceAccountNamespace` | Namespace of the Prometheus ServiceAccount (default: `openshift-monitoring`) |
 
 
 ## Resource Sizing and Kine Compaction
@@ -352,6 +354,19 @@ kubectl exec deployment/<shard>-postgresql -n <namespace> -- \
 - 958/1000 timed out (sequential steps with random 20-300s sleep exceeded the 1h default)
 
 ## Monitoring
+
+### Prometheus Discovery RBAC
+
+The operator creates a Role and RoleBinding in the target namespace so that the Prometheus ServiceAccount can discover and scrape ServiceMonitors created for the secondary API server and Kine. By default, the operator binds to the `prometheus-k8s` ServiceAccount in the `openshift-monitoring` namespace (the OpenShift convention). To use a different Prometheus instance, configure the `spec.monitoring` field on the APIShard CR:
+
+```yaml
+spec:
+  monitoring:
+    prometheusServiceAccountName: my-prometheus
+    prometheusServiceAccountNamespace: my-monitoring-namespace
+```
+
+### Grafana Dashboard
 
 A Grafana dashboard for monitoring the kube-shard stack is available at [`deploy/grafana/shard-overview-dashboard.json`](deploy/grafana/shard-overview-dashboard.json). It includes a shard selector variable for multi-APIShard environments and covers:
 

@@ -80,6 +80,11 @@ spec:
     replicas: 1
     image: rancher/kine:v0.14.14
 
+  # Prometheus monitoring integration (optional)
+  # monitoring:
+  #   prometheusServiceAccountName: prometheus-k8s       # default
+  #   prometheusServiceAccountNamespace: openshift-monitoring  # default
+
 status:
   phase: Ready  # Provisioning | Blocked | Ready | Degraded
   connectionSecret:
