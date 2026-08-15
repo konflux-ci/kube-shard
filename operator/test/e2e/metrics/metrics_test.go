@@ -184,9 +184,14 @@ spec:
 
 	AfterEach(func() {
 		By("cleaning up curl pods that may have been left behind")
-		for _, podName := range []string{"curl-kine-metrics", "curl-apiserver-metrics"} {
+		for _, podName := range []string{"curl-kine-metrics"} {
 			cmd := exec.Command("kubectl", "delete", "pod", podName,
 				"-n", clientNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		}
+		for _, podName := range []string{"curl-apiserver-metrics"} {
+			cmd := exec.Command("kubectl", "delete", "pod", podName,
+				"-n", shardNamespace, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
 		}
 		for _, podName := range []string{"curl-prometheus-rbac", "curl-prometheus-endpoints"} {
@@ -266,37 +271,9 @@ spec:
 	})
 
 	Context("Secondary apiserver metrics", func() {
-		It("should expose secondary apiserver metrics as described by its ServiceMonitor", func() {
-			By("fetching the apiserver ServiceMonitor")
-			cmd := exec.Command("kubectl", "get", "servicemonitor",
-				fmt.Sprintf("%s-apiserver-metrics", shardName),
-				"-n", shardNamespace, "-o", "json")
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-
-			var sm map[string]interface{}
-			Expect(json.Unmarshal([]byte(output), &sm)).To(Succeed())
-
-			endpoints := sm["spec"].(map[string]interface{})["endpoints"].([]interface{})
-			ep := endpoints[0].(map[string]interface{})
-			portName := ep["port"].(string)
-			path := ep["path"].(string)
-			scheme := "https"
-			if s, ok := ep["scheme"].(string); ok && s != "" {
-				scheme = strings.ToLower(s)
-			}
-
-			By("creating a fresh token for the metrics-reader SA")
-			metricsReaderSA := fmt.Sprintf("%s-metrics-reader", shardName)
-			cmd = exec.Command("kubectl", "create", "token", metricsReaderSA,
-				"-n", shardNamespace, "--duration=10m")
-			tokenRaw, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			token := strings.TrimSpace(tokenRaw)
-			Expect(token).NotTo(BeEmpty(), "bearer token should not be empty")
-
+		It("should expose secondary apiserver metrics with a primary-issued bearer token", func() {
 			By("resolving port from the apiserver Service")
-			cmd = exec.Command("kubectl", "get", "service",
+			cmd := exec.Command("kubectl", "get", "service",
 				fmt.Sprintf("%s-apiserver", shardName),
 				"-n", shardNamespace, "-o", "json")
 			svcOutput, err := utils.Run(cmd)
@@ -304,16 +281,18 @@ spec:
 
 			var svc map[string]interface{}
 			Expect(json.Unmarshal([]byte(svcOutput), &svc)).To(Succeed())
-
+			portName := "https"
 			resolvedPort := resolveServicePort(svc, portName)
-			Expect(resolvedPort).ToNot(BeZero(), "port %s not found in apiserver Service", portName)
+			Expect(resolvedPort).ToNot(BeZero(),
+				"port %s not found in apiserver Service", portName)
 
-			By("scraping metrics from the apiserver endpoint via curl pod")
-			metricsURL := fmt.Sprintf("%s://%s-apiserver.%s.svc:%d%s",
-				scheme, shardName, shardNamespace, resolvedPort, path)
+			By("scraping metrics using the metrics-reader SA token")
+			metricsURL := fmt.Sprintf(
+				"https://%s-apiserver.%s.svc:%d/metrics",
+				shardName, shardNamespace, resolvedPort)
 			Eventually(func(g Gomega) {
-				out, err := runCurlWithToken(
-					"curl-apiserver-metrics", metricsURL, token)
+				out, err := runAsMetricsReader(
+					"curl-apiserver-metrics", metricsURL)
 				g.Expect(err).NotTo(HaveOccurred(),
 					"curl pod failed; output: %s", out)
 				g.Expect(out).To(ContainSubstring("apiserver_request_total"),
@@ -388,68 +367,6 @@ func resolveServicePort(svc map[string]interface{}, portName string) int {
 	return 0
 }
 
-// runCurlWithToken runs a curl pod that makes a request with the given bearer token.
-// It uses the create+wait+logs pattern for reliable output capture.
-func runCurlWithToken(podName, url, token string) (string, error) {
-	curlCmd := fmt.Sprintf(
-		"curl -s -m 15 -k -H 'Authorization: Bearer %s' -w '\\nHTTP_CODE:%%{http_code}\\n' %s",
-		token, url)
-
-	overrides := map[string]interface{}{
-		"spec": map[string]interface{}{
-			"containers": []map[string]interface{}{
-				{
-					"name":    podName,
-					"image":   "curlimages/curl:latest",
-					"command": []string{"sh", "-c", curlCmd},
-				},
-			},
-		},
-	}
-	overridesJSON, err := json.Marshal(overrides)
-	if err != nil {
-		return "", fmt.Errorf("marshaling overrides: %w", err)
-	}
-
-	// Clean up any leftover pod from a previous attempt
-	_ = exec.Command("kubectl", "delete", "pod", podName,
-		"-n", clientNamespace, "--ignore-not-found").Run()
-
-	createArgs := []string{
-		"run", podName,
-		"--restart=Never",
-		"--image=curlimages/curl:latest",
-		"-n", clientNamespace,
-		"--overrides", string(overridesJSON),
-	}
-	cmd := exec.Command("kubectl", createArgs...)
-	if _, err := utils.Run(cmd); err != nil {
-		return "", fmt.Errorf("creating pod: %w", err)
-	}
-
-	waitArgs := []string{
-		"wait", "--for=jsonpath={.status.phase}=Succeeded",
-		"pod/" + podName, "-n", clientNamespace,
-		"--timeout=30s",
-	}
-	cmd = exec.Command("kubectl", waitArgs...)
-	if _, err := utils.Run(cmd); err != nil {
-		logsCmd := exec.Command("kubectl", "logs", podName, "-n", clientNamespace)
-		logs, _ := utils.Run(logsCmd)
-		_ = exec.Command("kubectl", "delete", "pod", podName,
-			"-n", clientNamespace, "--ignore-not-found").Run()
-		return logs, fmt.Errorf("pod did not succeed: %w\nlogs: %s", err, logs)
-	}
-
-	logsCmd := exec.Command("kubectl", "logs", podName, "-n", clientNamespace)
-	output, err := utils.Run(logsCmd)
-
-	_ = exec.Command("kubectl", "delete", "pod", podName,
-		"-n", clientNamespace, "--ignore-not-found").Run()
-
-	return output, err
-}
-
 // runAsPrometheus runs a curl pod in the monitoring namespace using the Prometheus
 // ServiceAccount and queries the given API URL using the mounted SA token.
 // It creates the pod, waits for completion, then reads logs to avoid the race
@@ -514,6 +431,72 @@ func runAsPrometheus(podName, apiURL string) (string, error) {
 	// Clean up the pod
 	_ = exec.Command("kubectl", "delete", "pod", podName,
 		"-n", monitoringNamespace, "--ignore-not-found").Run()
+
+	return output, err
+}
+
+// runAsMetricsReader runs a curl pod as the metrics-reader ServiceAccount in the
+// shard namespace, using the pod's mounted SA token for authentication. This
+// mirrors how Prometheus actually scrapes the secondary apiserver.
+func runAsMetricsReader(podName, apiURL string) (string, error) {
+	metricsReaderSA := fmt.Sprintf("%s-metrics-reader", shardName)
+	tokenPath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	curlCmd := fmt.Sprintf(
+		"curl -s -m 15 -k -H 'Authorization: Bearer '$(cat %s) %s",
+		tokenPath, apiURL)
+
+	overrides := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"serviceAccountName":           metricsReaderSA,
+			"automountServiceAccountToken": true,
+			"containers": []map[string]interface{}{
+				{
+					"name":    podName,
+					"image":   "curlimages/curl:latest",
+					"command": []string{"sh", "-c", curlCmd},
+				},
+			},
+		},
+	}
+	overridesJSON, err := json.Marshal(overrides)
+	if err != nil {
+		return "", fmt.Errorf("marshaling overrides: %w", err)
+	}
+
+	_ = exec.Command("kubectl", "delete", "pod", podName,
+		"-n", shardNamespace, "--ignore-not-found").Run()
+
+	createArgs := []string{
+		"run", podName,
+		"--restart=Never",
+		"--image=curlimages/curl:latest",
+		"-n", shardNamespace,
+		"--overrides", string(overridesJSON),
+	}
+	cmd := exec.Command("kubectl", createArgs...)
+	if _, err := utils.Run(cmd); err != nil {
+		return "", fmt.Errorf("creating pod: %w", err)
+	}
+
+	waitArgs := []string{
+		"wait", "--for=jsonpath={.status.phase}=Succeeded",
+		"pod/" + podName, "-n", shardNamespace,
+		"--timeout=30s",
+	}
+	cmd = exec.Command("kubectl", waitArgs...)
+	if _, err := utils.Run(cmd); err != nil {
+		logsCmd := exec.Command("kubectl", "logs", podName, "-n", shardNamespace)
+		logs, _ := utils.Run(logsCmd)
+		_ = exec.Command("kubectl", "delete", "pod", podName,
+			"-n", shardNamespace, "--ignore-not-found").Run()
+		return logs, fmt.Errorf("pod did not succeed: %w\nlogs: %s", err, logs)
+	}
+
+	logsCmd := exec.Command("kubectl", "logs", podName, "-n", shardNamespace)
+	output, err := utils.Run(logsCmd)
+
+	_ = exec.Command("kubectl", "delete", "pod", podName,
+		"-n", shardNamespace, "--ignore-not-found").Run()
 
 	return output, err
 }

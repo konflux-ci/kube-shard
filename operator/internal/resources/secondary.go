@@ -134,6 +134,16 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 		"--service-account-signing-key-file=/etc/kubernetes/pki/tls.key",
 		fmt.Sprintf("--service-account-issuer=https://%s-apiserver.%s.svc",
 			shard.Name, shard.Spec.TargetNamespace),
+		// api-audiences must include both the secondary's own issuer (for
+		// self-issued tokens) AND the primary's common issuers so that tokens
+		// validated via the authentication webhook are accepted. Without this,
+		// the secondary rejects webhook-authenticated tokens whose audience
+		// doesn't match the secondary's issuer.
+		fmt.Sprintf(
+			"--api-audiences=https://%s-apiserver.%s.svc,"+
+				"https://kubernetes.default.svc,"+
+				"https://kubernetes.default.svc.cluster.local",
+			shard.Name, shard.Spec.TargetNamespace),
 		// NamespaceLifecycle is disabled because namespaces are mirrored from the
 		// primary by the NamespaceSync controller — the secondary is not the source
 		// of truth. ServiceAccount is disabled because all authentication happens on

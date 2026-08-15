@@ -331,3 +331,21 @@ func TestBuildSecondaryDeployment_AuthnTokenWebhook(t *testing.T) {
 	got := findArg(args, "--authentication-token-webhook-config-file=")
 	g.Expect(got).To(Equal("--authentication-token-webhook-config-file=/etc/kubernetes/auth/authn-webhook-config.yaml"))
 }
+
+// TestBuildSecondaryDeployment_APIAudiences verifies that the secondary includes
+// both its own issuer and the primary's common issuers in --api-audiences, so
+// that tokens validated via the authentication webhook are accepted.
+func TestBuildSecondaryDeployment_APIAudiences(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	args := deploy.Spec.Template.Spec.Containers[0].Args
+
+	got := findArg(args, "--api-audiences=")
+	g.Expect(got).To(ContainSubstring("https://test-shard-apiserver.test-ns.svc"),
+		"should include the secondary's own issuer")
+	g.Expect(got).To(ContainSubstring("https://kubernetes.default.svc"),
+		"should include the primary's common issuer")
+	g.Expect(got).To(ContainSubstring("https://kubernetes.default.svc.cluster.local"),
+		"should include the primary's cluster.local issuer")
+}
