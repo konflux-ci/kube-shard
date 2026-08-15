@@ -675,6 +675,10 @@ var _ = Describe("reconcileAuthConfig", func() {
 		Expect(cm.Data).To(HaveKey("webhook-config.yaml"))
 		Expect(cm.Data["webhook-config.yaml"]).To(ContainSubstring("subjectaccessreviews"))
 		Expect(cm.Data["webhook-config.yaml"]).To(ContainSubstring("tokenFile"))
+
+		Expect(cm.Data).To(HaveKey("authn-webhook-config.yaml"))
+		Expect(cm.Data["authn-webhook-config.yaml"]).To(ContainSubstring("tokenreviews"))
+		Expect(cm.Data["authn-webhook-config.yaml"]).To(ContainSubstring("tokenFile"))
 	})
 })
 

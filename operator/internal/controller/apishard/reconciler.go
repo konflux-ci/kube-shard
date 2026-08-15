@@ -570,9 +570,12 @@ func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Clie
 	return nil
 }
 
-// reconcileAuthConfig creates a ConfigMap containing the kubeconfig used by the
-// secondary API server's --authorization-webhook-config-file flag. This allows
-// the secondary to delegate SubjectAccessReview calls to the primary cluster.
+// reconcileAuthConfig creates a ConfigMap containing the kubeconfigs used by the
+// secondary API server's --authorization-webhook-config-file and
+// --authentication-token-webhook-config-file flags. The authorization webhook
+// allows the secondary to delegate SubjectAccessReview calls to the primary
+// cluster; the authentication webhook allows the secondary to validate bearer
+// tokens issued by the primary via TokenReview.
 func (r *Reconciler) reconcileAuthConfig(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	cmName := fmt.Sprintf("%s-authz-config", shard.Name)
 	webhookConfig := `apiVersion: v1
@@ -581,6 +584,25 @@ clusters:
 - name: primary
   cluster:
     server: https://kubernetes.default.svc/apis/authorization.k8s.io/v1/subjectaccessreviews
+    certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+users:
+- name: webhook
+  user:
+    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+current-context: webhook
+contexts:
+- context:
+    cluster: primary
+    user: webhook
+  name: webhook
+`
+
+	authnWebhookConfig := `apiVersion: v1
+kind: Config
+clusters:
+- name: primary
+  cluster:
+    server: https://kubernetes.default.svc/apis/authentication.k8s.io/v1/tokenreviews
     certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 users:
 - name: webhook
@@ -604,7 +626,8 @@ contexts:
 			Namespace: shard.Spec.TargetNamespace,
 		},
 		Data: map[string]string{
-			"webhook-config.yaml": webhookConfig,
+			"webhook-config.yaml":       webhookConfig,
+			"authn-webhook-config.yaml": authnWebhookConfig,
 		},
 	}
 

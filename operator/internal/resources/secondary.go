@@ -126,10 +126,14 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 		"--client-ca-file=/etc/kubernetes/pki/ca.crt",
 		// SA token verification/signing keys. Reuses the serving key because the
 		// secondary never issues tokens consumed externally; it only needs a valid
-		// key pair to satisfy the mandatory kube-apiserver flags.
+		// key pair to satisfy the mandatory kube-apiserver flags. The issuer MUST
+		// differ from the primary's issuer so that primary-issued SA tokens are
+		// NOT claimed by the secondary's local SA authenticator (which would fail
+		// signature validation) and instead fall through to the token webhook.
 		"--service-account-key-file=/etc/kubernetes/pki/tls.key",
 		"--service-account-signing-key-file=/etc/kubernetes/pki/tls.key",
-		"--service-account-issuer=https://kubernetes.default.svc",
+		fmt.Sprintf("--service-account-issuer=https://%s-apiserver.%s.svc",
+			shard.Name, shard.Spec.TargetNamespace),
 		// NamespaceLifecycle is disabled because namespaces are mirrored from the
 		// primary by the NamespaceSync controller — the secondary is not the source
 		// of truth. ServiceAccount is disabled because all authentication happens on
@@ -152,6 +156,11 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 		"--authorization-mode=Webhook",
 		"--authorization-webhook-config-file=/etc/kubernetes/auth/webhook-config.yaml",
 		"--authorization-webhook-version=v1",
+		// Token webhook authentication delegates TokenReview to the primary
+		// cluster, allowing the secondary to validate bearer tokens issued
+		// by the primary (e.g. for Prometheus metrics scraping).
+		"--authentication-token-webhook-config-file=/etc/kubernetes/auth/authn-webhook-config.yaml",
+		"--authentication-token-webhook-version=v1",
 		// kube-apiserver v1.32+ disables anonymous auth by default when the
 		// AnonymousAuthConfigurableEndpoints feature gate is enabled (beta).
 		// Re-enable it so that API discovery endpoints remain accessible to
