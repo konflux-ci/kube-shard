@@ -15,6 +15,7 @@ import (
 const (
 	MetricsReaderClusterRoleName = "kube-shard-metrics-reader"
 	metricsScrapeInterval        = monitoringv1.Duration("30s")
+	rbacAPIVersion               = "rbac.authorization.k8s.io/v1"
 )
 
 // pkiSecretName returns the name of the Secret holding the shard's CA and
@@ -37,7 +38,7 @@ func MetricsReaderTokenSecretName(shard *kubeshardv1alpha1.APIShard) string {
 }
 
 // BuildKineServiceMonitor constructs a ServiceMonitor that scrapes the Kine
-// metrics endpoint (plain HTTP on the metrics port).
+// metrics endpoint over HTTPS (Kine serves TLS on all ports when certs are configured).
 func BuildKineServiceMonitor(shard *kubeshardv1alpha1.APIShard) *monitoringv1.ServiceMonitor {
 	return &monitoringv1.ServiceMonitor{
 		TypeMeta: metav1.TypeMeta{
@@ -63,7 +64,17 @@ func BuildKineServiceMonitor(shard *kubeshardv1alpha1.APIShard) *monitoringv1.Se
 				{
 					Port:     "metrics",
 					Path:     "/metrics",
+					Scheme:   ptr.To(monitoringv1.SchemeHTTPS),
 					Interval: metricsScrapeInterval,
+					HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+						HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+							TLSConfig: &monitoringv1.TLSConfig{
+								SafeTLSConfig: monitoringv1.SafeTLSConfig{
+									InsecureSkipVerify: ptr.To(true),
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -161,7 +172,7 @@ func BuildMetricsReaderServiceAccount(shard *kubeshardv1alpha1.APIShard) *corev1
 func BuildMetricsReaderClusterRole() *rbacv1.ClusterRole {
 	return &rbacv1.ClusterRole{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
+			APIVersion: rbacAPIVersion,
 			Kind:       "ClusterRole",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -184,7 +195,7 @@ func BuildMetricsReaderClusterRole() *rbacv1.ClusterRole {
 func BuildMetricsReaderClusterRoleBinding(shard *kubeshardv1alpha1.APIShard) *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
+			APIVersion: rbacAPIVersion,
 			Kind:       "ClusterRoleBinding",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -230,5 +241,92 @@ func BuildMetricsReaderTokenSecret(shard *kubeshardv1alpha1.APIShard) *corev1.Se
 			},
 		},
 		Type: corev1.SecretTypeServiceAccountToken,
+	}
+}
+
+// PrometheusServiceAccount returns the Prometheus ServiceAccount name and
+// namespace for the given shard, falling back to OpenShift defaults when the
+// monitoring section is unset or fields are empty.
+func PrometheusServiceAccount(shard *kubeshardv1alpha1.APIShard) (name, namespace string) {
+	name = "prometheus-k8s"
+	namespace = "openshift-monitoring"
+	if shard.Spec.Monitoring != nil {
+		if shard.Spec.Monitoring.PrometheusServiceAccountName != "" {
+			name = shard.Spec.Monitoring.PrometheusServiceAccountName
+		}
+		if shard.Spec.Monitoring.PrometheusNamespace != "" {
+			namespace = shard.Spec.Monitoring.PrometheusNamespace
+		}
+	}
+	return
+}
+
+// prometheusDiscoveryRoleName returns the name of the Prometheus discovery Role
+// for the given shard.
+func prometheusDiscoveryRoleName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-prometheus-discovery", shard.Name)
+}
+
+// BuildPrometheusDiscoveryRole constructs a Role in the target namespace granting
+// read access to the resources Prometheus needs for service discovery.
+func BuildPrometheusDiscoveryRole(shard *kubeshardv1alpha1.APIShard) *rbacv1.Role {
+	return &rbacv1.Role{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: rbacAPIVersion,
+			Kind:       "Role",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      prometheusDiscoveryRoleName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+			Labels: map[string]string{
+				LabelManagedBy: ManagedByValue,
+				LabelInstance:  shard.Name,
+			},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"services", "endpoints", "pods"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+			{
+				APIGroups: []string{"monitoring.coreos.com"},
+				Resources: []string{"servicemonitors"},
+				Verbs:     []string{"get", "list", "watch"},
+			},
+		},
+	}
+}
+
+// BuildPrometheusDiscoveryRoleBinding constructs a RoleBinding in the target
+// namespace that binds the Prometheus discovery Role to the configured Prometheus
+// ServiceAccount.
+func BuildPrometheusDiscoveryRoleBinding(shard *kubeshardv1alpha1.APIShard) *rbacv1.RoleBinding {
+	saName, saNamespace := PrometheusServiceAccount(shard)
+	return &rbacv1.RoleBinding{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: rbacAPIVersion,
+			Kind:       "RoleBinding",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      prometheusDiscoveryRoleName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+			Labels: map[string]string{
+				LabelManagedBy: ManagedByValue,
+				LabelInstance:  shard.Name,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     prometheusDiscoveryRoleName(shard),
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      saName,
+				Namespace: saNamespace,
+			},
+		},
 	}
 }

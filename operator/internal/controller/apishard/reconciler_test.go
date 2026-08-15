@@ -675,6 +675,10 @@ var _ = Describe("reconcileAuthConfig", func() {
 		Expect(cm.Data).To(HaveKey("webhook-config.yaml"))
 		Expect(cm.Data["webhook-config.yaml"]).To(ContainSubstring("subjectaccessreviews"))
 		Expect(cm.Data["webhook-config.yaml"]).To(ContainSubstring("tokenFile"))
+
+		Expect(cm.Data).To(HaveKey("authn-webhook-config.yaml"))
+		Expect(cm.Data["authn-webhook-config.yaml"]).To(ContainSubstring("tokenreviews"))
+		Expect(cm.Data["authn-webhook-config.yaml"]).To(ContainSubstring("tokenFile"))
 	})
 })
 
@@ -1728,12 +1732,30 @@ var _ = Describe("reconcileMetrics", func() {
 			Name: fmt.Sprintf("%s-metrics-reader", shard.Name),
 		}, crb)).To(Succeed())
 
+		role := &rbacv1.Role{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      fmt.Sprintf("%s-prometheus-discovery", shard.Name),
+			Namespace: ns.Name,
+		}, role)).To(Succeed())
+		Expect(role.Rules).To(HaveLen(2))
+		Expect(role.Rules[0].Resources).To(ConsistOf("services", "endpoints", "pods"))
+		Expect(role.Rules[1].Resources).To(ConsistOf("servicemonitors"))
+
+		rb := &rbacv1.RoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      fmt.Sprintf("%s-prometheus-discovery", shard.Name),
+			Namespace: ns.Name,
+		}, rb)).To(Succeed())
+		Expect(rb.Subjects[0].Name).To(Equal("prometheus-k8s"))
+		Expect(rb.Subjects[0].Namespace).To(Equal("openshift-monitoring"))
+
 		kineSM := &monitoringv1.ServiceMonitor{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      fmt.Sprintf("%s-kine-metrics", shard.Name),
 			Namespace: ns.Name,
 		}, kineSM)).To(Succeed())
 		Expect(kineSM.Spec.Endpoints[0].Port).To(Equal("metrics"))
+		Expect(*kineSM.Spec.Endpoints[0].Scheme).To(Equal(monitoringv1.SchemeHTTPS))
 
 		apiserverSM := &monitoringv1.ServiceMonitor{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{

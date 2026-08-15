@@ -64,6 +64,9 @@ jobs:
       - name: "E2E: performance"
         run: go test ./test/e2e/performance/ -v -ginkgo.v -ginkgo.github-output -timeout 20m
 
+      - name: "E2E: metrics"
+        run: go test ./test/e2e/metrics/ -v -ginkgo.v -ginkgo.github-output -timeout 20m
+
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4

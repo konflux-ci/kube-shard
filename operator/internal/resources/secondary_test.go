@@ -319,3 +319,15 @@ func TestBuildSecondaryDeployment_EtcdClientVolumeMount(t *testing.T) {
 	g.Expect(etcdVol.Secret).ToNot(BeNil())
 	g.Expect(etcdVol.Secret.SecretName).To(Equal("test-shard-etcd-client-cert"))
 }
+
+// TestBuildSecondaryDeployment_AuthnTokenWebhook verifies that the secondary
+// deployment includes the authentication token webhook config file flag.
+func TestBuildSecondaryDeployment_AuthnTokenWebhook(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	args := deploy.Spec.Template.Spec.Containers[0].Args
+
+	got := findArg(args, "--authentication-token-webhook-config-file=")
+	g.Expect(got).To(Equal("--authentication-token-webhook-config-file=/etc/kubernetes/auth/authn-webhook-config.yaml"))
+}

@@ -472,6 +472,20 @@ spec:
                     - message: duration must be a valid non-negative Go duration
                       rule: duration(self) >= duration('0s')
                 type: object
+              monitoring:
+                description: Monitoring configures Prometheus metrics collection.
+                properties:
+                  prometheusNamespace:
+                    description: |-
+                      PrometheusNamespace is the namespace where the Prometheus ServiceAccount
+                      resides. When empty, defaults to "openshift-monitoring".
+                    type: string
+                  prometheusServiceAccountName:
+                    description: |-
+                      PrometheusServiceAccountName is the name of the ServiceAccount used by
+                      Prometheus for scraping. When empty, defaults to "prometheus-k8s".
+                    type: string
+                type: object
               namespaceSync:
                 properties:
                   labelSelector:

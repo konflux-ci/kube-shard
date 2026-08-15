@@ -190,6 +190,18 @@ type KineSpec struct {
 	WatchProgressNotifyInterval *metav1.Duration `json:"watchProgressNotifyInterval,omitempty"`
 }
 
+// MonitoringSpec configures Prometheus metrics collection for the shard.
+type MonitoringSpec struct {
+	// PrometheusServiceAccountName is the name of the ServiceAccount used by
+	// Prometheus for scraping. When empty, defaults to "prometheus-k8s".
+	// +optional
+	PrometheusServiceAccountName string `json:"prometheusServiceAccountName,omitempty"`
+	// PrometheusNamespace is the namespace where the Prometheus ServiceAccount
+	// resides. When empty, defaults to "openshift-monitoring".
+	// +optional
+	PrometheusNamespace string `json:"prometheusNamespace,omitempty"`
+}
+
 type APIShardSpec struct {
 	TargetNamespace string              `json:"targetNamespace"`
 	APIGroups       []APIGroupSpec      `json:"apiGroups"`
@@ -197,6 +209,10 @@ type APIShardSpec struct {
 	NamespaceSync   NamespaceSyncConfig `json:"namespaceSync"`
 	Secondary       SecondarySpec       `json:"secondary,omitempty"`
 	Kine            KineSpec            `json:"kine,omitempty"`
+
+	// Monitoring configures Prometheus metrics collection.
+	// +optional
+	Monitoring *MonitoringSpec `json:"monitoring,omitempty"`
 
 	// ColocateComponents enables co-location of apiserver and Kine pods
 	// on the same nodes, combined with topology-aware routing

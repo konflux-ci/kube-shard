@@ -84,6 +84,7 @@ var managedGVKs = []schema.GroupVersionKind{
 	{Group: "", Version: "v1", Kind: "ServiceAccount"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
+	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "Role"},
 	{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "RoleBinding"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Issuer"},
 	{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
@@ -118,7 +119,10 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=get;list;watch;create;update;patch;delete;use
 
@@ -570,9 +574,12 @@ func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Clie
 	return nil
 }
 
-// reconcileAuthConfig creates a ConfigMap containing the kubeconfig used by the
-// secondary API server's --authorization-webhook-config-file flag. This allows
-// the secondary to delegate SubjectAccessReview calls to the primary cluster.
+// reconcileAuthConfig creates a ConfigMap containing the kubeconfigs used by the
+// secondary API server's --authorization-webhook-config-file and
+// --authentication-token-webhook-config-file flags. The authorization webhook
+// allows the secondary to delegate SubjectAccessReview calls to the primary
+// cluster; the authentication webhook allows the secondary to validate bearer
+// tokens issued by the primary via TokenReview.
 func (r *Reconciler) reconcileAuthConfig(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	cmName := fmt.Sprintf("%s-authz-config", shard.Name)
 	webhookConfig := `apiVersion: v1
@@ -581,6 +588,25 @@ clusters:
 - name: primary
   cluster:
     server: https://kubernetes.default.svc/apis/authorization.k8s.io/v1/subjectaccessreviews
+    certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+users:
+- name: webhook
+  user:
+    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+current-context: webhook
+contexts:
+- context:
+    cluster: primary
+    user: webhook
+  name: webhook
+`
+
+	authnWebhookConfig := `apiVersion: v1
+kind: Config
+clusters:
+- name: primary
+  cluster:
+    server: https://kubernetes.default.svc/apis/authentication.k8s.io/v1/tokenreviews
     certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 users:
 - name: webhook
@@ -604,7 +630,8 @@ contexts:
 			Namespace: shard.Spec.TargetNamespace,
 		},
 		Data: map[string]string{
-			"webhook-config.yaml": webhookConfig,
+			"webhook-config.yaml":       webhookConfig,
+			"authn-webhook-config.yaml": authnWebhookConfig,
 		},
 	}
 
@@ -742,6 +769,16 @@ func (r *Reconciler) reconcileMetrics(
 	apiserverSM := resources.BuildSecondaryServiceMonitor(shard)
 	if err := tc.ApplyOwned(ctx, apiserverSM); err != nil {
 		return fmt.Errorf("apiserver service monitor: %w", err)
+	}
+
+	role := resources.BuildPrometheusDiscoveryRole(shard)
+	if err := tc.ApplyOwned(ctx, role); err != nil {
+		return fmt.Errorf("prometheus discovery role: %w", err)
+	}
+
+	rb := resources.BuildPrometheusDiscoveryRoleBinding(shard)
+	if err := tc.ApplyOwned(ctx, rb); err != nil {
+		return fmt.Errorf("prometheus discovery role binding: %w", err)
 	}
 
 	return nil
