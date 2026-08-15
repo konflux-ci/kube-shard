@@ -427,25 +427,68 @@ func extractAuthSecretName(ep map[string]interface{}) string {
 
 // runAsPrometheus runs a curl pod in the monitoring namespace using the Prometheus
 // ServiceAccount and queries the given API URL using the mounted SA token.
+// It creates the pod, waits for completion, then reads logs to avoid the race
+// condition where kubectl run --rm -i misses output from fast-exiting pods.
 func runAsPrometheus(podName, apiURL string) (string, error) {
 	tokenPath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	curlCmd := fmt.Sprintf(
-		`cat %s >/dev/null 2>&1 || { echo "ERROR: no SA token"; exit 1; }; `+
-			`curl -s -m 15 -k -H "Authorization: Bearer $(cat %s)" %s`,
-		tokenPath, tokenPath, apiURL)
+		"curl -s -m 15 -k -H 'Authorization: Bearer '$(cat %s) %s",
+		tokenPath, apiURL)
 
-	overrides := fmt.Sprintf(
-		`{"spec":{"serviceAccountName":"%s","automountServiceAccountToken":true}}`,
-		prometheusSAName)
+	overrides := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"serviceAccountName":         prometheusSAName,
+			"automountServiceAccountToken": true,
+			"containers": []map[string]interface{}{
+				{
+					"name":    podName,
+					"image":   "curlimages/curl:latest",
+					"command": []string{"sh", "-c", curlCmd},
+				},
+			},
+		},
+	}
+	overridesJSON, err := json.Marshal(overrides)
+	if err != nil {
+		return "", fmt.Errorf("marshaling overrides: %w", err)
+	}
 
-	kubectlArgs := []string{
-		"run", podName, "--rm", "-i",
+	// Create the pod (don't attach or auto-remove)
+	createArgs := []string{
+		"run", podName,
 		"--restart=Never",
 		"--image=curlimages/curl:latest",
 		"-n", monitoringNamespace,
-		"--overrides", overrides,
-		"--", "sh", "-c", curlCmd,
+		"--overrides", string(overridesJSON),
 	}
-	cmd := exec.Command("kubectl", kubectlArgs...)
-	return utils.Run(cmd)
+	cmd := exec.Command("kubectl", createArgs...)
+	if _, err := utils.Run(cmd); err != nil {
+		return "", fmt.Errorf("creating pod: %w", err)
+	}
+
+	// Wait for the pod to complete (Succeeded or Failed)
+	waitArgs := []string{
+		"wait", "--for=jsonpath={.status.phase}=Succeeded",
+		"pod/" + podName, "-n", monitoringNamespace,
+		"--timeout=30s",
+	}
+	cmd = exec.Command("kubectl", waitArgs...)
+	if _, err := utils.Run(cmd); err != nil {
+		// Grab logs even on failure for diagnostics
+		logsCmd := exec.Command("kubectl", "logs", podName, "-n", monitoringNamespace)
+		logs, _ := utils.Run(logsCmd)
+		_ = exec.Command("kubectl", "delete", "pod", podName,
+			"-n", monitoringNamespace, "--ignore-not-found").Run()
+		return logs, fmt.Errorf("pod did not succeed: %w\nlogs: %s", err, logs)
+	}
+
+	// Read the pod logs
+	logsCmd := exec.Command("kubectl", "logs", podName, "-n", monitoringNamespace)
+	output, err := utils.Run(logsCmd)
+
+	// Clean up the pod
+	_ = exec.Command("kubectl", "delete", "pod", podName,
+		"-n", monitoringNamespace, "--ignore-not-found").Run()
+
+	return output, err
 }
