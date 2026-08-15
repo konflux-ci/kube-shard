@@ -685,36 +685,18 @@ func (r *Reconciler) reconcileAPIServerSCC(ctx context.Context, tc *tracking.Cli
 // when the Prometheus Operator is available, avoiding unused credentials with
 // cluster-wide /metrics access when no ServiceMonitor would consume them.
 //
-// Before creating any resources, the function verifies that the ServiceMonitor
-// CRD is still present via the REST mapper. If the CRD was removed at runtime
-// (e.g., Prometheus Operator uninstalled between E2E test steps), it disables
-// the integration for future reconciles and returns nil. Any mapper error —
-// NoMatchError, ErrResourceDiscoveryFailed, or transient discovery failures —
-// is treated as "CRD gone" to avoid blocking reconciliation.
+// RBAC resources (ServiceAccount, ClusterRole, ClusterRoleBinding, Role, and
+// RoleBinding) are always created when ServiceMonitorAvailable is true, even
+// if the ServiceMonitor CRD was removed at runtime. This ensures the RBAC
+// resources remain tracked by the tracking client and are not deleted as
+// orphans by CleanupOrphans. ServiceMonitor creation gracefully handles CRD
+// absence via NoMatchError detection.
 func (r *Reconciler) reconcileMetrics(
 	ctx context.Context,
 	tc *tracking.Client,
 	shard *kubeshardv1alpha1.APIShard,
 ) error {
 	if !r.ServiceMonitorAvailable {
-		return nil
-	}
-
-	// Verify the ServiceMonitor CRD is still registered before making any API
-	// calls. Any mapper error — NoMatchError, ErrResourceDiscoveryFailed, or
-	// transient discovery failures — means the CRD is absent or unreachable.
-	// Treat all of them as "CRD gone" and disable the integration rather than
-	// blocking the entire reconcile loop with a hard error.
-	_, err := r.RESTMapper().RESTMapping(
-		schema.GroupKind{Group: "monitoring.coreos.com", Kind: "ServiceMonitor"},
-		"v1",
-	)
-	if err != nil {
-		log.FromContext(ctx).Info(
-			"ServiceMonitor CRD not available; disabling Prometheus integration",
-			"error", err,
-		)
-		r.ServiceMonitorAvailable = false
 		return nil
 	}
 
@@ -754,9 +736,8 @@ func (r *Reconciler) reconcileMetrics(
 	if err := tc.ApplyOwned(ctx, kineSM); err != nil {
 		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
 			log.FromContext(ctx).Info(
-				"ServiceMonitor CRD no longer available; disabling Prometheus integration",
+				"ServiceMonitor CRD no longer available; skipping ServiceMonitor creation",
 			)
-			r.ServiceMonitorAvailable = false
 			return nil
 		}
 		return fmt.Errorf("kine service monitor: %w", err)
@@ -766,9 +747,8 @@ func (r *Reconciler) reconcileMetrics(
 	if err := tc.ApplyOwned(ctx, apiserverSM); err != nil {
 		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
 			log.FromContext(ctx).Info(
-				"ServiceMonitor CRD no longer available; disabling Prometheus integration",
+				"ServiceMonitor CRD no longer available; skipping ServiceMonitor creation",
 			)
-			r.ServiceMonitorAvailable = false
 			return nil
 		}
 		return fmt.Errorf("apiserver service monitor: %w", err)
