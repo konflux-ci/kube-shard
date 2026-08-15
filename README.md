@@ -43,7 +43,7 @@ flowchart TD
     client["Client / Controller\n(kubectl, Tekton controller, etc.)"] -->|"standard API calls"| main["Main kube-apiserver"]
     main -->|"APIService aggregation\n(tekton.dev, resolution.tekton.dev)"| secondary["Secondary kube-apiserver"]
     secondary -->|"authz delegation\n(SubjectAccessReview)"| main
-    secondary -->|"etcd v3 gRPC"| kine["Kine"]
+    secondary -->|"etcd v3 gRPC (mTLS)"| kine["Kine"]
     kine -->|"SQL"| db["PostgreSQL / SQLite"]
 ```
 

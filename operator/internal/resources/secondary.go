@@ -30,10 +30,11 @@ import (
 )
 
 const (
-	DefaultSecondaryImage = "registry.k8s.io/kube-apiserver:v1.36.2"
-	SecondaryPort         = 6443
-	tmpVolumeName         = "tmp"
-	varRunKubeVolumeName  = "var-run-kubernetes"
+	DefaultSecondaryImage    = "registry.k8s.io/kube-apiserver:v1.36.2"
+	SecondaryPort            = 6443
+	tmpVolumeName            = "tmp"
+	varRunKubeVolumeName     = "var-run-kubernetes"
+	etcdClientCertVolumeName = "etcd-client-cert"
 )
 
 // SecondaryServiceAccountName returns the name of the ServiceAccount used by
@@ -106,11 +107,16 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 	}
 
 	kineSvc := KineServiceName(shard)
-	etcdServers := fmt.Sprintf("http://%s.%s.svc:%d", kineSvc, shard.Spec.TargetNamespace, KinePort)
+	etcdServers := fmt.Sprintf("https://%s.%s.svc:%d", kineSvc, shard.Spec.TargetNamespace, KinePort)
 
 	args := []string{
-		// Kine endpoint emulating the etcd v3 API over SQLite/PostgreSQL.
+		// Kine endpoint emulating the etcd v3 API over TLS.
 		"--etcd-servers=" + etcdServers,
+		// mTLS credentials for the Kine connection: client certificate, key,
+		// and the CA that signed the Kine serving certificate.
+		"--etcd-certfile=/etc/kubernetes/etcd-client/tls.crt",
+		"--etcd-keyfile=/etc/kubernetes/etcd-client/tls.key",
+		"--etcd-cafile=/etc/kubernetes/etcd-client/ca.crt",
 		// HTTPS listen port; must match the Service targetPort and APIService spec.
 		"--secure-port=" + fmt.Sprintf("%d", SecondaryPort),
 		// TLS serving certificate issued by cert-manager for the secondary's FQDN.
@@ -227,6 +233,11 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 									ReadOnly:  true,
 								},
 								{
+									Name:      etcdClientCertVolumeName,
+									MountPath: "/etc/kubernetes/etcd-client",
+									ReadOnly:  true,
+								},
+								{
 									Name:      tmpVolumeName,
 									MountPath: "/tmp",
 								},
@@ -285,6 +296,14 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 									LocalObjectReference: corev1.LocalObjectReference{
 										Name: fmt.Sprintf("%s-requestheader-ca", shard.Name),
 									},
+								},
+							},
+						},
+						{
+							Name: etcdClientCertVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: fmt.Sprintf("%s-etcd-client-cert", shard.Name),
 								},
 							},
 						},

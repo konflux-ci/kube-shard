@@ -312,7 +312,10 @@ The operator generates the secondary kube-apiserver Deployment with these flags:
 
 | Flag | Source |
 |------|--------|
-| `--etcd-servers` | Kine Service URL: `http://<shard>-kine.<ns>.svc:2379` |
+| `--etcd-servers` | Kine Service URL: `https://<shard>-kine.<ns>.svc:2379` |
+| `--etcd-certfile` | Etcd client cert: `/etc/kubernetes/etcd-client/tls.crt` |
+| `--etcd-keyfile` | Etcd client key: `/etc/kubernetes/etcd-client/tls.key` |
+| `--etcd-cafile` | Kine CA cert: `/etc/kubernetes/etcd-client/ca.crt` |
 | `--secure-port` | `6443` |
 | `--tls-cert-file` / `--tls-private-key-file` | cert-manager Certificate Secret |
 | `--requestheader-client-ca-file` | cert-manager Certificate Secret (front-proxy CA) |
@@ -372,6 +375,14 @@ All generated resources follow `<shard-name>-<purpose>`:
 | Admin kubeconfig Secret | `<shard>-admin-kubeconfig` |
 | Authz webhook ConfigMap | `<shard>-authz-config` |
 | SA signing Secret | `<shard>-sa-signing` |
+| Kine self-signed Issuer | `<shard>-kine-selfsigned` |
+| Kine CA Certificate | `<shard>-kine-ca` |
+| Kine CA Secret | `<shard>-kine-ca-keypair` |
+| Kine CA Issuer | `<shard>-kine-ca-issuer` |
+| Kine serving Certificate | `<shard>-kine-serving` |
+| Kine serving Secret | `<shard>-kine-serving-cert` |
+| Etcd client Certificate | `<shard>-etcd-client` |
+| Etcd client Secret | `<shard>-etcd-client-cert` |
 
 ## CRD Conflict Detection
 
