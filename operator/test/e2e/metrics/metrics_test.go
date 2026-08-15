@@ -430,20 +430,13 @@ func extractAuthSecretName(ep map[string]interface{}) string {
 func runAsPrometheus(podName, apiURL string) (string, error) {
 	tokenPath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	curlCmd := fmt.Sprintf(
-		`curl -s -m 10 -k -H "Authorization: Bearer $(cat %s)" %s`,
-		tokenPath, apiURL)
+		`cat %s >/dev/null 2>&1 || { echo "ERROR: no SA token"; exit 1; }; `+
+			`curl -s -m 15 -k -H "Authorization: Bearer $(cat %s)" %s`,
+		tokenPath, tokenPath, apiURL)
 
-	overrides := fmt.Sprintf(`{
-		"spec": {
-			"serviceAccountName": "%s",
-			"automountServiceAccountToken": true,
-			"containers": [{
-				"name": "%s",
-				"image": "curlimages/curl:latest",
-				"command": ["sh", "-c", %q]
-			}]
-		}
-	}`, prometheusSAName, podName, curlCmd)
+	overrides := fmt.Sprintf(
+		`{"spec":{"serviceAccountName":"%s","automountServiceAccountToken":true}}`,
+		prometheusSAName)
 
 	kubectlArgs := []string{
 		"run", podName, "--rm", "-i",
@@ -451,6 +444,7 @@ func runAsPrometheus(podName, apiURL string) (string, error) {
 		"--image=curlimages/curl:latest",
 		"-n", monitoringNamespace,
 		"--overrides", overrides,
+		"--", "sh", "-c", curlCmd,
 	}
 	cmd := exec.Command("kubectl", kubectlArgs...)
 	return utils.Run(cmd)
