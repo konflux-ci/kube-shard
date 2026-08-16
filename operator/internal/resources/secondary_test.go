@@ -323,6 +323,19 @@ func TestBuildSecondaryDeployment_EtcdClientVolumeMount(t *testing.T) {
 	g.Expect(etcdVol.Secret.SecretName).To(Equal("test-shard-etcd-client-cert"))
 }
 
+// TestBuildSecondaryDeployment_EtcdCountMetricPollPeriod verifies that the
+// secondary deployment sets --etcd-count-metric-poll-period to avoid per-scrape
+// etcd client creation and the resulting gRPC channel churn warnings.
+func TestBuildSecondaryDeployment_EtcdCountMetricPollPeriod(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
+	args := deploy.Spec.Template.Spec.Containers[0].Args
+
+	got := findArg(args, "--etcd-count-metric-poll-period=")
+	g.Expect(got).To(Equal("--etcd-count-metric-poll-period=60s"))
+}
+
 // TestBuildSecondaryDeployment_AuthnTokenWebhook verifies that the secondary
 // deployment includes the authentication token webhook config file flag.
 func TestBuildSecondaryDeployment_AuthnTokenWebhook(t *testing.T) {

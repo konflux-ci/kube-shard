@@ -116,6 +116,14 @@ func BuildSecondaryDeployment(
 	args := []string{
 		// Kine endpoint emulating the etcd v3 API over TLS.
 		"--etcd-servers=" + etcdServers,
+		// Poll storage count metrics at a fixed interval instead of
+		// on-demand per Prometheus scrape. On-demand collection creates a
+		// new short-lived etcd client for every scrape; the resulting gRPC
+		// channel races pick_first → round_robin, producing a benign but
+		// noisy "operation was canceled" warning each time. A 60 s poll
+		// period uses a single persistent client and eliminates the
+		// per-scrape gRPC channel churn.
+		"--etcd-count-metric-poll-period=60s",
 		// mTLS credentials for the Kine connection: client certificate, key,
 		// and the CA that signed the Kine serving certificate.
 		"--etcd-certfile=/etc/kubernetes/etcd-client/tls.crt",
