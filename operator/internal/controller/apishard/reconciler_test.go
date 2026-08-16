@@ -2406,3 +2406,190 @@ var _ = Describe("syncCRDsToSecondary", func() {
 		Expect(err.Error()).To(ContainSubstring("get CRD nonexistent.synctest.example.com from primary"))
 	})
 })
+
+var _ = Describe("restartTargets", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	// createTargetDeployment creates a minimal Deployment in the given namespace
+	// for use as a restart target.
+	createTargetDeployment := func(name, namespace string) *appsv1.Deployment {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+		_ = k8sClient.Create(ctx, ns)
+
+		var one int32 = 1
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: &one,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": name},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"app": name},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "c", Image: "busybox"},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+		return deploy
+	}
+
+	// newRestartShard creates a minimal APIShard with optional restartTargets.
+	newRestartShard := func(suffix string, targets []kubeshardv1alpha1.RestartTarget) *kubeshardv1alpha1.APIShard {
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-restart-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "test-restart-" + suffix + "-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				RestartTargets: targets,
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	It("should be a no-op when restartTargets is empty", func() {
+		shard := newRestartShard("empty", nil)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		reconciler.restartTargets(ctx, shard)
+
+		cond := meta.FindStatusCondition(
+			shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionRestartTargetsCompleted,
+		)
+		Expect(cond).To(BeNil(), "no condition should be set when targets are empty")
+	})
+
+	It("should restart a target Deployment and set condition to True", func() {
+		suffix := "ok-" + randString(4)
+		deployNS := "restart-deploy-" + suffix
+		deploy := createTargetDeployment("target-ctrl", deployNS)
+		defer func() { _ = k8sClient.Delete(ctx, deploy) }()
+
+		shard := newRestartShard(suffix, []kubeshardv1alpha1.RestartTarget{
+			{Name: "target-ctrl", Namespace: deployNS},
+		})
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		reconciler.restartTargets(ctx, shard)
+
+		// Verify the pod template annotation was set.
+		updated := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "target-ctrl", Namespace: deployNS,
+		}, updated)).To(Succeed())
+		Expect(updated.Spec.Template.Annotations).To(HaveKey("kubectl.kubernetes.io/restartedAt"))
+
+		// Verify the status condition.
+		cond := meta.FindStatusCondition(
+			shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionRestartTargetsCompleted,
+		)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("RestartsCompleted"))
+		Expect(cond.Message).To(ContainSubstring("1 deployment(s)"))
+	})
+
+	It("should not restart again when condition matches the current generation", func() {
+		suffix := "skip-" + randString(4)
+		deployNS := "restart-skip-" + suffix
+		deploy := createTargetDeployment("skip-ctrl", deployNS)
+		defer func() { _ = k8sClient.Delete(ctx, deploy) }()
+
+		shard := newRestartShard(suffix, []kubeshardv1alpha1.RestartTarget{
+			{Name: "skip-ctrl", Namespace: deployNS},
+		})
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		// First call: triggers restart.
+		reconciler.restartTargets(ctx, shard)
+
+		updated := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "skip-ctrl", Namespace: deployNS,
+		}, updated)).To(Succeed())
+		firstTimestamp := updated.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"]
+		Expect(firstTimestamp).NotTo(BeEmpty())
+
+		// Second call: should be skipped (same generation).
+		reconciler.restartTargets(ctx, shard)
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "skip-ctrl", Namespace: deployNS,
+		}, updated)).To(Succeed())
+		Expect(updated.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"]).To(
+			Equal(firstTimestamp), "timestamp should not change on second call")
+	})
+
+	It("should set condition to False when target Deployment does not exist", func() {
+		suffix := "missing-" + randString(4)
+		shard := newRestartShard(suffix, []kubeshardv1alpha1.RestartTarget{
+			{Name: "nonexistent", Namespace: "nonexistent-ns"},
+		})
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		reconciler.restartTargets(ctx, shard)
+
+		cond := meta.FindStatusCondition(
+			shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionRestartTargetsCompleted,
+		)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("RestartFailed"))
+	})
+
+	It("should remove stale condition when targets are cleared from spec", func() {
+		suffix := "clear-" + randString(4)
+		shard := newRestartShard(suffix, nil)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		// Simulate a previously set condition.
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionRestartTargetsCompleted,
+			Status:             metav1.ConditionTrue,
+			Reason:             "RestartsCompleted",
+			Message:            "Restarted 1 deployment(s)",
+			ObservedGeneration: shard.Generation,
+		})
+
+		reconciler.restartTargets(ctx, shard)
+
+		cond := meta.FindStatusCondition(
+			shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionRestartTargetsCompleted,
+		)
+		Expect(cond).To(BeNil(), "stale condition should be removed when targets list is empty")
+	})
+})

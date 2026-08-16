@@ -277,6 +277,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
+	// After the shard reaches Ready, restart configured target Deployments
+	// whose watch streams may have been disrupted by the APIService switchover.
+	if shard.Status.Phase == kubeshardv1alpha1.PhaseReady {
+		r.restartTargets(ctx, &shard)
+	}
+
 	// Cleanup orphaned resources only after all apply steps have completed,
 	// so the tracked set is complete and nothing gets incorrectly deleted.
 	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, managedGVKs); err != nil {
@@ -1471,6 +1477,90 @@ func (r *Reconciler) checkDeploymentHealth(ctx context.Context, shard *kubeshard
 	}
 
 	return kineReady && secondaryReady, nil
+}
+
+// restartTargets performs a rollout restart on configured Deployments after the
+// shard reaches Ready. The restart is triggered once per spec generation: if the
+// RestartTargetsCompleted condition's observed generation already matches the
+// shard's generation, the restart is skipped. This ensures targets are restarted
+// on initial switchover and again if the list changes, but not on every
+// reconcile loop.
+func (r *Reconciler) restartTargets(ctx context.Context, shard *kubeshardv1alpha1.APIShard) {
+	if len(shard.Spec.RestartTargets) == 0 {
+		// Remove stale condition if targets were cleared from the spec.
+		meta.RemoveStatusCondition(
+			&shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionRestartTargetsCompleted,
+		)
+		return
+	}
+
+	// Skip if restarts were already completed for this generation.
+	cond := meta.FindStatusCondition(
+		shard.Status.Conditions,
+		kubeshardv1alpha1.ConditionRestartTargetsCompleted,
+	)
+	if cond != nil && cond.Status == metav1.ConditionTrue &&
+		cond.ObservedGeneration >= shard.Generation {
+		return
+	}
+
+	logger := log.FromContext(ctx)
+	var errs []error
+	restartedAt := time.Now().Format(time.RFC3339)
+
+	for _, target := range shard.Spec.RestartTargets {
+		deploy := &appsv1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      target.Name,
+			Namespace: target.Namespace,
+		}, deploy); err != nil {
+			logger.Error(err, "Failed to get restart target",
+				"deployment", target.Name,
+				"namespace", target.Namespace)
+			errs = append(errs, fmt.Errorf("get %s/%s: %w", target.Namespace, target.Name, err))
+			continue
+		}
+
+		// Trigger rollout restart by setting the restartedAt annotation on
+		// the pod template, the same mechanism kubectl rollout restart uses.
+		if deploy.Spec.Template.Annotations == nil {
+			deploy.Spec.Template.Annotations = make(map[string]string)
+		}
+		deploy.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = restartedAt
+
+		if err := r.Update(ctx, deploy); err != nil {
+			logger.Error(err, "Failed to restart deployment",
+				"deployment", target.Name,
+				"namespace", target.Namespace)
+			errs = append(errs, fmt.Errorf("restart %s/%s: %w", target.Namespace, target.Name, err))
+			continue
+		}
+
+		logger.Info("Restarted deployment after APIService switchover",
+			"deployment", target.Name,
+			"namespace", target.Namespace)
+	}
+
+	if len(errs) > 0 {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:   kubeshardv1alpha1.ConditionRestartTargetsCompleted,
+			Status: metav1.ConditionFalse,
+			Reason: "RestartFailed",
+			Message: fmt.Sprintf("Failed to restart %d/%d target(s): %v",
+				len(errs), len(shard.Spec.RestartTargets), errors.Join(errs...)),
+			ObservedGeneration: shard.Generation,
+		})
+		return
+	}
+
+	meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+		Type:               kubeshardv1alpha1.ConditionRestartTargetsCompleted,
+		Status:             metav1.ConditionTrue,
+		Reason:             "RestartsCompleted",
+		Message:            fmt.Sprintf("Restarted %d deployment(s)", len(shard.Spec.RestartTargets)),
+		ObservedGeneration: shard.Generation,
+	})
 }
 
 // setErrorAndRequeue sets the APIShard phase to Error, surfaces the error

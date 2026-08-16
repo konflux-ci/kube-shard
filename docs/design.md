@@ -313,6 +313,56 @@ Migration sequence for existing clusters:
 
 For new deployments, no migration is needed -- the operator installs CRDs on the secondary and registers APIService objects while existing CRDs remain on the primary.
 
+## APIService Switchover and Controller Impact
+
+When an APIShard is first created or when the APIService registration changes the
+backend serving an API group, the main kube-apiserver redirects traffic to the
+secondary. Most controller-runtime based controllers handle the resulting watch
+disconnect gracefully (the reflector receives a connection error or `410 Gone`,
+triggers a re-list, and re-establishes the watch). However, some controllers --
+particularly those with custom informer configurations or leader election patterns
+that suppress reconnection -- may silently stop processing events after the
+switchover while remaining healthy (passing readiness probes, holding their leader
+lease, and producing no error logs).
+
+### Symptoms
+
+- Controller pod shows `Running` (1/1 Ready) but stops creating or updating
+  dependent resources for newly created objects in the sharded API group.
+- No error logs in the affected controller.
+- Other controllers watching the same resources continue operating normally.
+
+### Workaround
+
+Restart the affected controller after the APIShard reaches Ready:
+
+```bash
+kubectl rollout restart deployment/<controller-name> -n <namespace>
+```
+
+### Automated Restart via `restartTargets`
+
+The APIShard spec supports an optional `restartTargets` field that lists
+Deployments the operator should automatically restart after the shard first
+reaches Ready:
+
+```yaml
+apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: APIShard
+metadata:
+  name: tekton-shard
+spec:
+  # ... other fields ...
+  restartTargets:
+  - name: tekton-kueue-controller
+    namespace: tekton-kueue
+```
+
+The operator triggers a rollout restart (equivalent to `kubectl rollout restart`)
+once per spec generation -- on the initial switchover and again if the target
+list changes. The `RestartTargetsCompleted` status condition tracks whether the
+restarts have been executed.
+
 ## High Availability and Failure Modes
 
 | Failure | Impact | Recovery |
