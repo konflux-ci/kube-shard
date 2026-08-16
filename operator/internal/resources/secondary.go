@@ -111,7 +111,7 @@ func BuildSecondaryDeployment(
 	}
 
 	kineSvc := KineServiceName(shard)
-	etcdServers := fmt.Sprintf("https://%s.%s.svc:%d", kineSvc, shard.Spec.TargetNamespace, KinePort)
+	etcdServers := fmt.Sprintf("https://%s.%s.svc.cluster.local:%d", kineSvc, shard.Spec.TargetNamespace, KinePort)
 
 	args := []string{
 		// Kine endpoint emulating the etcd v3 API over TLS.

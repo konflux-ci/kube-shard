@@ -282,6 +282,8 @@ func TestBuildSecondaryDeployment_EtcdTLSArgs(t *testing.T) {
 	etcdServersArg := findArg(args, "--etcd-servers=")
 	g.Expect(etcdServersArg).To(HavePrefix("--etcd-servers=https://"),
 		"expected etcd-servers to use https")
+	g.Expect(etcdServersArg).To(MatchRegexp(`\.svc\.cluster\.local:\d+$`),
+		"expected etcd-servers to use FQDN to avoid gRPC DNS cancellation warnings")
 
 	g.Expect(findArg(args, "--etcd-certfile=")).To(
 		Equal("--etcd-certfile=/etc/kubernetes/etcd-client/tls.crt"))
