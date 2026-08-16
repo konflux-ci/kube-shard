@@ -195,10 +195,14 @@ type MonitoringSpec struct {
 	// PrometheusServiceAccountName is the name of the ServiceAccount used by
 	// Prometheus for scraping. When empty, defaults to "prometheus-k8s".
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`
 	PrometheusServiceAccountName string `json:"prometheusServiceAccountName,omitempty"`
 	// PrometheusNamespace is the namespace where the Prometheus ServiceAccount
 	// resides. When empty, defaults to "openshift-monitoring".
 	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`
 	PrometheusNamespace string `json:"prometheusNamespace,omitempty"`
 }
 

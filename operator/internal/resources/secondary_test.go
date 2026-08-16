@@ -329,7 +329,28 @@ func TestBuildSecondaryDeployment_AuthnTokenWebhook(t *testing.T) {
 	args := deploy.Spec.Template.Spec.Containers[0].Args
 
 	got := findArg(args, "--authentication-token-webhook-config-file=")
-	g.Expect(got).To(Equal("--authentication-token-webhook-config-file=/etc/kubernetes/auth/authn-webhook-config.yaml"))
+	g.Expect(got).To(Equal(
+		"--authentication-token-webhook-config-file=" +
+			"/etc/kubernetes/auth/authn-webhook-config.yaml"))
+
+	version := findArg(args, "--authentication-token-webhook-version=")
+	g.Expect(version).To(Equal("--authentication-token-webhook-version=v1"),
+		"webhook version must be v1 for primary TokenReview compatibility")
+}
+
+// TestBuildSecondaryDeployment_ServiceAccountIssuer verifies the secondary uses
+// a shard-specific issuer so primary-issued tokens fall through to the webhook.
+func TestBuildSecondaryDeployment_ServiceAccountIssuer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	args := deploy.Spec.Template.Spec.Containers[0].Args
+
+	got := findArg(args, "--service-account-issuer=")
+	g.Expect(got).To(ContainSubstring("test-shard-apiserver.test-ns.svc"),
+		"issuer must be shard-specific")
+	g.Expect(got).NotTo(ContainSubstring("kubernetes.default.svc"),
+		"issuer must NOT match the primary's issuer")
 }
 
 // TestBuildSecondaryDeployment_APIAudiences verifies that the secondary includes

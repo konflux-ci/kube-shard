@@ -479,11 +479,15 @@ spec:
                     description: |-
                       PrometheusNamespace is the namespace where the Prometheus ServiceAccount
                       resides. When empty, defaults to "openshift-monitoring".
+                    maxLength: 63
+                    pattern: ^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$
                     type: string
                   prometheusServiceAccountName:
                     description: |-
                       PrometheusServiceAccountName is the name of the ServiceAccount used by
                       Prometheus for scraping. When empty, defaults to "prometheus-k8s".
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$
                     type: string
                 type: object
               namespaceSync:
