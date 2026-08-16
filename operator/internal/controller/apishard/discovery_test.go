@@ -1,7 +1,10 @@
 package apishard
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -9,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
 )
 
 type fakeGVDiscoverer struct {
@@ -158,4 +162,56 @@ func TestDiscoverSCC_GroupNotFound(t *testing.T) {
 	found, err := DiscoverSCC(client)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(found).To(BeFalse())
+}
+
+// TestDiscoverPrimaryIssuer_Success verifies that the issuer is extracted from
+// the OIDC discovery JSON response.
+func TestDiscoverPrimaryIssuer_Success(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	cfg := &rest.Config{Host: srv.URL}
+	issuer, err := DiscoverPrimaryIssuer(cfg)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(issuer).To(Equal("https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"))
+}
+
+// TestDiscoverPrimaryIssuer_EmptyIssuer verifies that an error is returned
+// when the OIDC response has an empty issuer field.
+func TestDiscoverPrimaryIssuer_EmptyIssuer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issuer": ""}`))
+	}))
+	defer srv.Close()
+
+	cfg := &rest.Config{Host: srv.URL}
+	_, err := DiscoverPrimaryIssuer(cfg)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("empty issuer"))
+}
+
+// TestDiscoverPrimaryIssuer_ServerError verifies that a non-200 response
+// results in an error.
+func TestDiscoverPrimaryIssuer_ServerError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	cfg := &rest.Config{Host: srv.URL}
+	_, err := DiscoverPrimaryIssuer(cfg)
+	g.Expect(err).To(HaveOccurred())
 }

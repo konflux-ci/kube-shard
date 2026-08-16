@@ -100,6 +100,7 @@ type Reconciler struct {
 	ClientProvider          *secondary.ClientProvider
 	ServiceMonitorAvailable bool
 	SCCAvailable            bool
+	PrimaryIssuer           string
 }
 
 // +kubebuilder:rbac:groups=kube-shard.konflux-ci.dev,resources=apishards,verbs=get;list;watch;create;update;patch;delete
@@ -396,7 +397,7 @@ func isTrafficDistributionUnsupported(err error) bool {
 // ClusterIP service exist. The secondary API server serves the aggregated API
 // groups backed by Kine.
 func (r *Reconciler) reconcileSecondary(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard, requestHeaderAllowedNames []string) error {
-	deployment := resources.BuildSecondaryDeployment(shard, requestHeaderAllowedNames)
+	deployment := resources.BuildSecondaryDeployment(shard, requestHeaderAllowedNames, []string{r.PrimaryIssuer})
 	if err := tc.ApplyOwned(ctx, deployment); err != nil {
 		return fmt.Errorf("secondary deployment: %w", err)
 	}

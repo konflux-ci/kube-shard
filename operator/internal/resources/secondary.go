@@ -88,7 +88,11 @@ func BuildSecondaryServiceAccount(shard *kubeshardv1alpha1.APIShard) *corev1.Ser
 
 // BuildSecondaryDeployment constructs the secondary kube-apiserver Deployment resource
 // for the given shard, including TLS, authorization webhook, and request-header configuration.
-func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAllowedNames []string) *appsv1.Deployment {
+func BuildSecondaryDeployment(
+	shard *kubeshardv1alpha1.APIShard,
+	requestHeaderAllowedNames []string,
+	primaryIssuers []string,
+) *appsv1.Deployment {
 	name := SecondaryDeploymentName(shard)
 	image := shard.Spec.Secondary.Image
 	if image == "" {
@@ -135,15 +139,15 @@ func BuildSecondaryDeployment(shard *kubeshardv1alpha1.APIShard, requestHeaderAl
 		fmt.Sprintf("--service-account-issuer=https://%s-apiserver.%s.svc",
 			shard.Name, shard.Spec.TargetNamespace),
 		// api-audiences must include both the secondary's own issuer (for
-		// self-issued tokens) AND the primary's common issuers so that tokens
+		// self-issued tokens) AND the primary's issuer(s) so that tokens
 		// validated via the authentication webhook are accepted. Without this,
 		// the secondary rejects webhook-authenticated tokens whose audience
-		// doesn't match the secondary's issuer.
-		fmt.Sprintf(
-			"--api-audiences=https://%s-apiserver.%s.svc,"+
-				"https://kubernetes.default.svc,"+
-				"https://kubernetes.default.svc.cluster.local",
-			shard.Name, shard.Spec.TargetNamespace),
+		// doesn't match the secondary's issuer. The primary issuer is
+		// discovered at startup from /.well-known/openid-configuration.
+		"--api-audiences=" + strings.Join(
+			append([]string{fmt.Sprintf("https://%s-apiserver.%s.svc",
+				shard.Name, shard.Spec.TargetNamespace)}, primaryIssuers...),
+			","),
 		// NamespaceLifecycle is disabled because namespaces are mirrored from the
 		// primary by the NamespaceSync controller — the secondary is not the source
 		// of truth. ServiceAccount is disabled because all authentication happens on

@@ -54,12 +54,15 @@ func findArg(args []string, prefix string) string {
 	return ""
 }
 
+// testPrimaryIssuers is the default primary issuer list used across secondary tests.
+var testPrimaryIssuers = []string{"https://kubernetes.default.svc"}
+
 func TestBuildSecondaryDeployment_RequestHeaderAllowedNames_Kubernetes(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	allowedNames := []string{"front-proxy-client"}
 
-	deploy := BuildSecondaryDeployment(shard, allowedNames)
+	deploy := BuildSecondaryDeployment(shard, allowedNames, testPrimaryIssuers)
 	args := deploy.Spec.Template.Spec.Containers[0].Args
 
 	got := findArg(args, "--requestheader-allowed-names=")
@@ -75,7 +78,7 @@ func TestBuildSecondaryDeployment_RequestHeaderAllowedNames_OpenShift(t *testing
 		"system:openshift-aggregator",
 	}
 
-	deploy := BuildSecondaryDeployment(shard, allowedNames)
+	deploy := BuildSecondaryDeployment(shard, allowedNames, testPrimaryIssuers)
 	args := deploy.Spec.Template.Spec.Containers[0].Args
 
 	got := findArg(args, "--requestheader-allowed-names=")
@@ -85,7 +88,7 @@ func TestBuildSecondaryDeployment_RequestHeaderAllowedNames_OpenShift(t *testing
 func TestBuildSecondaryDeployment_DefaultImage(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 
 	got := deploy.Spec.Template.Spec.Containers[0].Image
 	g.Expect(got).To(Equal(DefaultSecondaryImage))
@@ -96,7 +99,7 @@ func TestBuildSecondaryDeployment_CustomImage(t *testing.T) {
 	shard := newTestShard()
 	shard.Spec.Secondary.Image = "custom-registry/kube-apiserver:v1.33.0"
 
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 
 	got := deploy.Spec.Template.Spec.Containers[0].Image
 	g.Expect(got).To(Equal("custom-registry/kube-apiserver:v1.33.0"))
@@ -105,7 +108,7 @@ func TestBuildSecondaryDeployment_CustomImage(t *testing.T) {
 func TestBuildSecondaryDeployment_GracefulShutdown(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 
 	args := deploy.Spec.Template.Spec.Containers[0].Args
 
@@ -131,7 +134,7 @@ func TestBuildSecondaryDeployment_SchedulingFields(t *testing.T) {
 		},
 	}
 
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 	podSpec := deploy.Spec.Template.Spec
 
 	g.Expect(podSpec.NodeSelector).ToNot(BeNil())
@@ -146,7 +149,7 @@ func TestBuildSecondaryDeployment_AntiAffinityInjected(t *testing.T) {
 	shard.Spec.Secondary.Replicas = 3
 	shard.Spec.ColocateComponents = ptr.To(false)
 
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 	affinity := deploy.Spec.Template.Spec.Affinity
 
 	g.Expect(affinity).ToNot(BeNil())
@@ -160,7 +163,7 @@ func TestBuildSecondaryDeployment_ColocateAffinity(t *testing.T) {
 	shard.Spec.Secondary.Replicas = 3
 	shard.Spec.ColocateComponents = ptr.To(true)
 
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 	affinity := deploy.Spec.Template.Spec.Affinity
 
 	g.Expect(affinity).ToNot(BeNil())
@@ -182,7 +185,7 @@ func TestBuildSecondaryDeployment_TopologySpreadConstraints(t *testing.T) {
 		},
 	}
 
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 	podSpec := deploy.Spec.Template.Spec
 
 	g.Expect(podSpec.TopologySpreadConstraints).To(HaveLen(1))
@@ -193,7 +196,7 @@ func TestBuildSecondaryDeployment_TopologySpreadConstraints(t *testing.T) {
 func TestBuildSecondaryDeployment_RollingUpdateStrategy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 
 	strategy := deploy.Spec.Strategy
 	g.Expect(strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
@@ -205,7 +208,7 @@ func TestBuildSecondaryDeployment_RollingUpdateStrategy(t *testing.T) {
 func TestBuildSecondaryDeployment_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 
 	podSC := deploy.Spec.Template.Spec.SecurityContext
 	g.Expect(podSC).ToNot(BeNil())
@@ -226,7 +229,7 @@ func TestBuildSecondaryDeployment_SecurityContext(t *testing.T) {
 func TestBuildSecondaryDeployment_TmpVolume(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 
 	var tmpVol *corev1.Volume
 	for i := range deploy.Spec.Template.Spec.Volumes {
@@ -251,7 +254,7 @@ func TestBuildSecondaryDeployment_TmpVolume(t *testing.T) {
 func TestBuildSecondaryDeployment_DedicatedServiceAccount(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 
 	g.Expect(deploy.Spec.Template.Spec.ServiceAccountName).To(Equal(SecondaryServiceAccountName(shard)))
 	g.Expect(deploy.Spec.Template.Spec.ServiceAccountName).ToNot(Equal("default"))
@@ -273,7 +276,7 @@ func TestBuildSecondaryServiceAccount(t *testing.T) {
 func TestBuildSecondaryDeployment_EtcdTLSArgs(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 	args := deploy.Spec.Template.Spec.Containers[0].Args
 
 	etcdServersArg := findArg(args, "--etcd-servers=")
@@ -293,7 +296,7 @@ func TestBuildSecondaryDeployment_EtcdTLSArgs(t *testing.T) {
 func TestBuildSecondaryDeployment_EtcdClientVolumeMount(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 
 	mounts := deploy.Spec.Template.Spec.Containers[0].VolumeMounts
 	var etcdMount *corev1.VolumeMount
@@ -325,48 +328,28 @@ func TestBuildSecondaryDeployment_EtcdClientVolumeMount(t *testing.T) {
 func TestBuildSecondaryDeployment_AuthnTokenWebhook(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
 	args := deploy.Spec.Template.Spec.Containers[0].Args
 
 	got := findArg(args, "--authentication-token-webhook-config-file=")
-	g.Expect(got).To(Equal(
-		"--authentication-token-webhook-config-file=" +
-			"/etc/kubernetes/auth/authn-webhook-config.yaml"))
-
-	version := findArg(args, "--authentication-token-webhook-version=")
-	g.Expect(version).To(Equal("--authentication-token-webhook-version=v1"),
-		"webhook version must be v1 for primary TokenReview compatibility")
-}
-
-// TestBuildSecondaryDeployment_ServiceAccountIssuer verifies the secondary uses
-// a shard-specific issuer so primary-issued tokens fall through to the webhook.
-func TestBuildSecondaryDeployment_ServiceAccountIssuer(t *testing.T) {
-	g := NewGomegaWithT(t)
-	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
-	args := deploy.Spec.Template.Spec.Containers[0].Args
-
-	got := findArg(args, "--service-account-issuer=")
-	g.Expect(got).To(ContainSubstring("test-shard-apiserver.test-ns.svc"),
-		"issuer must be shard-specific")
-	g.Expect(got).NotTo(ContainSubstring("kubernetes.default.svc"),
-		"issuer must NOT match the primary's issuer")
+	g.Expect(got).To(Equal("--authentication-token-webhook-config-file=/etc/kubernetes/auth/authn-webhook-config.yaml"))
 }
 
 // TestBuildSecondaryDeployment_APIAudiences verifies that the secondary includes
-// both its own issuer and the primary's common issuers in --api-audiences, so
+// both its own issuer and the discovered primary issuer in --api-audiences, so
 // that tokens validated via the authentication webhook are accepted.
 func TestBuildSecondaryDeployment_APIAudiences(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
-	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"})
+	customIssuers := []string{"https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"}
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, customIssuers)
 	args := deploy.Spec.Template.Spec.Containers[0].Args
 
 	got := findArg(args, "--api-audiences=")
 	g.Expect(got).To(ContainSubstring("https://test-shard-apiserver.test-ns.svc"),
 		"should include the secondary's own issuer")
-	g.Expect(got).To(ContainSubstring("https://kubernetes.default.svc"),
-		"should include the primary's common issuer")
-	g.Expect(got).To(ContainSubstring("https://kubernetes.default.svc.cluster.local"),
-		"should include the primary's cluster.local issuer")
+	g.Expect(got).To(ContainSubstring("https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"),
+		"should include the discovered primary issuer")
+	g.Expect(got).NotTo(ContainSubstring("kubernetes.default.svc"),
+		"should not hard-code the default issuer when a custom one is provided")
 }

@@ -318,10 +318,6 @@ spec:
 		})
 
 		It("should allow the Prometheus SA to list endpoints in the shard namespace", func() {
-			if os.Getenv("PROMETHEUS_INSTALL_SKIP") == "true" {
-				Skip("Prometheus Operator not installed")
-			}
-
 			By("running a curl pod as the Prometheus SA to list endpoints")
 			apiURL := fmt.Sprintf(
 				"https://kubernetes.default.svc/api/v1/namespaces/%s/endpoints",
