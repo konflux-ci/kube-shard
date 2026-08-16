@@ -453,6 +453,173 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Number of objects stored per resource type. Shows the top 10 by count. Large resource counts (e.g., TaskRuns) drive memory usage in both KAS watch caches and Kine.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 10000 }, { "color": "red", "value": 50000 }] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 58 },
+      "id": 200,
+      "options": { "displayMode": "gradient", "minVizHeight": 16, "minVizWidth": 0, "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": true },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "topk(10, max by (resource)(apiserver_resource_objects{namespace=\"$namespace\"}))",
+          "legendFormat": "{{resource}}",
+          "instant": true
+        }
+      ],
+      "title": "Top Resources by Object Count",
+      "type": "bargauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Object count over time for the top stored resources. Lines that grow without plateauing indicate garbage collection or cleanup is not working — resources are accumulating unbounded. Healthy behavior: lines plateau or oscillate as creates are balanced by deletes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 2, "showPoints": "never" },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 58 },
+      "id": 201,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "topk(10, max by (resource)(apiserver_resource_objects{namespace=\"$namespace\"}))",
+          "legendFormat": "{{resource}}"
+        }
+      ],
+      "title": "Resource Object Count Over Time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Incoming API request rate broken down by verb. GET dominates (informer-driven). High APPLY/PUT indicates active reconciliation. WATCH connections are long-lived, so the rate appears low even with many active watches.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "showPoints": "never", "stacking": { "mode": "normal" } },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 66 },
+      "id": 202,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (verb)(rate(apiserver_request_total{namespace=\"$namespace\"}[5m]))",
+          "legendFormat": "{{verb}}"
+        }
+      ],
+      "title": "API Request Rate by Verb",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Number of active long-running requests (primarily watches). Each watch holds a goroutine and memory in the KAS watch cache. Growth correlates with controllers connecting to the secondary. A sudden drop may indicate a network partition or KAS restart.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never", "stacking": { "mode": "normal" } },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 66 },
+      "id": 203,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "topk(10, sum by (resource)(apiserver_longrunning_requests{namespace=\"$namespace\"}))",
+          "legendFormat": "{{resource}}"
+        }
+      ],
+      "title": "Active Watches by Resource",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "API request latency at p99 for each verb (WATCH excluded). LIST latency depends on the number of objects returned; GET should stay sub-100ms. Rising latency indicates Kine backend pressure or resource exhaustion.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 74 },
+      "id": 204,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.99, sum by (le)(rate(apiserver_request_duration_seconds_bucket{namespace=\"$namespace\", verb=\"GET\"}[5m])))", "legendFormat": "GET" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.99, sum by (le)(rate(apiserver_request_duration_seconds_bucket{namespace=\"$namespace\", verb=\"LIST\"}[5m])))", "legendFormat": "LIST" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.99, sum by (le)(rate(apiserver_request_duration_seconds_bucket{namespace=\"$namespace\", verb=\"PUT\"}[5m])))", "legendFormat": "PUT" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.99, sum by (le)(rate(apiserver_request_duration_seconds_bucket{namespace=\"$namespace\", verb=\"APPLY\"}[5m])))", "legendFormat": "APPLY" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.99, sum by (le)(rate(apiserver_request_duration_seconds_bucket{namespace=\"$namespace\", verb=\"DELETE\"}[5m])))", "legendFormat": "DELETE" }
+      ],
+      "title": "API Request Latency (p99 by Verb)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Rate of 4xx/5xx responses from the secondary KAS. 409 (Conflict) is normal under concurrent updates. 429 means flow control throttling. 500+ indicates server-side errors worth investigating.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 74 },
+      "id": 205,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (code)(rate(apiserver_request_total{namespace=\"$namespace\", code=~\"[45]..\"}[5m]))",
+          "legendFormat": "HTTP {{code}}"
+        }
+      ],
+      "title": "API Error Rate by Status Code",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "SubjectAccessReview webhook latency (p99). The secondary KAS delegates authorization to the primary cluster via webhook. This latency is added to every API request. High values (>100ms) indicate primary KAS pressure or network issues.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 74 },
+      "id": 206,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.50, sum by (le)(rate(apiserver_authorization_webhook_duration_seconds_bucket{namespace=\"$namespace\"}[5m])))", "legendFormat": "p50" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.95, sum by (le)(rate(apiserver_authorization_webhook_duration_seconds_bucket{namespace=\"$namespace\"}[5m])))", "legendFormat": "p95" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.99, sum by (le)(rate(apiserver_authorization_webhook_duration_seconds_bucket{namespace=\"$namespace\"}[5m])))", "legendFormat": "p99" }
+      ],
+      "title": "Authorization Webhook Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "description": "Container memory working set per KAS pod. Compare with resource limits to assess OOM risk. The secondary KAS caches informer data and holds open watch connections.",
       "fieldConfig": {
         "defaults": {
@@ -462,7 +629,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 58 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 82 },
       "id": 50,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -486,7 +653,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 58 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 82 },
       "id": 51,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -510,7 +677,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 58 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 82 },
       "id": 52,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -525,7 +692,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 66 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 90 },
       "id": 106,
       "title": "PostgreSQL — The backing database for Kine. Resource pressure here cascades into higher SQL latencies for both reads and writes.",
       "type": "row"
@@ -541,7 +708,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 67 },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 91 },
       "id": 60,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -565,7 +732,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 67 },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 91 },
       "id": 61,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -594,7 +761,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 67 },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 91 },
       "id": 63,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -623,7 +790,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 67 },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 91 },
       "id": 62,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
