@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	prometheusOperatorVersion = "v0.77.1"
+	prometheusOperatorVersion = "v0.93.0"
 	prometheusOperatorURL     = "https://github.com/prometheus-operator/prometheus-operator/" +
 		"releases/download/%s/bundle.yaml"
 
@@ -228,7 +228,9 @@ func GetProjectDir() (string, error) {
 	if err != nil {
 		return wd, err
 	}
-	wd = strings.ReplaceAll(wd, "/test/e2e", "")
+	if idx := strings.Index(wd, "/test/e2e"); idx >= 0 {
+		wd = wd[:idx]
+	}
 	return wd, nil
 }
 

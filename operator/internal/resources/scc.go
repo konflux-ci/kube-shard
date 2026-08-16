@@ -95,7 +95,7 @@ func BuildAPIServerSCCClusterRole(shard *kubeshardv1alpha1.APIShard) *rbacv1.Clu
 
 	return &rbacv1.ClusterRole{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
+			APIVersion: rbacAPIVersion,
 			Kind:       "ClusterRole",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -125,7 +125,7 @@ func BuildAPIServerSCCRoleBinding(shard *kubeshardv1alpha1.APIShard) *rbacv1.Rol
 
 	return &rbacv1.RoleBinding{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "rbac.authorization.k8s.io/v1",
+			APIVersion: rbacAPIVersion,
 			Kind:       "RoleBinding",
 		},
 		ObjectMeta: metav1.ObjectMeta{

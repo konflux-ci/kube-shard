@@ -231,12 +231,20 @@ func main() {
 		setupLog.Info("SecurityContextConstraints API not found; skipping SCC management")
 	}
 
+	primaryIssuer, err := apishard.DiscoverPrimaryIssuer(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to discover primary service-account-issuer")
+		os.Exit(1)
+	}
+	setupLog.Info("Discovered primary service-account-issuer", "issuer", primaryIssuer)
+
 	if err = (&apishard.Reconciler{
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
 		ClientProvider:          clientProvider,
 		ServiceMonitorAvailable: serviceMonitorAvailable,
 		SCCAvailable:            sccAvailable,
+		PrimaryIssuer:           primaryIssuer,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "APIShard")
 		os.Exit(1)
