@@ -34,7 +34,11 @@ func TestBuildKineServiceMonitor(t *testing.T) {
 	g.Expect(ep.Scheme).To(Equal(ptr.To(monitoringv1.SchemeHTTPS)))
 	g.Expect(ep.Interval).To(Equal(monitoringv1.Duration("30s")))
 	g.Expect(ep.TLSConfig).ToNot(BeNil())
-	g.Expect(ep.TLSConfig.InsecureSkipVerify).To(Equal(ptr.To(true)))
+	g.Expect(ep.TLSConfig.CA.Secret).ToNot(BeNil())
+	g.Expect(ep.TLSConfig.CA.Secret.Name).To(Equal("test-shard-kine-serving-cert"))
+	g.Expect(ep.TLSConfig.CA.Secret.Key).To(Equal("ca.crt"))
+	g.Expect(ep.TLSConfig.ServerName).To(Equal(
+		ptr.To("test-shard-kine.test-ns.svc")))
 }
 
 // TestBuildSecondaryServiceMonitor verifies HTTPS, bearer token auth,

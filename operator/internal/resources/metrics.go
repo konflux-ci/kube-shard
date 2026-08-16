@@ -25,6 +25,13 @@ func pkiSecretName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-pki", shard.Name)
 }
 
+// kineServingSecretName returns the name of the Secret holding the Kine
+// serving certificate (issued by the Kine-dedicated CA). Duplicated from the
+// certs package to avoid an import cycle.
+func kineServingSecretName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-kine-serving-cert", shard.Name)
+}
+
 // MetricsReaderServiceAccountName returns the name of the per-shard ServiceAccount
 // used by Prometheus to authenticate against the secondary apiserver's /metrics endpoint.
 func MetricsReaderServiceAccountName(shard *kubeshardv1alpha1.APIShard) string {
@@ -70,7 +77,19 @@ func BuildKineServiceMonitor(shard *kubeshardv1alpha1.APIShard) *monitoringv1.Se
 						HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
 							TLSConfig: &monitoringv1.TLSConfig{
 								SafeTLSConfig: monitoringv1.SafeTLSConfig{
-									InsecureSkipVerify: ptr.To(true),
+									CA: monitoringv1.SecretOrConfigMap{
+										Secret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: kineServingSecretName(shard),
+											},
+											Key: "ca.crt",
+										},
+									},
+									ServerName: ptr.To(fmt.Sprintf(
+										"%s.%s.svc",
+										KineServiceName(shard),
+										shard.Spec.TargetNamespace,
+									)),
 								},
 							},
 						},

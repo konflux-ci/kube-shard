@@ -233,11 +233,10 @@ func main() {
 
 	primaryIssuer, err := apishard.DiscoverPrimaryIssuer(mgr.GetConfig())
 	if err != nil {
-		setupLog.Error(err, "unable to discover primary issuer; using default")
-		primaryIssuer = "https://kubernetes.default.svc"
-	} else {
-		setupLog.Info("Discovered primary service-account-issuer", "issuer", primaryIssuer)
+		setupLog.Error(err, "unable to discover primary service-account-issuer")
+		os.Exit(1)
 	}
+	setupLog.Info("Discovered primary service-account-issuer", "issuer", primaryIssuer)
 
 	if err = (&apishard.Reconciler{
 		Client:                  mgr.GetClient(),
