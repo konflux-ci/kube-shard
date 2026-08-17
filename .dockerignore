@@ -1,3 +1,10 @@
-# More info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
-# Ignore build and test binaries.
-operator/bin/
+# Ignore everything by default (build context is repo root)
+**
+
+# Allow only what the operator Dockerfile needs
+!operator/go.mod
+!operator/go.sum
+!operator/cmd/
+!operator/api/
+!operator/internal/
+!LICENSE
