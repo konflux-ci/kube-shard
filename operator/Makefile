@@ -112,9 +112,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	cp -f ../LICENSE LICENSE
 	$(CONTAINER_TOOL) build -t ${IMG} .
-	rm -f LICENSE
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -131,12 +129,10 @@ PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	cp -f ../LICENSE LICENSE
 	- $(CONTAINER_TOOL) buildx create --name operator-builder
 	$(CONTAINER_TOOL) buildx use operator-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm operator-builder
-	rm -f Dockerfile.cross LICENSE
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.

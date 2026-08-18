@@ -6,6 +6,7 @@ _output/
 .vscode/
 .worktrees/
 .superpowers/
+bin/
 
 # Binaries
 operator/webhook-server
