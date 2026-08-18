@@ -5,12 +5,12 @@ ARG TARGETARCH
 ENV GOTOOLCHAIN=auto
 WORKDIR /workspace
 
-COPY --chmod=644 operator/go.mod operator/go.sum ./
+COPY --chmod=644 go.mod go.sum ./
 RUN go mod download
 
-COPY operator/cmd/main.go cmd/main.go
-COPY operator/api/ api/
-COPY operator/internal/ internal/
+COPY cmd/main.go cmd/main.go
+COPY api/ api/
+COPY internal/ internal/
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 
