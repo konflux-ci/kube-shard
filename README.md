@@ -61,6 +61,20 @@ CRDs with `spec.conversion.strategy: Webhook` define a conversion webhook for mu
 
 This keeps multi-version conversion functional on the secondary without requiring the webhook service to be registered as a Service object on the secondary's store.
 
+## Controller Behavior During APIService Switchover
+
+When an APIShard is first created, the operator registers APIService objects that redirect watch streams from the main kube-apiserver to the secondary. Most controllers recover automatically — the client-go reflector detects the disconnect and re-lists/re-watches against the new (proxied) endpoint within seconds.
+
+However, **some controllers silently stop processing events** after the switchover. They remain `Running`, pass health probes, hold their leader lease, and produce no error logs — but new resources in the sharded API groups are never delivered to their event handlers. This was observed with `tekton-kueue` (PipelineRuns stuck in `PipelineRunPending`).
+
+**Workaround:** Restart the affected controller after the APIShard reaches `Ready`:
+
+```bash
+kubectl rollout restart deployment/<controller-name> -n <namespace>
+```
+
+See [docs/design.md](docs/design.md#apiservice-switchover-and-controller-behavior) for diagnostic steps and detailed analysis.
+
 ## Status
 
 Operator-managed deployment. See [docs/design.md](docs/design.md) for the full design document.
