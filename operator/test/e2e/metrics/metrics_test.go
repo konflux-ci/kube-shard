@@ -501,6 +501,39 @@ func runAsMetricsReader(podName, apiURL string) (string, error) {
 	return output, err
 }
 
+// curlOTelMetrics creates a curl pod, waits for completion, and returns its logs.
+// This is more reliable than `kubectl run --rm -i` which can drop stdout.
+func curlOTelMetrics(podName, namespace, metricsURL string) (string, error) {
+	_ = exec.Command("kubectl", "delete", "pod", podName,
+		"-n", namespace, "--ignore-not-found").Run()
+
+	cmd := exec.Command("kubectl", "run", podName,
+		"--restart=Never",
+		"--image=curlimages/curl:latest",
+		"-n", namespace,
+		"--", "curl", "-s", "-m", "10", metricsURL)
+	if _, err := utils.Run(cmd); err != nil {
+		return "", fmt.Errorf("creating curl pod: %w", err)
+	}
+
+	waitCmd := exec.Command("kubectl", "wait",
+		"--for=jsonpath={.status.phase}=Succeeded",
+		"pod/"+podName, "-n", namespace, "--timeout=30s")
+	if _, err := utils.Run(waitCmd); err != nil {
+		logsCmd := exec.Command("kubectl", "logs", podName, "-n", namespace)
+		logs, _ := utils.Run(logsCmd)
+		_ = exec.Command("kubectl", "delete", "pod", podName,
+			"-n", namespace, "--ignore-not-found").Run()
+		return logs, fmt.Errorf("curl pod did not succeed: %w\nlogs: %s", err, logs)
+	}
+
+	logsCmd := exec.Command("kubectl", "logs", podName, "-n", namespace)
+	output, err := utils.Run(logsCmd)
+	_ = exec.Command("kubectl", "delete", "pod", podName,
+		"-n", namespace, "--ignore-not-found").Run()
+	return output, err
+}
+
 const (
 	pgShardName      = "e2e-pgmetrics-shard"
 	pgShardNamespace = "e2e-pgmetrics-ns"
@@ -585,6 +618,26 @@ spec:
 					"phase=%s conditions=%s", output, condOut)
 			}
 		}, 8*time.Minute, 10*time.Second).Should(Succeed())
+
+		By("waiting for OTel Collector deployment to be ready")
+		cmd = exec.Command("kubectl", "get", "deployment",
+			fmt.Sprintf("%s-postgresql-metrics", pgShardName),
+			"-n", pgShardNamespace, "-o", "jsonpath={.status.readyReplicas}")
+		Eventually(func(g Gomega) {
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(output).To(Equal("1"))
+		}, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+		By("waiting for OTel Collector to complete first PostgreSQL scrape")
+		metricsURL := fmt.Sprintf("http://%s-postgresql-metrics.%s.svc:9187/metrics",
+			pgShardName, pgShardNamespace)
+		Eventually(func(g Gomega) {
+			out, err := curlOTelMetrics("curl-otel-warmup", pgShardNamespace, metricsURL)
+			g.Expect(err).NotTo(HaveOccurred(), "curl failed: %s", out)
+			g.Expect(out).To(ContainSubstring("postgresql_"),
+				"OTel collector has not emitted PostgreSQL metrics yet")
+		}, 3*time.Minute, 10*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {
@@ -600,7 +653,7 @@ spec:
 	})
 
 	AfterEach(func() {
-		for _, podName := range []string{"curl-otel-metrics"} {
+		for _, podName := range []string{"curl-otel-metrics", "curl-otel-bloat", "curl-otel-warmup"} {
 			cmd := exec.Command("kubectl", "delete", "pod", podName,
 				"-n", pgShardNamespace, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
@@ -659,21 +712,10 @@ spec:
 			metricsURL := fmt.Sprintf("http://%s-postgresql-metrics.%s.svc:9187/metrics",
 				pgShardName, pgShardNamespace)
 
-			Eventually(func(g Gomega) {
-				_ = exec.Command("kubectl", "delete", "pod", "curl-otel-metrics",
-					"-n", pgShardNamespace, "--ignore-not-found").Run()
-				kubectlArgs := []string{
-					"run", "curl-otel-metrics", "--rm", "-i",
-					"--restart=Never", "--image=curlimages/curl:latest",
-					"-n", pgShardNamespace, "--", "curl", "-s", "-m", "10", metricsURL,
-				}
-				cmd := exec.Command("kubectl", kubectlArgs...)
-				out, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(),
-					"curl failed; output: %s", out)
-				g.Expect(out).To(ContainSubstring("postgresql_db_size"),
-					"expected standard PostgreSQL metrics in response")
-			}).Should(Succeed())
+			out, err := curlOTelMetrics("curl-otel-metrics", pgShardNamespace, metricsURL)
+			Expect(err).NotTo(HaveOccurred(), "curl failed; output: %s", out)
+			Expect(out).To(ContainSubstring("postgresql_db_size"),
+				"expected standard PostgreSQL metrics in response")
 		})
 
 		It("should emit pgstattuple bloat metrics", func() {
@@ -681,15 +723,7 @@ spec:
 				pgShardName, pgShardNamespace)
 
 			Eventually(func(g Gomega) {
-				_ = exec.Command("kubectl", "delete", "pod", "curl-otel-bloat",
-					"-n", pgShardNamespace, "--ignore-not-found").Run()
-				kubectlArgs := []string{
-					"run", "curl-otel-bloat", "--rm", "-i",
-					"--restart=Never", "--image=curlimages/curl:latest",
-					"-n", pgShardNamespace, "--", "curl", "-s", "-m", "10", metricsURL,
-				}
-				cmd := exec.Command("kubectl", kubectlArgs...)
-				out, err := utils.Run(cmd)
+				out, err := curlOTelMetrics("curl-otel-bloat", pgShardNamespace, metricsURL)
 				g.Expect(err).NotTo(HaveOccurred(),
 					"curl failed; output: %s", out)
 				g.Expect(out).To(ContainSubstring("postgresql_reclaimable_bytes"),
