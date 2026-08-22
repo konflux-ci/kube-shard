@@ -136,7 +136,7 @@ func TestBuildOTelCollectorDeployment(t *testing.T) {
 	g.Expect(containers).To(HaveLen(1))
 	c := containers[0]
 	g.Expect(c.Name).To(Equal(NameOTelCollector))
-	g.Expect(c.Image).To(Equal(OTelCollectorImage))
+	g.Expect(c.Image).To(Equal(DefaultOTelCollectorImage))
 	g.Expect(c.Args).To(Equal([]string{"--config=/etc/otel/config.yaml"}))
 	g.Expect(c.Ports).To(HaveLen(2))
 	g.Expect(c.Ports[0].ContainerPort).To(Equal(OTelMetricsPort))

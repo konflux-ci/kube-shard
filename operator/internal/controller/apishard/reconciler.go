@@ -324,8 +324,6 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, shard *kubeshardv1alph
 
 // reconcileStorage validates or provisions the storage backend, then deploys Kine.
 func (r *Reconciler) reconcileStorage(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
-	logger := log.FromContext(ctx)
-
 	switch shard.Spec.Storage.Type {
 	case kubeshardv1alpha1.StorageTypeInClusterPostgreSQL:
 		if err := r.reconcileInClusterPostgreSQL(ctx, tc, shard); err != nil {
@@ -341,24 +339,7 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, tc *tracking.Client, 
 		return fmt.Errorf("kine: %w", err)
 	}
 
-	if err := r.reconcilePostgreSQLMetrics(ctx, tc, shard); err != nil {
-		logger.Error(err, "Non-critical: failed to reconcile PostgreSQL metrics collector")
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionMonitoringDegraded,
-			Status:             metav1.ConditionTrue,
-			Reason:             "MetricsCollectorFailed",
-			Message:            fmt.Sprintf("Failed to deploy metrics collector: %v", err),
-			ObservedGeneration: shard.Generation,
-		})
-	} else if resources.StorageMonitoringEnabled(shard) {
-		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
-			Type:               kubeshardv1alpha1.ConditionMonitoringDegraded,
-			Status:             metav1.ConditionFalse,
-			Reason:             "MetricsCollectorHealthy",
-			Message:            "PostgreSQL metrics collector is deployed",
-			ObservedGeneration: shard.Generation,
-		})
-	}
+	r.reconcilePostgreSQLMetrics(ctx, tc, shard)
 
 	return nil
 }
@@ -495,18 +476,19 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 }
 
 // reconcilePostgreSQLMetrics deploys an OpenTelemetry Collector that collects
-// PostgreSQL metrics (standard receiver + custom bloat queries). Only runs when
-// storage.monitoring.enabled is true and the storage type is PostgreSQL-based.
-// For SQLite, this is a no-op with a status condition warning.
+// PostgreSQL metrics from the configured storage backend. It manages the
+// MonitoringDegraded status condition internally and never returns — monitoring
+// failures are non-blocking so they do not halt reconciliation.
 func (r *Reconciler) reconcilePostgreSQLMetrics(
 	ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard,
-) error {
+) {
 	if !resources.StorageMonitoringEnabled(shard) {
-		return nil
+		return
 	}
 
 	logger := log.FromContext(ctx)
 
+	var err error
 	switch shard.Spec.Storage.Type {
 	case kubeshardv1alpha1.StorageTypeSQLite:
 		logger.Info("Storage monitoring enabled but storage type is SQLite; skipping PostgreSQL metrics collector")
@@ -517,45 +499,68 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 			Message:            "Storage monitoring is not supported for SQLite; disable monitoring.enabled or switch to PostgreSQL",
 			ObservedGeneration: shard.Generation,
 		})
-		return nil
+		return
 
 	case kubeshardv1alpha1.StorageTypeInClusterPostgreSQL:
 		params := resources.InClusterPostgreSQLConnectionParams(shard)
 		credentialSecret := resources.PostgreSQLSecretName(shard)
-		return r.applyOTelCollector(ctx, tc, shard, params, credentialSecret)
+		err = r.applyOTelCollector(ctx, tc, shard, params, credentialSecret)
 
 	case kubeshardv1alpha1.StorageTypePostgreSQL:
 		ref := shard.Spec.Storage.ConnectionSecretRef
 		if ref == nil {
-			return fmt.Errorf("storage.monitoring enabled but connectionSecretRef is not set")
+			err = fmt.Errorf("storage.monitoring enabled but connectionSecretRef is not set")
+			break
 		}
 
 		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{
+		if err = r.Get(ctx, types.NamespacedName{
 			Name:      ref.Name,
 			Namespace: shard.Spec.TargetNamespace,
 		}, secret); err != nil {
-			return fmt.Errorf("reading connection secret for metrics: %w", err)
+			err = fmt.Errorf("reading connection secret for metrics: %w", err)
+			break
 		}
 
 		dsn := string(secret.Data[ref.Key])
-		params, err := resources.ParsePostgreSQLDSN(dsn)
-		if err != nil {
-			return fmt.Errorf("parsing DSN for metrics collector: %w", err)
+		params, parseErr := resources.ParsePostgreSQLDSN(dsn)
+		if parseErr != nil {
+			err = fmt.Errorf("parsing DSN for metrics collector: %w", parseErr)
+			break
 		}
 
 		if shard.Spec.Storage.Monitoring.CACertSecret != nil {
 			params.CACertSecretName = shard.Spec.Storage.Monitoring.CACertSecret.Name
+			params.CACertSecretKey = shard.Spec.Storage.Monitoring.CACertSecret.Key
 		}
 
-		credentialSecret, err := r.ensureOTelCredentialSecret(ctx, tc, shard, params)
-		if err != nil {
-			return err
+		credentialSecret, secretErr := r.ensureOTelCredentialSecret(ctx, tc, shard, params)
+		if secretErr != nil {
+			err = secretErr
+			break
 		}
-		return r.applyOTelCollector(ctx, tc, shard, params, credentialSecret)
+		err = r.applyOTelCollector(ctx, tc, shard, params, credentialSecret)
 	}
 
-	return nil
+	if err != nil {
+		logger.Error(err, "Non-critical: failed to reconcile PostgreSQL metrics collector")
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionMonitoringDegraded,
+			Status:             metav1.ConditionTrue,
+			Reason:             "MetricsCollectorFailed",
+			Message:            fmt.Sprintf("Failed to deploy metrics collector: %v", err),
+			ObservedGeneration: shard.Generation,
+		})
+		return
+	}
+
+	meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+		Type:               kubeshardv1alpha1.ConditionMonitoringDegraded,
+		Status:             metav1.ConditionFalse,
+		Reason:             "MetricsCollectorHealthy",
+		Message:            "PostgreSQL metrics collector is deployed",
+		ObservedGeneration: shard.Generation,
+	})
 }
 
 // applyOTelCollector creates or updates the OTel Collector ConfigMap (with content hash),

@@ -17,10 +17,10 @@ import (
 
 const (
 	// renovate: datasource=docker depName=registry.access.redhat.com/hi/opentelemetry-collector-contrib
-	OTelCollectorImage        = "registry.access.redhat.com/hi/opentelemetry-collector-contrib:0.155.0"
-	OTelMetricsPort     int32 = 9187
-	OTelHealthPort      int32 = 13133
-	OTelMetricsPortName       = "otel-metrics"
+	DefaultOTelCollectorImage       = "registry.access.redhat.com/hi/opentelemetry-collector-contrib:0.155.0"
+	OTelMetricsPort           int32 = 9187
+	OTelHealthPort            int32 = 13133
+	OTelMetricsPortName             = "otel-metrics"
 
 	NameOTelCollector   = "otel-collector"
 	ComponentMonitoring = "monitoring"
@@ -66,6 +66,7 @@ type OTelConnectionParams struct {
 	DBName           string
 	SSLMode          string
 	CACertSecretName string
+	CACertSecretKey  string
 }
 
 // BuildOTelCollectorConfig generates the OTel Collector YAML configuration string
@@ -224,13 +225,17 @@ func BuildOTelCollectorDeployment(
 		sslMode = sslModeDisable
 	}
 	if sslMode != sslModeDisable && params.CACertSecretName != "" {
+		certKey := params.CACertSecretKey
+		if certKey == "" {
+			certKey = "ca.crt"
+		}
 		volumes = append(volumes, corev1.Volume{
 			Name: otelTLSVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: params.CACertSecretName,
 					Items: []corev1.KeyToPath{
-						{Key: "ca.crt", Path: "ca.crt"},
+						{Key: certKey, Path: "ca.crt"},
 					},
 				},
 			},
@@ -262,7 +267,7 @@ func BuildOTelCollectorDeployment(
 					Containers: []corev1.Container{
 						{
 							Name:            NameOTelCollector,
-							Image:           OTelCollectorImage,
+							Image:           DefaultOTelCollectorImage,
 							SecurityContext: RestrictedContainerSecurityContext(),
 							Args:            []string{"--config=/etc/otel/config.yaml"},
 							Ports: []corev1.ContainerPort{
