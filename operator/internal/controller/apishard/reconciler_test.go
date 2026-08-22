@@ -2406,3 +2406,216 @@ var _ = Describe("syncCRDsToSecondary", func() {
 		Expect(err.Error()).To(ContainSubstring("get CRD nonexistent.synctest.example.com from primary"))
 	})
 })
+
+var _ = Describe("handleVCTSizeChange", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	// createVCTShard creates an APIShard with InClusterPostgreSQL persistence
+	// at the given size in a unique namespace.
+	createVCTShard := func(suffix, size string) *kubeshardv1alpha1.APIShard {
+		nsName := "test-vct-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-vct-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+					InCluster: &kubeshardv1alpha1.InClusterStorage{
+						Persistence: &kubeshardv1alpha1.PersistenceSpec{
+							Size: resource.MustParse(size),
+						},
+					},
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	It("should preserve existing VCTs and expand PVCs on size increase", func() {
+		suffix := "expand-" + randString(4)
+		shard := createVCTShard(suffix, "20Gi")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		// First reconcile: creates the StatefulSet with 20Gi VCT
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify StatefulSet was created with 20Gi VCT
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PostgreSQLStatefulSetName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+		}, sts)).To(Succeed())
+		Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+		origSize := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(origSize.String()).To(Equal("20Gi"))
+
+		// Create a PVC simulating what the StatefulSet controller
+		// would create (envtest does not run workload controllers).
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf(
+					"data-%s-0",
+					resources.PostgreSQLStatefulSetName(shard),
+				),
+				Namespace: shard.Spec.TargetNamespace,
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{
+					corev1.ReadWriteOnce,
+				},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("20Gi"),
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+
+		// Update shard spec to request 100Gi (in-memory change
+		// simulating a spec update by the user)
+		shard.Spec.Storage.InCluster.Persistence.Size =
+			resource.MustParse("100Gi")
+
+		// Second reconcile with larger size: should succeed
+		tc = newTrackingClient(shard)
+		err = reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify StatefulSet VCT is preserved at 20Gi (immutable)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PostgreSQLStatefulSetName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+		}, sts)).To(Succeed())
+		vctSize := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(vctSize.String()).To(Equal("20Gi"))
+
+		// Verify PVC was expanded to 100Gi
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: fmt.Sprintf(
+				"data-%s-0",
+				resources.PostgreSQLStatefulSetName(shard),
+			),
+			Namespace: shard.Spec.TargetNamespace,
+		}, pvc)).To(Succeed())
+		pvcSize := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(pvcSize.String()).To(Equal("100Gi"))
+	})
+
+	It("should preserve existing VCTs and set warning on size decrease", func() {
+		suffix := "shrink-" + randString(4)
+		shard := createVCTShard(suffix, "100Gi")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		// First reconcile: creates the StatefulSet with 100Gi VCT
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Request a smaller size (shrink)
+		shard.Spec.Storage.InCluster.Persistence.Size =
+			resource.MustParse("20Gi")
+
+		// Second reconcile: should succeed (no error loop)
+		tc = newTrackingClient(shard)
+		err = reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify StatefulSet VCT preserved at 100Gi
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PostgreSQLStatefulSetName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+		}, sts)).To(Succeed())
+		vctSize := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(vctSize.String()).To(Equal("100Gi"))
+
+		// Verify warning condition was set
+		cond := meta.FindStatusCondition(
+			shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionStorageReady,
+		)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("ShrinkNotSupported"))
+		Expect(cond.Message).To(ContainSubstring("100Gi"))
+		Expect(cond.Message).To(ContainSubstring("20Gi"))
+	})
+
+	It("should not interfere when VCT size is unchanged", func() {
+		suffix := "same-" + randString(4)
+		shard := createVCTShard(suffix, "20Gi")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		// First reconcile
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Second reconcile with same size: should succeed
+		tc = newTrackingClient(shard)
+		err = reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify no StorageReady condition set (no warning)
+		cond := meta.FindStatusCondition(
+			shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionStorageReady,
+		)
+		Expect(cond).To(BeNil())
+	})
+
+	It("should skip PVC expansion when PVC does not exist yet", func() {
+		suffix := "nopvc-" + randString(4)
+		shard := createVCTShard(suffix, "20Gi")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		// First reconcile
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Request expansion without creating a PVC first (PVC may
+		// not exist yet if the StatefulSet controller is slow)
+		shard.Spec.Storage.InCluster.Persistence.Size =
+			resource.MustParse("100Gi")
+
+		// Second reconcile: should succeed even without PVC
+		tc = newTrackingClient(shard)
+		err = reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify StatefulSet VCT is preserved at 20Gi
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PostgreSQLStatefulSetName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+		}, sts)).To(Succeed())
+		vctSize := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(vctSize.String()).To(Equal("20Gi"))
+	})
+})

@@ -32,6 +32,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -122,6 +123,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;patch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
@@ -447,6 +449,15 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 		// a UID from the namespace range, making this unnecessary.
 		sts.Spec.Template.Spec.SecurityContext.RunAsUser = ptr.To(int64(999))
 	}
+
+	// Handle VCT size changes on existing StatefulSets. VolumeClaimTemplates
+	// are immutable — attempting to apply a size change directly causes a
+	// Forbidden error and an infinite reconcile loop. This function preserves
+	// the existing VCTs and expands PVCs directly when the size increases.
+	if err := r.handleVCTSizeChange(ctx, shard, sts); err != nil {
+		return fmt.Errorf("handling VCT size change: %w", err)
+	}
+
 	if err := tc.ApplyOwned(ctx, sts); err != nil {
 		return fmt.Errorf("postgresql statefulset: %w", err)
 	}
@@ -457,6 +468,150 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 	}
 
 	return nil
+}
+
+// handleVCTSizeChange detects when the desired StatefulSet has a different
+// VolumeClaimTemplate size than the existing one and handles it gracefully.
+// VolumeClaimTemplates are immutable on StatefulSets — applying a size change
+// directly causes a Forbidden error from the API server. This function:
+//   - Preserves the existing VCTs on the desired object so the apply succeeds
+//   - For expansion: patches each existing PVC to the new size
+//   - For shrink: sets a warning status condition (PVC shrinking is not supported)
+func (r *Reconciler) handleVCTSizeChange(
+	ctx context.Context,
+	shard *kubeshardv1alpha1.APIShard,
+	desired *appsv1.StatefulSet,
+) error {
+	logger := log.FromContext(ctx)
+
+	existing := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      desired.Name,
+		Namespace: desired.Namespace,
+	}, existing)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil // First creation, no VCT conflict possible
+		}
+		return fmt.Errorf("fetching existing StatefulSet: %w", err)
+	}
+
+	if len(existing.Spec.VolumeClaimTemplates) == 0 ||
+		len(desired.Spec.VolumeClaimTemplates) == 0 {
+		return nil
+	}
+
+	existingSize := existing.Spec.VolumeClaimTemplates[0].
+		Spec.Resources.Requests[corev1.ResourceStorage]
+	desiredSize := desired.Spec.VolumeClaimTemplates[0].
+		Spec.Resources.Requests[corev1.ResourceStorage]
+
+	if existingSize.Cmp(desiredSize) == 0 {
+		return nil // Sizes match, nothing to do
+	}
+
+	// Preserve existing VCTs to avoid immutable field error on apply
+	desired.Spec.VolumeClaimTemplates = existing.Spec.VolumeClaimTemplates
+
+	if desiredSize.Cmp(existingSize) < 0 {
+		// Shrink: PVC shrinking is not supported by Kubernetes
+		logger.Info(
+			"VCT size decrease requested but PVC shrinking is not"+
+				" supported",
+			"current", existingSize.String(),
+			"requested", desiredSize.String(),
+		)
+		meta.SetStatusCondition(
+			&shard.Status.Conditions,
+			metav1.Condition{
+				Type:   kubeshardv1alpha1.ConditionStorageReady,
+				Status: metav1.ConditionFalse,
+				Reason: "ShrinkNotSupported",
+				Message: fmt.Sprintf(
+					"PVC shrinking is not supported; current"+
+						" size %s, requested size %s. Update"+
+						" the APIShard to match the current"+
+						" size or a larger value.",
+					existingSize.String(),
+					desiredSize.String(),
+				),
+				ObservedGeneration: shard.Generation,
+			},
+		)
+		return nil
+	}
+
+	// Expansion: patch existing PVCs directly
+	logger.Info("VCT size increase detected, expanding PVCs directly",
+		"from", existingSize.String(), "to", desiredSize.String())
+
+	vctName := existing.Spec.VolumeClaimTemplates[0].Name
+	replicas := int32(1)
+	if existing.Spec.Replicas != nil {
+		replicas = *existing.Spec.Replicas
+	}
+
+	return r.expandPostgreSQLPVCs(
+		ctx, shard, desired.Name, vctName, replicas, desiredSize,
+	)
+}
+
+// expandPostgreSQLPVCs patches PVCs owned by the PostgreSQL StatefulSet to
+// request a larger storage size. StatefulSet PVCs follow the naming pattern
+// <vct-name>-<sts-name>-<ordinal>.
+func (r *Reconciler) expandPostgreSQLPVCs(
+	ctx context.Context,
+	shard *kubeshardv1alpha1.APIShard,
+	stsName, vctName string,
+	replicas int32,
+	newSize resource.Quantity,
+) error {
+	logger := log.FromContext(ctx)
+
+	var errs []error
+	for i := range replicas {
+		pvcName := fmt.Sprintf("%s-%s-%d", vctName, stsName, i)
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      pvcName,
+			Namespace: shard.Spec.TargetNamespace,
+		}, pvc); err != nil {
+			if apierrors.IsNotFound(err) {
+				logger.V(1).Info(
+					"PVC not found, skipping expansion",
+					"pvc", pvcName,
+				)
+				continue
+			}
+			errs = append(
+				errs,
+				fmt.Errorf("getting PVC %s: %w", pvcName, err),
+			)
+			continue
+		}
+
+		currentSize := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		if currentSize.Cmp(newSize) >= 0 {
+			continue // Already at or above desired size
+		}
+
+		patch := client.MergeFrom(pvc.DeepCopy())
+		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = newSize
+		if err := r.Patch(ctx, pvc, patch); err != nil {
+			errs = append(
+				errs,
+				fmt.Errorf("expanding PVC %s: %w", pvcName, err),
+			)
+			continue
+		}
+		logger.Info("Expanded PVC",
+			"pvc", pvcName,
+			"from", currentSize.String(),
+			"to", newSize.String(),
+		)
+	}
+
+	return errors.Join(errs...)
 }
 
 // validateExternalPostgreSQLSecret checks that the user-provided Secret exists
