@@ -169,6 +169,25 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 		},
 	})
 
+	var initVolumeMounts []corev1.VolumeMount
+	if storageMonitoringEnabled(shard) {
+		volumes = append(volumes, corev1.Volume{
+			Name: "init-scripts",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: PostgreSQLInitConfigMapName(shard),
+					},
+				},
+			},
+		})
+		initVolumeMounts = append(initVolumeMounts, corev1.VolumeMount{
+			Name:      "init-scripts",
+			MountPath: "/docker-entrypoint-initdb.d",
+			ReadOnly:  true,
+		})
+	}
+
 	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "apps/v1",
@@ -221,7 +240,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 								"-c", "ssl_ca_file=" + postgresqlTLSMountPath + "/ca.crt",
 							},
 							Resources: resourceReqs,
-							VolumeMounts: []corev1.VolumeMount{
+							VolumeMounts: append([]corev1.VolumeMount{
 								{
 									Name:      dataVolumeName,
 									MountPath: "/var/lib/postgresql/data",
@@ -230,12 +249,12 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 									Name:      "tmp",
 									MountPath: "/tmp",
 								},
-								{
-									Name:      postgresqlTLSVolumeName,
-									MountPath: postgresqlTLSMountPath,
-									ReadOnly:  true,
-								},
+							{
+								Name:      postgresqlTLSVolumeName,
+								MountPath: postgresqlTLSMountPath,
+								ReadOnly:  true,
 							},
+						}, initVolumeMounts...),
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									TCPSocket: &corev1.TCPSocketAction{
@@ -307,4 +326,9 @@ func persistenceFromShard(shard *kubeshardv1alpha1.APIShard) *kubeshardv1alpha1.
 		return nil
 	}
 	return shard.Spec.Storage.InCluster.Persistence
+}
+
+// storageMonitoringEnabled returns true if storage monitoring is configured and enabled.
+func storageMonitoringEnabled(shard *kubeshardv1alpha1.APIShard) bool {
+	return shard.Spec.Storage.Monitoring != nil && shard.Spec.Storage.Monitoring.Enabled
 }

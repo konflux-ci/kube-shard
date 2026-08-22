@@ -500,3 +500,203 @@ func runAsMetricsReader(podName, apiURL string) (string, error) {
 
 	return output, err
 }
+
+const (
+	pgShardName      = "e2e-pgmetrics-shard"
+	pgShardNamespace = "e2e-pgmetrics-ns"
+)
+
+var _ = Describe("PostgreSQL Storage Monitoring", Ordered, func() {
+	BeforeAll(func() {
+		By("cleaning up resources from previous test runs")
+		for _, args := range [][]string{
+			{"delete", "apishard", pgShardName, "--ignore-not-found", "--wait=false"},
+			{"delete", "ns", pgShardNamespace, "--ignore-not-found", "--wait=false"},
+		} {
+			cmd := exec.Command("kubectl", args...)
+			_, _ = utils.Run(cmd)
+		}
+
+		By("waiting for APIShard to be fully deleted")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "apishard", pgShardName, "--no-headers")
+			output, _ := utils.Run(cmd)
+			g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("waiting for namespace to be fully deleted")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "ns", pgShardNamespace, "--no-headers")
+			output, _ := utils.Run(cmd)
+			g.Expect(output).To(Or(BeEmpty(), ContainSubstring("not found")))
+		}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("creating the APIShard with InClusterPostgreSQL and monitoring enabled")
+		apishardYAML := fmt.Sprintf(`apiVersion: kube-shard.konflux-ci.dev/v1alpha1
+kind: APIShard
+metadata:
+  name: %s
+spec:
+  targetNamespace: %s
+  apiGroups:
+    - group: %s
+      versions:
+        - v1
+  storage:
+    type: InClusterPostgreSQL
+    inCluster:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+    monitoring:
+      enabled: true
+      collectionInterval: "30s"
+      postgresql:
+        bloatInterval: "5m"
+  namespaceSync:
+    labelSelector:
+      matchLabels:
+        test: e2e-pgmetrics
+  secondary:
+    replicas: 1
+  kine:
+    replicas: 1
+  monitoring:
+    prometheusServiceAccountName: %s
+    prometheusNamespace: %s
+`, pgShardName, pgShardNamespace, metricsAPIGroup, prometheusSAName, monitoringNamespace)
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = utils.StringReader(apishardYAML)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create PostgreSQL APIShard")
+
+		By("waiting for APIShard to become Ready")
+		Eventually(func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "apishard", pgShardName,
+				"-o", "jsonpath={.status.phase}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			if output != "Ready" {
+				condCmd := exec.Command("kubectl", "get", "apishard", pgShardName,
+					"-o", "jsonpath={.status.conditions}")
+				condOut, _ := utils.Run(condCmd)
+				g.Expect(output).To(Equal("Ready"),
+					"phase=%s conditions=%s", output, condOut)
+			}
+		}, 8*time.Minute, 10*time.Second).Should(Succeed())
+	})
+
+	AfterAll(func() {
+		By("deleting the PostgreSQL APIShard")
+		cmd := exec.Command("kubectl", "delete", "apishard", pgShardName,
+			"--ignore-not-found", "--wait=false")
+		_, _ = utils.Run(cmd)
+
+		By("deleting the shard namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", pgShardNamespace,
+			"--ignore-not-found", "--wait=false")
+		_, _ = utils.Run(cmd)
+	})
+
+	AfterEach(func() {
+		for _, podName := range []string{"curl-otel-metrics"} {
+			cmd := exec.Command("kubectl", "delete", "pod", podName,
+				"-n", pgShardNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		}
+	})
+
+	SetDefaultEventuallyTimeout(5 * time.Minute)
+	SetDefaultEventuallyPollingInterval(10 * time.Second)
+
+	Context("OTel Collector Deployment", func() {
+		It("should create the OTel Collector Deployment", func() {
+			cmd := exec.Command("kubectl", "get", "deployment",
+				fmt.Sprintf("%s-postgresql-metrics", pgShardName),
+				"-n", pgShardNamespace, "-o", "jsonpath={.status.readyReplicas}")
+			Eventually(func(g Gomega) {
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("1"),
+					"OTel Collector Deployment should have 1 ready replica")
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		It("should create the OTel Collector Service", func() {
+			cmd := exec.Command("kubectl", "get", "service",
+				fmt.Sprintf("%s-postgresql-metrics", pgShardName),
+				"-n", pgShardNamespace, "-o", "jsonpath={.spec.ports[0].port}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("9187"))
+		})
+
+		It("should create the OTel Collector ConfigMap", func() {
+			cmd := exec.Command("kubectl", "get", "configmap",
+				fmt.Sprintf("%s-postgresql-metrics-config", pgShardName),
+				"-n", pgShardNamespace, "-o", "jsonpath={.data.config\\.yaml}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("postgresql"))
+			Expect(output).To(ContainSubstring("sqlquery"))
+			Expect(output).To(ContainSubstring("pgstattuple"))
+		})
+
+		It("should create the PostgreSQL init ConfigMap", func() {
+			cmd := exec.Command("kubectl", "get", "configmap",
+				fmt.Sprintf("%s-postgresql-init", pgShardName),
+				"-n", pgShardNamespace,
+				"-o", "jsonpath={.data.init-pgstattuple\\.sql}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("CREATE EXTENSION IF NOT EXISTS pgstattuple"))
+		})
+	})
+
+	Context("OTel Collector metrics endpoint", func() {
+		It("should expose Prometheus metrics on port 9187", func() {
+			metricsURL := fmt.Sprintf("http://%s-postgresql-metrics.%s.svc:9187/metrics",
+				pgShardName, pgShardNamespace)
+
+			Eventually(func(g Gomega) {
+				_ = exec.Command("kubectl", "delete", "pod", "curl-otel-metrics",
+					"-n", pgShardNamespace, "--ignore-not-found").Run()
+				kubectlArgs := []string{
+					"run", "curl-otel-metrics", "--rm", "-i",
+					"--restart=Never", "--image=curlimages/curl:latest",
+					"-n", pgShardNamespace, "--", "curl", "-s", "-m", "10", metricsURL,
+				}
+				cmd := exec.Command("kubectl", kubectlArgs...)
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(),
+					"curl failed; output: %s", out)
+				g.Expect(out).To(ContainSubstring("postgresql_db_size"),
+					"expected standard PostgreSQL metrics in response")
+			}).Should(Succeed())
+		})
+	})
+
+	Context("PostgreSQL metrics ServiceMonitor", func() {
+		It("should create a ServiceMonitor for the OTel Collector", func() {
+			if os.Getenv("PROMETHEUS_INSTALL_SKIP") == "true" {
+				Skip("Prometheus Operator not installed")
+			}
+
+			cmd := exec.Command("kubectl", "get", "servicemonitor",
+				fmt.Sprintf("%s-postgresql-metrics", pgShardName),
+				"-n", pgShardNamespace, "-o", "json")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			var sm map[string]interface{}
+			Expect(json.Unmarshal([]byte(output), &sm)).To(Succeed())
+
+			endpoints := sm["spec"].(map[string]interface{})["endpoints"].([]interface{})
+			Expect(endpoints).To(HaveLen(1))
+			ep := endpoints[0].(map[string]interface{})
+			Expect(ep["port"]).To(Equal("otel-metrics"))
+			Expect(ep["path"]).To(Equal("/metrics"))
+		})
+	})
+})

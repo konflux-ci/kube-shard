@@ -37,9 +37,36 @@ type APIGroupSpec struct {
 
 type StorageSpec struct {
 	// +kubebuilder:validation:Enum=SQLite;InClusterPostgreSQL;PostgreSQL
-	Type                StorageType         `json:"type"`
-	ConnectionSecretRef *SecretKeyReference `json:"connectionSecretRef,omitempty"`
-	InCluster           *InClusterStorage   `json:"inCluster,omitempty"`
+	Type                StorageType            `json:"type"`
+	ConnectionSecretRef *SecretKeyReference    `json:"connectionSecretRef,omitempty"`
+	InCluster           *InClusterStorage      `json:"inCluster,omitempty"`
+	Monitoring          *StorageMonitoringSpec `json:"monitoring,omitempty"`
+}
+
+// StorageMonitoringSpec configures metrics collection for the storage backend.
+// The operator deploys an OpenTelemetry Collector that scrapes the database and
+// exposes Prometheus metrics. The appropriate backend-specific section must match
+// the storage type; mismatched sections are ignored.
+type StorageMonitoringSpec struct {
+	// Enabled enables metrics collection for the storage backend.
+	Enabled bool `json:"enabled"`
+	// CollectionInterval for standard storage metrics. Default: "30s".
+	// +optional
+	CollectionInterval string `json:"collectionInterval,omitempty"`
+	// PostgreSQL holds settings specific to PostgreSQL monitoring.
+	// Applicable when storage type is InClusterPostgreSQL or PostgreSQL.
+	// +optional
+	PostgreSQL *PostgreSQLMonitoringSpec `json:"postgresql,omitempty"`
+}
+
+// PostgreSQLMonitoringSpec contains PostgreSQL-specific monitoring settings.
+type PostgreSQLMonitoringSpec struct {
+	// BloatInterval controls how often reclaimable-space queries run (pgstattuple).
+	// This performs a full table scan so should not be too frequent. Default: "5m".
+	// For external PostgreSQL, the pgstattuple extension must be pre-installed
+	// by the database administrator.
+	// +optional
+	BloatInterval string `json:"bloatInterval,omitempty"`
 }
 
 // SecretKeyReference identifies a specific key within a Secret.

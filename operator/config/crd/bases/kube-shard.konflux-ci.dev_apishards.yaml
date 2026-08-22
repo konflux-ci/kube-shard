@@ -935,6 +935,37 @@ spec:
                             type: object
                         type: object
                     type: object
+                  monitoring:
+                    description: |-
+                      StorageMonitoringSpec configures metrics collection for the storage backend.
+                      The operator deploys an OpenTelemetry Collector that scrapes the database and
+                      exposes Prometheus metrics. The appropriate backend-specific section must match
+                      the storage type; mismatched sections are ignored.
+                    properties:
+                      collectionInterval:
+                        description: 'CollectionInterval for standard storage metrics.
+                          Default: "30s".'
+                        type: string
+                      enabled:
+                        description: Enabled enables metrics collection for the storage
+                          backend.
+                        type: boolean
+                      postgresql:
+                        description: |-
+                          PostgreSQL holds settings specific to PostgreSQL monitoring.
+                          Applicable when storage type is InClusterPostgreSQL or PostgreSQL.
+                        properties:
+                          bloatInterval:
+                            description: |-
+                              BloatInterval controls how often reclaimable-space queries run (pgstattuple).
+                              This performs a full table scan so should not be too frequent. Default: "5m".
+                              For external PostgreSQL, the pgstattuple extension must be pre-installed
+                              by the database administrator.
+                            type: string
+                        type: object
+                    required:
+                    - enabled
+                    type: object
                   type:
                     enum:
                     - SQLite
