@@ -1,0 +1,14 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update container image versions in Go constants",
+      "managerFilePatterns": ["**/*.go"],
+      "matchStrings": [
+        "//\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+\\S+\\s*=\\s*\"[^:]+:(?<currentValue>[^\"]+)\""
+      ]
+    }
+  ]
+}

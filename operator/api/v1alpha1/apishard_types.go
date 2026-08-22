@@ -52,7 +52,13 @@ type StorageMonitoringSpec struct {
 	Enabled bool `json:"enabled"`
 	// CollectionInterval for standard storage metrics. Default: "30s".
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="duration must be a valid non-negative Go duration"
 	CollectionInterval string `json:"collectionInterval,omitempty"`
+	// CACertSecret references a Secret containing the CA certificate (key "ca.crt")
+	// used to verify the PostgreSQL server's TLS certificate. Required when
+	// sslmode is anything other than "disable".
+	// +optional
+	CACertSecret *SecretKeyReference `json:"caCertSecret,omitempty"`
 	// PostgreSQL holds settings specific to PostgreSQL monitoring.
 	// Applicable when storage type is InClusterPostgreSQL or PostgreSQL.
 	// +optional
@@ -66,6 +72,7 @@ type PostgreSQLMonitoringSpec struct {
 	// For external PostgreSQL, the pgstattuple extension must be pre-installed
 	// by the database administrator.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="duration must be a valid non-negative Go duration"
 	BloatInterval string `json:"bloatInterval,omitempty"`
 }
 

@@ -30,6 +30,7 @@ import (
 )
 
 const (
+	// renovate: datasource=docker depName=registry.k8s.io/kube-apiserver
 	DefaultSecondaryImage    = "registry.k8s.io/kube-apiserver:v1.36.2"
 	SecondaryPort            = 6443
 	tmpVolumeName            = "tmp"

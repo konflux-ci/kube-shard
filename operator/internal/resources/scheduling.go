@@ -22,6 +22,9 @@ const (
 	NameAPIServer = "kube-apiserver"
 
 	CACertKey = "ca.crt"
+
+	// LabelOTelConfig is used by the hashedconfigmap utility to track OTel Collector ConfigMaps.
+	LabelOTelConfig = "kube-shard.konflux-ci.dev/otel-config"
 )
 
 // isColocateEnabled returns true if component colocation is enabled for the shard.

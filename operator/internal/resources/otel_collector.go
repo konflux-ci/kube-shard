@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	OTelCollectorImage        = "registry.access.redhat.com/hi/opentelemetry-collector-contrib:latest"
+	// renovate: datasource=docker depName=registry.access.redhat.com/hi/opentelemetry-collector-contrib
+	OTelCollectorImage        = "registry.access.redhat.com/hi/opentelemetry-collector-contrib:0.155.0"
 	OTelMetricsPort     int32 = 9187
 	OTelHealthPort      int32 = 13133
 	OTelMetricsPortName       = "otel-metrics"
@@ -26,6 +27,12 @@ const (
 
 	defaultCollectionInterval = "30s"
 	defaultBloatInterval      = "5m"
+
+	otelTLSVolumeName = "tls-ca"
+	otelTLSMountPath  = "/etc/otel/tls"
+	otelCACertFile    = "/etc/otel/tls/ca.crt"
+
+	sslModeDisable = "disable"
 )
 
 // OTelCollectorDeploymentName returns the name of the OTel Collector Deployment.
@@ -38,8 +45,9 @@ func OTelCollectorServiceName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-postgresql-metrics", shard.Name)
 }
 
-// OTelCollectorConfigMapName returns the name of the OTel Collector ConfigMap.
-func OTelCollectorConfigMapName(shard *kubeshardv1alpha1.APIShard) string {
+// OTelCollectorConfigMapBaseName returns the base name of the OTel Collector ConfigMap
+// (used as input to the hashed configmap utility).
+func OTelCollectorConfigMapBaseName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-postgresql-metrics-config", shard.Name)
 }
 
@@ -51,17 +59,19 @@ func PostgreSQLInitConfigMapName(shard *kubeshardv1alpha1.APIShard) string {
 // OTelConnectionParams holds parsed PostgreSQL connection parameters
 // used to generate the OTel Collector configuration.
 type OTelConnectionParams struct {
-	Host     string
-	Port     string
-	User     string
-	Password string
-	DBName   string
-	SSLMode  string
+	Host             string
+	Port             string
+	User             string
+	Password         string
+	DBName           string
+	SSLMode          string
+	CACertSecretName string
 }
 
-// BuildOTelCollectorConfigMap creates the ConfigMap containing the OTel Collector
-// configuration for PostgreSQL metrics collection.
-func BuildOTelCollectorConfigMap(shard *kubeshardv1alpha1.APIShard, params OTelConnectionParams) *corev1.ConfigMap {
+// BuildOTelCollectorConfig generates the OTel Collector YAML configuration string
+// for PostgreSQL metrics collection. It is separated from the ConfigMap builder
+// so callers can use it with hashed-configmap utilities.
+func BuildOTelCollectorConfig(shard *kubeshardv1alpha1.APIShard, params OTelConnectionParams) string {
 	collectionInterval := defaultCollectionInterval
 	bloatInterval := defaultBloatInterval
 
@@ -77,15 +87,13 @@ func BuildOTelCollectorConfigMap(shard *kubeshardv1alpha1.APIShard, params OTelC
 
 	sslMode := params.SSLMode
 	if sslMode == "" {
-		sslMode = "disable"
+		sslMode = sslModeDisable
 	}
 
-	insecure := "true"
-	if sslMode != "disable" {
-		insecure = "false"
-	}
+	tlsBlock := buildTLSBlock(sslMode, params.Host)
+	dsnSSLExtra := buildDSNSSLExtra(sslMode)
 
-	config := fmt.Sprintf(`extensions:
+	return fmt.Sprintf(`extensions:
   health_check:
     endpoint: "0.0.0.0:%d"
 
@@ -97,14 +105,15 @@ receivers:
     databases: [%s]
     collection_interval: %s
     tls:
-      insecure: %s
+%s
 
   sqlquery:
     driver: postgres
-    datasource: "host=%s port=%s user=${env:PG_USERNAME} password=${env:PG_PASSWORD} dbname=%s sslmode=%s"
+    datasource: "host=%s port=%s user='${env:PG_USERNAME}' password='${env:PG_PASSWORD}' dbname=%s sslmode=%s%s"
     collection_interval: %s
     queries:
       - sql: |
+          SET statement_timeout = '30s';
           SELECT
             coalesce(sum(dead_tuple_len + free_space), 0)::bigint AS reclaimable_bytes,
             coalesce(sum(tuple_len), 0)::bigint AS live_bytes,
@@ -113,6 +122,10 @@ receivers:
             SELECT (pgstattuple(oid)).*
             FROM pg_class
             WHERE relkind = 'r'
+              AND relnamespace NOT IN (
+                SELECT oid FROM pg_namespace
+                WHERE nspname IN ('pg_catalog', 'information_schema')
+              )
           ) t
         metrics:
           - metric_name: postgresql.reclaimable_bytes
@@ -146,33 +159,88 @@ service:
 		params.Host, params.Port,
 		params.DBName,
 		collectionInterval,
-		insecure,
-		params.Host, params.Port, params.DBName, sslMode,
+		tlsBlock,
+		params.Host, params.Port, params.DBName, sslMode, dsnSSLExtra,
 		bloatInterval,
 		OTelMetricsPort,
 	)
+}
 
-	return &corev1.ConfigMap{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "ConfigMap",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      OTelCollectorConfigMapName(shard),
-			Namespace: shard.Spec.TargetNamespace,
-			Labels:    otelLabels(shard),
-		},
-		Data: map[string]string{
-			"config.yaml": config,
-		},
+// buildTLSBlock returns the indented TLS configuration lines for the postgresql receiver.
+func buildTLSBlock(sslMode, host string) string {
+	switch sslMode {
+	case sslModeDisable:
+		return "      insecure: true"
+	case "verify-full":
+		return fmt.Sprintf("      insecure: false\n      ca_file: %s\n      server_name: %s", otelCACertFile, host)
+	default:
+		// require, verify-ca: use TLS with CA verification
+		return fmt.Sprintf("      insecure: false\n      ca_file: %s", otelCACertFile)
 	}
 }
 
+// buildDSNSSLExtra returns additional libpq DSN parameters for TLS modes.
+func buildDSNSSLExtra(sslMode string) string {
+	if sslMode == sslModeDisable {
+		return ""
+	}
+	return fmt.Sprintf(" sslrootcert=%s", otelCACertFile)
+}
+
 // BuildOTelCollectorDeployment creates the Deployment for the OTel Collector
-// that collects PostgreSQL metrics.
-func BuildOTelCollectorDeployment(shard *kubeshardv1alpha1.APIShard, credentialSecretName string) *appsv1.Deployment {
+// that collects PostgreSQL metrics. The configMapName parameter should be the
+// full (possibly hashed) name of the config ConfigMap.
+func BuildOTelCollectorDeployment(
+	shard *kubeshardv1alpha1.APIShard,
+	credentialSecretName, configMapName string,
+	params OTelConnectionParams,
+) *appsv1.Deployment {
 	name := OTelCollectorDeploymentName(shard)
 	labels := otelLabels(shard)
+
+	volumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "otel-config",
+			MountPath: "/etc/otel",
+			ReadOnly:  true,
+		},
+	}
+
+	volumes := []corev1.Volume{
+		{
+			Name: "otel-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName,
+					},
+				},
+			},
+		},
+	}
+
+	sslMode := params.SSLMode
+	if sslMode == "" {
+		sslMode = sslModeDisable
+	}
+	if sslMode != sslModeDisable && params.CACertSecretName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: otelTLSVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: params.CACertSecretName,
+					Items: []corev1.KeyToPath{
+						{Key: "ca.crt", Path: "ca.crt"},
+					},
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      otelTLSVolumeName,
+			MountPath: otelTLSMountPath,
+			ReadOnly:  true,
+		})
+	}
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
@@ -242,13 +310,7 @@ func BuildOTelCollectorDeployment(shard *kubeshardv1alpha1.APIShard, credentialS
 									corev1.ResourceMemory: resource.MustParse("256Mi"),
 								},
 							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "otel-config",
-									MountPath: "/etc/otel",
-									ReadOnly:  true,
-								},
-							},
+							VolumeMounts: volumeMounts,
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
@@ -271,18 +333,7 @@ func BuildOTelCollectorDeployment(shard *kubeshardv1alpha1.APIShard, credentialS
 							},
 						},
 					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "otel-config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: OTelCollectorConfigMapName(shard),
-									},
-								},
-							},
-						},
-					},
+					Volumes: volumes,
 				},
 			},
 		},
@@ -347,7 +398,7 @@ func InClusterPostgreSQLConnectionParams(shard *kubeshardv1alpha1.APIShard) OTel
 		Port:    fmt.Sprintf("%d", PostgreSQLPort),
 		User:    NameKine,
 		DBName:  NameKine,
-		SSLMode: "disable",
+		SSLMode: sslModeDisable,
 	}
 }
 
@@ -356,9 +407,11 @@ func InClusterPostgreSQLConnectionParams(shard *kubeshardv1alpha1.APIShard) OTel
 func ParsePostgreSQLDSN(dsn string) (OTelConnectionParams, error) {
 	params := OTelConnectionParams{
 		Port:    "5432",
-		SSLMode: "disable",
+		SSLMode: sslModeDisable,
 		DBName:  "kine",
 	}
+
+	dsn = strings.TrimSpace(dsn)
 
 	u, err := url.Parse(dsn)
 	if err != nil {
@@ -377,6 +430,10 @@ func ParsePostgreSQLDSN(dsn string) (OTelConnectionParams, error) {
 	}
 
 	params.Host = u.Hostname()
+	if params.Host == "" {
+		return params, fmt.Errorf("invalid DSN: host is empty")
+	}
+
 	if port := u.Port(); port != "" {
 		params.Port = port
 	}

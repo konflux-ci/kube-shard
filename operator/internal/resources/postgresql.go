@@ -32,6 +32,7 @@ import (
 )
 
 const (
+	// renovate: datasource=docker depName=registry.access.redhat.com/hi/postgresql
 	DefaultPostgreSQLImage      = "registry.access.redhat.com/hi/postgresql:18.4"
 	PostgreSQLPort              = 5432
 	postgresqlTLSVolumeName     = "postgresql-tls"
@@ -169,23 +170,23 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 		},
 	})
 
-	var initVolumeMounts []corev1.VolumeMount
-	if storageMonitoringEnabled(shard) {
-		volumes = append(volumes, corev1.Volume{
-			Name: "init-scripts",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: PostgreSQLInitConfigMapName(shard),
-					},
+	volumes = append(volumes, corev1.Volume{
+		Name: "init-scripts",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: PostgreSQLInitConfigMapName(shard),
 				},
+				Optional: ptr.To(true),
 			},
-		})
-		initVolumeMounts = append(initVolumeMounts, corev1.VolumeMount{
+		},
+	})
+	initVolumeMounts := []corev1.VolumeMount{
+		{
 			Name:      "init-scripts",
 			MountPath: "/docker-entrypoint-initdb.d",
 			ReadOnly:  true,
-		})
+		},
 	}
 
 	return &appsv1.StatefulSet{
@@ -328,7 +329,7 @@ func persistenceFromShard(shard *kubeshardv1alpha1.APIShard) *kubeshardv1alpha1.
 	return shard.Spec.Storage.InCluster.Persistence
 }
 
-// storageMonitoringEnabled returns true if storage monitoring is configured and enabled.
-func storageMonitoringEnabled(shard *kubeshardv1alpha1.APIShard) bool {
+// StorageMonitoringEnabled returns true if storage monitoring is configured and enabled.
+func StorageMonitoringEnabled(shard *kubeshardv1alpha1.APIShard) bool {
 	return shard.Spec.Storage.Monitoring != nil && shard.Spec.Storage.Monitoring.Enabled
 }

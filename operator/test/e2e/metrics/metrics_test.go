@@ -632,15 +632,15 @@ spec:
 			Expect(output).To(Equal("9187"))
 		})
 
-		It("should create the OTel Collector ConfigMap", func() {
+		It("should create the OTel Collector ConfigMap (hashed name)", func() {
 			cmd := exec.Command("kubectl", "get", "configmap",
-				fmt.Sprintf("%s-postgresql-metrics-config", pgShardName),
-				"-n", pgShardNamespace, "-o", "jsonpath={.data.config\\.yaml}")
+				"-n", pgShardNamespace,
+				"-l", "kube-shard.konflux-ci.dev/otel-config=true",
+				"-o", "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(ContainSubstring("postgresql"))
-			Expect(output).To(ContainSubstring("sqlquery"))
-			Expect(output).To(ContainSubstring("pgstattuple"))
+			Expect(output).To(ContainSubstring(fmt.Sprintf("%s-postgresql-metrics-config-", pgShardName)),
+				"expected hashed OTel ConfigMap to exist")
 		})
 
 		It("should create the PostgreSQL init ConfigMap", func() {
@@ -674,6 +674,31 @@ spec:
 				g.Expect(out).To(ContainSubstring("postgresql_db_size"),
 					"expected standard PostgreSQL metrics in response")
 			}).Should(Succeed())
+		})
+
+		It("should emit pgstattuple bloat metrics", func() {
+			metricsURL := fmt.Sprintf("http://%s-postgresql-metrics.%s.svc:9187/metrics",
+				pgShardName, pgShardNamespace)
+
+			Eventually(func(g Gomega) {
+				_ = exec.Command("kubectl", "delete", "pod", "curl-otel-bloat",
+					"-n", pgShardNamespace, "--ignore-not-found").Run()
+				kubectlArgs := []string{
+					"run", "curl-otel-bloat", "--rm", "-i",
+					"--restart=Never", "--image=curlimages/curl:latest",
+					"-n", pgShardNamespace, "--", "curl", "-s", "-m", "10", metricsURL,
+				}
+				cmd := exec.Command("kubectl", kubectlArgs...)
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(),
+					"curl failed; output: %s", out)
+				g.Expect(out).To(ContainSubstring("postgresql_reclaimable_bytes"),
+					"expected reclaimable_bytes bloat metric")
+				g.Expect(out).To(ContainSubstring("postgresql_live_bytes"),
+					"expected live_bytes bloat metric")
+				g.Expect(out).To(ContainSubstring("postgresql_total_table_bytes"),
+					"expected total_table_bytes bloat metric")
+			}, 5*time.Minute, 15*time.Second).Should(Succeed())
 		})
 	})
 

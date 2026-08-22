@@ -942,10 +942,30 @@ spec:
                       exposes Prometheus metrics. The appropriate backend-specific section must match
                       the storage type; mismatched sections are ignored.
                     properties:
+                      caCertSecret:
+                        description: |-
+                          CACertSecret references a Secret containing the CA certificate (key "ca.crt")
+                          used to verify the PostgreSQL server's TLS certificate. Required when
+                          sslmode is anything other than "disable".
+                        properties:
+                          key:
+                            description: Key within the Secret that contains the Kine-compatible
+                              connection string.
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
                       collectionInterval:
                         description: 'CollectionInterval for standard storage metrics.
                           Default: "30s".'
                         type: string
+                        x-kubernetes-validations:
+                        - message: duration must be a valid non-negative Go duration
+                          rule: duration(self) >= duration('0s')
                       enabled:
                         description: Enabled enables metrics collection for the storage
                           backend.
@@ -962,6 +982,9 @@ spec:
                               For external PostgreSQL, the pgstattuple extension must be pre-installed
                               by the database administrator.
                             type: string
+                            x-kubernetes-validations:
+                            - message: duration must be a valid non-negative Go duration
+                              rule: duration(self) >= duration('0s')
                         type: object
                     required:
                     - enabled
