@@ -445,7 +445,10 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 		// cannot verify a non-numeric user against runAsNonRoot, so we
 		// supply the numeric UID explicitly. On OpenShift the SCC assigns
 		// a UID from the namespace range, making this unnecessary.
+		// FSGroup ensures TLS secret volume files are group-owned by
+		// the postgres GID so PostgreSQL can read the 0640 key file.
 		sts.Spec.Template.Spec.SecurityContext.RunAsUser = ptr.To(int64(999))
+		sts.Spec.Template.Spec.SecurityContext.FSGroup = ptr.To(int64(999))
 	}
 	if err := tc.ApplyOwned(ctx, sts); err != nil {
 		return fmt.Errorf("postgresql statefulset: %w", err)
@@ -540,16 +543,18 @@ func (r *Reconciler) getOrGeneratePostgresPassword(ctx context.Context, shard *k
 }
 
 // reconcileCertManager creates the cert-manager Issuer and Certificate resources
-// that provision TLS for the secondary API server and Kine. Two independent CA
-// chains are created:
+// that provision TLS for the secondary API server, Kine, and in-cluster PostgreSQL.
+// Three independent CA chains are created:
 //   - Shard CA: self-signed Issuer → CA Certificate → CA-backed Issuer →
 //     serving Certificate + admin client Certificate
 //   - Kine CA: self-signed Issuer → CA Certificate → CA-backed Issuer →
 //     Kine serving Certificate + etcd client Certificate
+//   - PostgreSQL CA: self-signed Issuer → CA Certificate → CA-backed Issuer →
+//     PostgreSQL serving Certificate
 //
 // The dedicated Kine CA restricts mTLS trust so that only the etcd client
 // certificate can authenticate to Kine — not the admin client cert or any
-// other shard cert.
+// other shard cert. The PostgreSQL CA enables Kine to connect with sslmode=verify-full.
 func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
 	certResources := []*unstructured.Unstructured{
 		// Shard-wide CA chain (API server serving + admin client).
@@ -564,6 +569,11 @@ func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Clie
 		certs.BuildKineCAIssuer(shard),
 		certs.BuildKineServingCertificate(shard),
 		certs.BuildEtcdClientCertificate(shard),
+		// PostgreSQL-dedicated CA chain (in-cluster PostgreSQL server TLS).
+		certs.BuildPostgreSQLSelfSignedIssuer(shard),
+		certs.BuildPostgreSQLCACertificate(shard),
+		certs.BuildPostgreSQLCAIssuer(shard),
+		certs.BuildPostgreSQLServingCertificate(shard),
 	}
 
 	for _, res := range certResources {

@@ -457,3 +457,37 @@ func TestBuildKineDeployment_TLSVolumeMount(t *testing.T) {
 	g.Expect(tlsVol.Secret).ToNot(BeNil())
 	g.Expect(tlsVol.Secret.SecretName).To(Equal("test-shard-kine-serving-cert"))
 }
+
+func TestBuildKineDeployment_InClusterPostgreSQL_PGCAVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
+	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
+
+	deploy := BuildKineDeployment(shard)
+
+	volumes := deploy.Spec.Template.Spec.Volumes
+	var pgCAVol *corev1.Volume
+	for i := range volumes {
+		if volumes[i].Name == postgresqlCAVolumeName {
+			pgCAVol = &volumes[i]
+			break
+		}
+	}
+	g.Expect(pgCAVol).ToNot(BeNil(), "expected postgresql-ca volume")
+	g.Expect(pgCAVol.Secret).ToNot(BeNil())
+	g.Expect(pgCAVol.Secret.SecretName).To(Equal("test-shard-postgresql-ca-keypair"))
+	g.Expect(pgCAVol.Secret.Items).To(ConsistOf(corev1.KeyToPath{Key: "ca.crt", Path: "ca.crt"}))
+
+	mounts := deploy.Spec.Template.Spec.Containers[0].VolumeMounts
+	var pgCAMount *corev1.VolumeMount
+	for i := range mounts {
+		if mounts[i].Name == postgresqlCAVolumeName {
+			pgCAMount = &mounts[i]
+			break
+		}
+	}
+	g.Expect(pgCAMount).ToNot(BeNil(), "expected postgresql-ca volume mount")
+	g.Expect(pgCAMount.MountPath).To(Equal(postgresqlCAMountPath))
+	g.Expect(pgCAMount.ReadOnly).To(BeTrue())
+}

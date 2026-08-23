@@ -239,6 +239,113 @@ func BuildKineServingCertificate(shard *kubeshardv1alpha1.APIShard) *unstructure
 	)
 }
 
+// PostgreSQLCAIssuerName returns the name of the CA-backed Issuer dedicated to
+// in-cluster PostgreSQL server TLS certificates.
+func PostgreSQLCAIssuerName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-postgresql-ca-issuer", shard.Name)
+}
+
+// PostgreSQLCACertificateName returns the name of the PostgreSQL CA Certificate resource.
+func PostgreSQLCACertificateName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-postgresql-ca", shard.Name)
+}
+
+// PostgreSQLCASecretName returns the name of the Secret holding the PostgreSQL CA key pair.
+// Kine mounts ca.crt from this secret to verify the PostgreSQL server certificate.
+func PostgreSQLCASecretName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-postgresql-ca-keypair", shard.Name)
+}
+
+// PostgreSQLServingCertificateName returns the name of the PostgreSQL serving Certificate resource.
+func PostgreSQLServingCertificateName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-postgresql-serving", shard.Name)
+}
+
+// PostgreSQLServingSecretName returns the name of the Secret holding the PostgreSQL serving certificate.
+func PostgreSQLServingSecretName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-postgresql-serving-cert", shard.Name)
+}
+
+// BuildPostgreSQLSelfSignedIssuer creates a self-signed Issuer for generating the
+// PostgreSQL-dedicated CA. This is separate from the shard-wide and Kine CA chains.
+func BuildPostgreSQLSelfSignedIssuer(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Issuer",
+	})
+	issuer.SetName(fmt.Sprintf("%s-postgresql-selfsigned", shard.Name))
+	issuer.SetNamespace(shard.Spec.TargetNamespace)
+	issuer.SetLabels(certLabels(shard))
+
+	_ = unstructured.SetNestedMap(issuer.Object, map[string]interface{}{}, "spec", "selfSigned")
+
+	return issuer
+}
+
+// BuildPostgreSQLCACertificate creates the CA Certificate for the PostgreSQL-dedicated
+// certificate chain used to sign the in-cluster PostgreSQL server certificate.
+func BuildPostgreSQLCACertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Certificate",
+	})
+	cert.SetName(PostgreSQLCACertificateName(shard))
+	cert.SetNamespace(shard.Spec.TargetNamespace)
+	cert.SetLabels(certLabels(shard))
+
+	cert.Object["spec"] = map[string]interface{}{
+		"isCA":       true,
+		"commonName": fmt.Sprintf("%s-postgresql-ca", shard.Name),
+		"secretName": PostgreSQLCASecretName(shard),
+		"duration":   "87600h", // 10 years
+		"issuerRef": map[string]interface{}{
+			"name":  fmt.Sprintf("%s-postgresql-selfsigned", shard.Name),
+			"kind":  "Issuer",
+			"group": "cert-manager.io",
+		},
+	}
+
+	return cert
+}
+
+// BuildPostgreSQLCAIssuer creates an Issuer backed by the PostgreSQL CA certificate.
+func BuildPostgreSQLCAIssuer(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "cert-manager.io",
+		Version: "v1",
+		Kind:    "Issuer",
+	})
+	issuer.SetName(PostgreSQLCAIssuerName(shard))
+	issuer.SetNamespace(shard.Spec.TargetNamespace)
+	issuer.SetLabels(certLabels(shard))
+
+	issuer.Object["spec"] = map[string]interface{}{
+		"ca": map[string]interface{}{
+			"secretName": PostgreSQLCASecretName(shard),
+		},
+	}
+
+	return issuer
+}
+
+// BuildPostgreSQLServingCertificate creates the TLS serving certificate for
+// in-cluster PostgreSQL. The certificate includes DNS SANs matching the
+// PostgreSQL Service FQDN so Kine can verify the server identity with verify-full.
+func BuildPostgreSQLServingCertificate(shard *kubeshardv1alpha1.APIShard) *unstructured.Unstructured {
+	return buildServingCert(
+		shard,
+		PostgreSQLServingCertificateName(shard),
+		PostgreSQLServingSecretName(shard),
+		resources.PostgreSQLServiceName(shard),
+		PostgreSQLCAIssuerName(shard),
+	)
+}
+
 // buildServingCert constructs a cert-manager Certificate for TLS serving,
 // parameterized by the certificate name, secret name, service name, and issuer name.
 func buildServingCert(

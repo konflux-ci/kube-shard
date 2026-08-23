@@ -61,7 +61,8 @@ func TestBuildPostgreSQLStatefulSet_WithPersistence_UsesVCT(t *testing.T) {
 
 	sts := BuildPostgreSQLStatefulSet(shard)
 
-	g.Expect(sts.Spec.Template.Spec.Volumes).To(HaveLen(1), "only tmp volume expected when persistence is set (data via VCT)")
+	g.Expect(sts.Spec.Template.Spec.Volumes).To(HaveLen(2),
+		"tmp + postgresql-tls volumes expected when persistence is set (data via VCT)")
 	g.Expect(sts.Spec.Template.Spec.Volumes[0].Name).To(Equal("tmp"))
 
 	g.Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
@@ -151,4 +152,65 @@ func TestBuildPostgreSQLStatefulSet_TmpVolume(t *testing.T) {
 		}
 	}
 	g.Expect(tmpMount).ToNot(BeNil(), "expected /tmp volume mount")
+}
+
+func TestPostgreSQLDSN(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
+
+	dsn := PostgreSQLDSN(shard, "kine", "secret")
+	g.Expect(dsn).To(Equal(
+		"postgres://kine:secret@test-shard-postgresql.test-ns.svc:5432/kine?sslmode=verify-full&sslrootcert=/etc/kine/pg-ca/ca.crt",
+	))
+}
+
+func TestBuildPostgreSQLStatefulSet_TLSVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
+	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
+
+	sts := BuildPostgreSQLStatefulSet(shard)
+
+	var tlsVol *corev1.Volume
+	for i := range sts.Spec.Template.Spec.Volumes {
+		if sts.Spec.Template.Spec.Volumes[i].Name == postgresqlTLSVolumeName {
+			tlsVol = &sts.Spec.Template.Spec.Volumes[i]
+			break
+		}
+	}
+	g.Expect(tlsVol).ToNot(BeNil(), "expected postgresql-tls volume")
+	g.Expect(tlsVol.Secret).ToNot(BeNil())
+	g.Expect(tlsVol.Secret.SecretName).To(Equal("test-shard-postgresql-serving-cert"))
+	g.Expect(tlsVol.Secret.Items).To(HaveLen(3))
+	for _, item := range tlsVol.Secret.Items {
+		g.Expect(item.Mode).ToNot(BeNil())
+		if item.Key == "tls.key" {
+			g.Expect(*item.Mode).To(Equal(postgresqlTLSKeyMode),
+				"tls.key must be 0640 for PostgreSQL")
+		} else {
+			g.Expect(*item.Mode).To(Equal(postgresqlTLSCertMode),
+				"%s should be 0644", item.Key)
+		}
+	}
+
+	container := sts.Spec.Template.Spec.Containers[0]
+	var tlsMount *corev1.VolumeMount
+	for i := range container.VolumeMounts {
+		if container.VolumeMounts[i].Name == postgresqlTLSVolumeName {
+			tlsMount = &container.VolumeMounts[i]
+			break
+		}
+	}
+	g.Expect(tlsMount).ToNot(BeNil(), "expected postgresql-tls volume mount")
+	g.Expect(tlsMount.MountPath).To(Equal(postgresqlTLSMountPath))
+	g.Expect(tlsMount.ReadOnly).To(BeTrue())
+
+	g.Expect(container.Args).To(ConsistOf(
+		"-c", "ssl=on",
+		"-c", "ssl_cert_file="+postgresqlTLSMountPath+"/tls.crt",
+		"-c", "ssl_key_file="+postgresqlTLSMountPath+"/tls.key",
+		"-c", "ssl_ca_file="+postgresqlTLSMountPath+"/ca.crt",
+	))
 }

@@ -35,6 +35,9 @@ const (
 	KineMetricsPort           = 8080
 	dataVolumeName            = "data"
 	kineServingCertVolumeName = "kine-serving-cert"
+	postgresqlCAVolumeName    = "postgresql-ca"
+	postgresqlCASecretName    = "%s-postgresql-ca-keypair"
+	postgresqlCAMountPath     = "/etc/kine/pg-ca"
 )
 
 // KineDeploymentName returns the name of the Kine Deployment for the given shard.
@@ -181,6 +184,22 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 					Name: PostgreSQLSecretName(shard),
 				},
 			},
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: postgresqlCAVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: fmt.Sprintf(postgresqlCASecretName, shard.Name),
+					Items: []corev1.KeyToPath{
+						{Key: "ca.crt", Path: "ca.crt"},
+					},
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      postgresqlCAVolumeName,
+			MountPath: postgresqlCAMountPath,
+			ReadOnly:  true,
 		})
 	default:
 	}

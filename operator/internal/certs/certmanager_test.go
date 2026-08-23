@@ -190,7 +190,89 @@ func TestBuildKineSelfSignedIssuer(t *testing.T) {
 		"Kine self-signed issuer must be distinct from shard-wide self-signed issuer")
 }
 
-// TestBuildAdminClientCertificate verifies the admin client certificate uses the
+// TestBuildPostgreSQLServingCertificate verifies the PostgreSQL serving certificate
+// uses the PostgreSQL-dedicated CA issuer and the correct service DNS SANs.
+func TestBuildPostgreSQLServingCertificate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	cert := BuildPostgreSQLServingCertificate(shard)
+
+	g.Expect(cert.GetKind()).To(Equal("Certificate"))
+	g.Expect(cert.GetName()).To(Equal("test-shard-postgresql-serving"))
+	g.Expect(cert.GetNamespace()).To(Equal("test-ns"))
+
+	spec := certSpec(cert)
+	g.Expect(spec["secretName"]).To(Equal("test-shard-postgresql-serving-cert"))
+	g.Expect(spec["duration"]).To(Equal("8760h"))
+	g.Expect(spec["renewBefore"]).To(Equal("720h"))
+
+	ref := issuerRef(cert)
+	g.Expect(ref["name"]).To(Equal("test-shard-postgresql-ca-issuer"),
+		"PostgreSQL serving cert must be issued by the PostgreSQL-dedicated CA")
+
+	dnsNames, _, _ := unstructured.NestedStringSlice(cert.Object, "spec", "dnsNames")
+	g.Expect(dnsNames).To(ContainElement("test-shard-postgresql"))
+	g.Expect(dnsNames).To(ContainElement("test-shard-postgresql.test-ns.svc.cluster.local"))
+}
+
+// TestBuildPostgreSQLCACertificate verifies the PostgreSQL CA certificate is a CA cert
+// issued by the PostgreSQL self-signed issuer.
+func TestBuildPostgreSQLCACertificate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	cert := BuildPostgreSQLCACertificate(shard)
+
+	g.Expect(cert.GetKind()).To(Equal("Certificate"))
+	g.Expect(cert.GetName()).To(Equal("test-shard-postgresql-ca"))
+	g.Expect(cert.GetNamespace()).To(Equal("test-ns"))
+
+	spec := certSpec(cert)
+	g.Expect(spec["isCA"]).To(BeTrue())
+	g.Expect(spec["commonName"]).To(Equal("test-shard-postgresql-ca"))
+	g.Expect(spec["secretName"]).To(Equal("test-shard-postgresql-ca-keypair"))
+	g.Expect(spec["duration"]).To(Equal("87600h")) // 10 years
+
+	ref := issuerRef(cert)
+	g.Expect(ref["name"]).To(Equal("test-shard-postgresql-selfsigned"))
+	g.Expect(ref["kind"]).To(Equal("Issuer"))
+}
+
+// TestBuildPostgreSQLCAIssuer verifies the PostgreSQL CA-backed issuer references the
+// correct CA secret.
+func TestBuildPostgreSQLCAIssuer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	issuer := BuildPostgreSQLCAIssuer(shard)
+
+	g.Expect(issuer.GetKind()).To(Equal("Issuer"))
+	g.Expect(issuer.GetName()).To(Equal("test-shard-postgresql-ca-issuer"))
+	g.Expect(issuer.GetNamespace()).To(Equal("test-ns"))
+
+	caSecretName, _, _ := unstructured.NestedString(issuer.Object, "spec", "ca", "secretName")
+	g.Expect(caSecretName).To(Equal("test-shard-postgresql-ca-keypair"))
+}
+
+// TestBuildPostgreSQLSelfSignedIssuer verifies the PostgreSQL self-signed issuer is
+// independent from the shard-wide and Kine self-signed issuers.
+func TestBuildPostgreSQLSelfSignedIssuer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	issuer := BuildPostgreSQLSelfSignedIssuer(shard)
+
+	g.Expect(issuer.GetKind()).To(Equal("Issuer"))
+	g.Expect(issuer.GetName()).To(Equal("test-shard-postgresql-selfsigned"))
+	g.Expect(issuer.GetNamespace()).To(Equal("test-ns"))
+
+	selfSigned, found, _ := unstructured.NestedMap(issuer.Object, "spec", "selfSigned")
+	g.Expect(found).To(BeTrue(), "expected selfSigned spec")
+	g.Expect(selfSigned).To(BeEmpty())
+
+	shardIssuer := BuildSelfSignedIssuer(shard)
+	kineIssuer := BuildKineSelfSignedIssuer(shard)
+	g.Expect(issuer.GetName()).ToNot(Equal(shardIssuer.GetName()))
+	g.Expect(issuer.GetName()).ToNot(Equal(kineIssuer.GetName()))
+}
+
 // shard-wide CA (not the Kine CA) and includes system:masters organization.
 func TestBuildAdminClientCertificate(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -231,6 +313,10 @@ func TestCertLabels(t *testing.T) {
 		{"BuildAdminClientCertificate", func() *unstructured.Unstructured { return BuildAdminClientCertificate(shard) }},
 		{"BuildKineCAIssuer", func() *unstructured.Unstructured { return BuildKineCAIssuer(shard) }},
 		{"BuildKineSelfSignedIssuer", func() *unstructured.Unstructured { return BuildKineSelfSignedIssuer(shard) }},
+		{"BuildPostgreSQLServingCertificate", func() *unstructured.Unstructured { return BuildPostgreSQLServingCertificate(shard) }},
+		{"BuildPostgreSQLCACertificate", func() *unstructured.Unstructured { return BuildPostgreSQLCACertificate(shard) }},
+		{"BuildPostgreSQLCAIssuer", func() *unstructured.Unstructured { return BuildPostgreSQLCAIssuer(shard) }},
+		{"BuildPostgreSQLSelfSignedIssuer", func() *unstructured.Unstructured { return BuildPostgreSQLSelfSignedIssuer(shard) }},
 	}
 
 	for _, b := range builders {
