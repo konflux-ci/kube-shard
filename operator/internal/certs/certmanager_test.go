@@ -331,6 +331,26 @@ func TestCertLabels(t *testing.T) {
 	}
 }
 
+// TestPostgreSQLTrustBoundaryIsolation verifies that the PostgreSQL CA chain
+// is fully independent from both the shard-wide CA and the Kine CA.
+func TestPostgreSQLTrustBoundaryIsolation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+
+	pgServing := issuerRef(BuildPostgreSQLServingCertificate(shard))
+
+	g.Expect(pgServing["name"]).To(Equal(PostgreSQLCAIssuerName(shard)),
+		"PostgreSQL serving cert must be issued by the PostgreSQL-dedicated CA")
+
+	g.Expect(PostgreSQLCAIssuerName(shard)).ToNot(Equal(IssuerName(shard)),
+		"PostgreSQL CA and shard-wide CA must be distinct")
+	g.Expect(PostgreSQLCAIssuerName(shard)).ToNot(Equal(KineCAIssuerName(shard)),
+		"PostgreSQL CA and Kine CA must be distinct")
+
+	g.Expect(PostgreSQLCASecretName(shard)).ToNot(Equal(KineCASecretName(shard)),
+		"PostgreSQL CA secret must differ from Kine CA secret")
+}
+
 // TestKineTrustBoundaryIsolation verifies that the Kine serving cert and etcd
 // client cert use the Kine-dedicated CA, while the admin client cert and API
 // server serving cert use the shard-wide CA.

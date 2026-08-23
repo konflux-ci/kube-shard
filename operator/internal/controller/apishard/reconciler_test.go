@@ -396,6 +396,91 @@ var _ = Describe("APIShard Controller", func() {
 	})
 })
 
+var _ = Describe("reconcileInClusterPostgreSQL security context overrides", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	createPGShard := func(suffix string) *kubeshardv1alpha1.APIShard {
+		nsName := "test-pg-sc-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-pg-sc-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type:      kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+					InCluster: &kubeshardv1alpha1.InClusterStorage{},
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	It("should set RunAsUser and FSGroup when SCCAvailable is false", func() {
+		reconciler.SCCAvailable = false
+		shard := createPGShard("no-scc")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PostgreSQLStatefulSetName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+		}, sts)).To(Succeed())
+
+		podSC := sts.Spec.Template.Spec.SecurityContext
+		Expect(podSC.RunAsUser).NotTo(BeNil())
+		Expect(*podSC.RunAsUser).To(Equal(int64(999)))
+		Expect(podSC.FSGroup).NotTo(BeNil())
+		Expect(*podSC.FSGroup).To(Equal(int64(999)))
+	})
+
+	It("should not set RunAsUser or FSGroup when SCCAvailable is true", func() {
+		reconciler.SCCAvailable = true
+		shard := createPGShard("with-scc")
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		err := reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)
+		Expect(err).NotTo(HaveOccurred())
+
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PostgreSQLStatefulSetName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+		}, sts)).To(Succeed())
+
+		podSC := sts.Spec.Template.Spec.SecurityContext
+		Expect(podSC.RunAsUser).To(BeNil(),
+			"RunAsUser must not be set on OpenShift so the SCC assigns from the namespace range")
+		Expect(podSC.FSGroup).To(BeNil(),
+			"FSGroup must not be set on OpenShift; the SCC assigns from the namespace range")
+	})
+})
+
 var _ = Describe("validateExternalPostgreSQLSecret", func() {
 	var reconciler *Reconciler
 

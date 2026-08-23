@@ -458,6 +458,23 @@ func TestBuildKineDeployment_TLSVolumeMount(t *testing.T) {
 	g.Expect(tlsVol.Secret.SecretName).To(Equal("test-shard-kine-serving-cert"))
 }
 
+func TestBuildKineDeployment_SQLite_NoPGCAVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeSQLite
+
+	deploy := BuildKineDeployment(shard)
+
+	for _, vol := range deploy.Spec.Template.Spec.Volumes {
+		g.Expect(vol.Name).ToNot(Equal(postgresqlCAVolumeName),
+			"postgresql-ca volume should not be present for SQLite storage")
+	}
+	for _, mount := range deploy.Spec.Template.Spec.Containers[0].VolumeMounts {
+		g.Expect(mount.Name).ToNot(Equal(postgresqlCAVolumeName),
+			"postgresql-ca volume mount should not be present for SQLite storage")
+	}
+}
+
 func TestBuildKineDeployment_InClusterPostgreSQL_PGCAVolume(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
