@@ -504,6 +504,8 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 
 	case kubeshardv1alpha1.StorageTypeInClusterPostgreSQL:
 		params := resources.InClusterPostgreSQLConnectionParams(shard)
+		params.CACertSecretName = certs.PostgreSQLCASecretName(shard)
+		params.CACertSecretKey = "ca.crt"
 		credentialSecret := resources.PostgreSQLSecretName(shard)
 		err = r.applyOTelCollector(ctx, tc, shard, params, credentialSecret)
 
@@ -530,18 +532,12 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 			break
 		}
 
-		if shard.Spec.Storage.Monitoring.CACertSecret != nil {
-			params.CACertSecretName = shard.Spec.Storage.Monitoring.CACertSecret.Name
-			params.CACertSecretKey = shard.Spec.Storage.Monitoring.CACertSecret.Key
-		}
-
-		if params.SSLMode != "disable" && params.CACertSecretName == "" {
-			err = fmt.Errorf(
-				"sslmode=%q requires caCertSecret to be set in spec.storage.monitoring",
-				params.SSLMode,
-			)
+		if shard.Spec.Storage.Monitoring.CACertSecret == nil {
+			err = fmt.Errorf("caCertSecret must be set in spec.storage.monitoring for external PostgreSQL")
 			break
 		}
+		params.CACertSecretName = shard.Spec.Storage.Monitoring.CACertSecret.Name
+		params.CACertSecretKey = shard.Spec.Storage.Monitoring.CACertSecret.Key
 
 		credentialSecret, secretErr := r.ensureOTelCredentialSecret(ctx, tc, shard, params)
 		if secretErr != nil {

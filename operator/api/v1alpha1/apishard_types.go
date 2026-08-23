@@ -57,7 +57,8 @@ type StorageMonitoringSpec struct {
 	// CACertSecret references a Secret containing the CA certificate used to
 	// verify the PostgreSQL server's TLS certificate. The Key field specifies
 	// which key in the Secret holds the certificate (defaults to "ca.crt").
-	// Required when the PostgreSQL connection uses TLS.
+	// Required when storage type is PostgreSQL (external). For InClusterPostgreSQL
+	// the operator provisions TLS certificates automatically.
 	// +optional
 	CACertSecret *SecretKeyReference `json:"caCertSecret,omitempty"`
 	// PostgreSQL holds settings specific to PostgreSQL monitoring.

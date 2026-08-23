@@ -31,8 +31,6 @@ const (
 	otelTLSVolumeName = "tls-ca"
 	otelTLSMountPath  = "/etc/otel/tls"
 	otelCACertFile    = "/etc/otel/tls/ca.crt"
-
-	sslModeDisable = "disable"
 )
 
 // OTelCollectorDeploymentName returns the name of the OTel Collector Deployment.
@@ -64,7 +62,6 @@ type OTelConnectionParams struct {
 	User             string
 	Password         string
 	DBName           string
-	SSLMode          string
 	CACertSecretName string
 	CACertSecretKey  string
 }
@@ -72,6 +69,7 @@ type OTelConnectionParams struct {
 // BuildOTelCollectorConfig generates the OTel Collector YAML configuration string
 // for PostgreSQL metrics collection. It is separated from the ConfigMap builder
 // so callers can use it with hashed-configmap utilities.
+// All connections use verify-full TLS.
 func BuildOTelCollectorConfig(shard *kubeshardv1alpha1.APIShard, params OTelConnectionParams) string {
 	collectionInterval := defaultCollectionInterval
 	bloatInterval := defaultBloatInterval
@@ -86,14 +84,6 @@ func BuildOTelCollectorConfig(shard *kubeshardv1alpha1.APIShard, params OTelConn
 		}
 	}
 
-	sslMode := params.SSLMode
-	if sslMode == "" {
-		sslMode = sslModeDisable
-	}
-
-	tlsBlock := buildTLSBlock(sslMode, params.Host)
-	dsnSSLExtra := buildDSNSSLExtra(sslMode)
-
 	return fmt.Sprintf(`extensions:
   health_check:
     endpoint: "0.0.0.0:%d"
@@ -106,11 +96,12 @@ receivers:
     databases: [%s]
     collection_interval: %s
     tls:
-%s
+      insecure: false
+      ca_file: %s
 
   sqlquery:
     driver: postgres
-    datasource: "host='%s' port=%s user='${env:PG_USERNAME}' password='${env:PG_PASSWORD}' dbname='%s' sslmode=%s%s"
+    datasource: "host='%s' port=%s user='${env:PG_USERNAME}' password='${env:PG_PASSWORD}' dbname='%s' sslmode=verify-full sslrootcert=%s"
     collection_interval: %s
     queries:
       - sql: |
@@ -160,32 +151,11 @@ service:
 		params.Host, params.Port,
 		params.DBName,
 		collectionInterval,
-		tlsBlock,
-		params.Host, params.Port, params.DBName, sslMode, dsnSSLExtra,
+		otelCACertFile,
+		params.Host, params.Port, params.DBName, otelCACertFile,
 		bloatInterval,
 		OTelMetricsPort,
 	)
-}
-
-// buildTLSBlock returns the indented TLS configuration lines for the postgresql receiver.
-func buildTLSBlock(sslMode, host string) string {
-	switch sslMode {
-	case sslModeDisable:
-		return "      insecure: true"
-	case "verify-full":
-		return fmt.Sprintf("      insecure: false\n      ca_file: %s\n      server_name: %s", otelCACertFile, host)
-	default:
-		// require, verify-ca: use TLS with CA verification
-		return fmt.Sprintf("      insecure: false\n      ca_file: %s", otelCACertFile)
-	}
-}
-
-// buildDSNSSLExtra returns additional libpq DSN parameters for TLS modes.
-func buildDSNSSLExtra(sslMode string) string {
-	if sslMode == sslModeDisable {
-		return ""
-	}
-	return fmt.Sprintf(" sslrootcert=%s", otelCACertFile)
 }
 
 // BuildOTelCollectorDeployment creates the Deployment for the OTel Collector
@@ -199,10 +169,20 @@ func BuildOTelCollectorDeployment(
 	name := OTelCollectorDeploymentName(shard)
 	labels := otelLabels(shard)
 
+	certKey := params.CACertSecretKey
+	if certKey == "" {
+		certKey = "ca.crt"
+	}
+
 	volumeMounts := []corev1.VolumeMount{
 		{
 			Name:      "otel-config",
 			MountPath: "/etc/otel",
+			ReadOnly:  true,
+		},
+		{
+			Name:      otelTLSVolumeName,
+			MountPath: otelTLSMountPath,
 			ReadOnly:  true,
 		},
 	}
@@ -218,18 +198,7 @@ func BuildOTelCollectorDeployment(
 				},
 			},
 		},
-	}
-
-	sslMode := params.SSLMode
-	if sslMode == "" {
-		sslMode = sslModeDisable
-	}
-	if sslMode != sslModeDisable && params.CACertSecretName != "" {
-		certKey := params.CACertSecretKey
-		if certKey == "" {
-			certKey = "ca.crt"
-		}
-		volumes = append(volumes, corev1.Volume{
+		{
 			Name: otelTLSVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
@@ -239,12 +208,7 @@ func BuildOTelCollectorDeployment(
 					},
 				},
 			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      otelTLSVolumeName,
-			MountPath: otelTLSMountPath,
-			ReadOnly:  true,
-		})
+		},
 	}
 
 	return &appsv1.Deployment{
@@ -399,21 +363,19 @@ func BuildPostgreSQLInitConfigMap(shard *kubeshardv1alpha1.APIShard) *corev1.Con
 // for the in-cluster PostgreSQL instance.
 func InClusterPostgreSQLConnectionParams(shard *kubeshardv1alpha1.APIShard) OTelConnectionParams {
 	return OTelConnectionParams{
-		Host:    fmt.Sprintf("%s.%s.svc", PostgreSQLServiceName(shard), shard.Spec.TargetNamespace),
-		Port:    fmt.Sprintf("%d", PostgreSQLPort),
-		User:    NameKine,
-		DBName:  NameKine,
-		SSLMode: sslModeDisable,
+		Host:   fmt.Sprintf("%s.%s.svc", PostgreSQLServiceName(shard), shard.Spec.TargetNamespace),
+		Port:   fmt.Sprintf("%d", PostgreSQLPort),
+		User:   NameKine,
+		DBName: NameKine,
 	}
 }
 
 // ParsePostgreSQLDSN parses a Kine-format PostgreSQL DSN
-// (postgres://user:pass@host:port/dbname?sslmode=...) into OTelConnectionParams.
+// (postgres://user:pass@host:port/dbname) into OTelConnectionParams.
 func ParsePostgreSQLDSN(dsn string) (OTelConnectionParams, error) {
 	params := OTelConnectionParams{
-		Port:    "5432",
-		SSLMode: sslModeDisable,
-		DBName:  "kine",
+		Port:   "5432",
+		DBName: "kine",
 	}
 
 	dsn = strings.TrimSpace(dsn)
@@ -446,10 +408,6 @@ func ParsePostgreSQLDSN(dsn string) (OTelConnectionParams, error) {
 	dbName := strings.TrimPrefix(u.Path, "/")
 	if dbName != "" {
 		params.DBName = dbName
-	}
-
-	if sslmode := u.Query().Get("sslmode"); sslmode != "" {
-		params.SSLMode = sslmode
 	}
 
 	return params, nil

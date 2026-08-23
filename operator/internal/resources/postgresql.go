@@ -250,12 +250,12 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 									Name:      "tmp",
 									MountPath: "/tmp",
 								},
-							{
-								Name:      postgresqlTLSVolumeName,
-								MountPath: postgresqlTLSMountPath,
-								ReadOnly:  true,
-							},
-						}, initVolumeMounts...),
+								{
+									Name:      postgresqlTLSVolumeName,
+									MountPath: postgresqlTLSMountPath,
+									ReadOnly:  true,
+								},
+							}, initVolumeMounts...),
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									TCPSocket: &corev1.TCPSocketAction{

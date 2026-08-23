@@ -944,9 +944,11 @@ spec:
                     properties:
                       caCertSecret:
                         description: |-
-                          CACertSecret references a Secret containing the CA certificate (key "ca.crt")
-                          used to verify the PostgreSQL server's TLS certificate. Required when
-                          sslmode is anything other than "disable".
+                          CACertSecret references a Secret containing the CA certificate used to
+                          verify the PostgreSQL server's TLS certificate. The Key field specifies
+                          which key in the Secret holds the certificate (defaults to "ca.crt").
+                          Required when storage type is PostgreSQL (external). For InClusterPostgreSQL
+                          the operator provisions TLS certificates automatically.
                         properties:
                           key:
                             description: Key within the Secret that contains the Kine-compatible

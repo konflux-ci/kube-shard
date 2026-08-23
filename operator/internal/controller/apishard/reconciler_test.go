@@ -2037,14 +2037,14 @@ var _ = Describe("reconcilePostgreSQLMetrics", func() {
 		Expect(cond.Reason).To(Equal("UnsupportedStorageType"))
 	})
 
-	It("sets MonitoringDegraded when external PostgreSQL requires TLS but no CACertSecret is set", func() {
+	It("sets MonitoringDegraded when external PostgreSQL has no CACertSecret set", func() {
 		connSecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "pg-conn",
 				Namespace: ns.Name,
 			},
 			Data: map[string][]byte{
-				"dsn": []byte("postgres://user:pass@db.example.com:5432/kine?sslmode=require"),
+				"dsn": []byte("postgres://user:pass@db.example.com:5432/kine"),
 			},
 		}
 		Expect(k8sClient.Create(ctx, connSecret)).To(Succeed())
@@ -2062,7 +2062,7 @@ var _ = Describe("reconcilePostgreSQLMetrics", func() {
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		Expect(cond.Reason).To(Equal("MetricsCollectorFailed"))
-		Expect(cond.Message).To(ContainSubstring("caCertSecret"))
+		Expect(cond.Message).To(ContainSubstring("caCertSecret must be set"))
 	})
 
 	It("deploys OTel Collector for InClusterPostgreSQL and sets condition healthy", func() {

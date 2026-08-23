@@ -50,59 +50,22 @@ func TestBuildOTelCollectorConfig_CustomIntervals(t *testing.T) {
 	g.Expect(config).To(ContainSubstring("collection_interval: 10m"))
 }
 
-func TestBuildOTelCollectorConfig_TLS_Disable(t *testing.T) {
-	g := NewGomegaWithT(t)
-	shard := newTestShard()
-	shard.Spec.Storage.Monitoring = &kubeshardv1alpha1.StorageMonitoringSpec{Enabled: true}
-
-	params := OTelConnectionParams{
-		Host:    "db.example.com",
-		Port:    "5432",
-		DBName:  "kine",
-		SSLMode: "disable",
-	}
-
-	config := BuildOTelCollectorConfig(shard, params)
-	g.Expect(config).To(ContainSubstring("insecure: true"))
-	g.Expect(config).ToNot(ContainSubstring("ca_file"))
-	g.Expect(config).ToNot(ContainSubstring("sslrootcert"))
-}
-
-func TestBuildOTelCollectorConfig_TLS_Require(t *testing.T) {
-	g := NewGomegaWithT(t)
-	shard := newTestShard()
-	shard.Spec.Storage.Monitoring = &kubeshardv1alpha1.StorageMonitoringSpec{Enabled: true}
-
-	params := OTelConnectionParams{
-		Host:    "db.example.com",
-		Port:    "5432",
-		DBName:  "kine",
-		SSLMode: "require",
-	}
-
-	config := BuildOTelCollectorConfig(shard, params)
-	g.Expect(config).To(ContainSubstring("insecure: false"))
-	g.Expect(config).To(ContainSubstring("ca_file: /etc/otel/tls/ca.crt"))
-	g.Expect(config).ToNot(ContainSubstring("server_name"))
-	g.Expect(config).To(ContainSubstring("sslrootcert=/etc/otel/tls/ca.crt"))
-}
-
 func TestBuildOTelCollectorConfig_TLS_VerifyFull(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
 	shard.Spec.Storage.Monitoring = &kubeshardv1alpha1.StorageMonitoringSpec{Enabled: true}
 
 	params := OTelConnectionParams{
-		Host:    "db.example.com",
-		Port:    "5432",
-		DBName:  "kine",
-		SSLMode: "verify-full",
+		Host:   "db.example.com",
+		Port:   "5432",
+		DBName: "kine",
 	}
 
 	config := BuildOTelCollectorConfig(shard, params)
 	g.Expect(config).To(ContainSubstring("insecure: false"))
 	g.Expect(config).To(ContainSubstring("ca_file: /etc/otel/tls/ca.crt"))
-	g.Expect(config).To(ContainSubstring("server_name: db.example.com"))
+	g.Expect(config).NotTo(ContainSubstring("server_name"))
+	g.Expect(config).To(ContainSubstring("sslmode=verify-full"))
 	g.Expect(config).To(ContainSubstring("sslrootcert=/etc/otel/tls/ca.crt"))
 }
 
@@ -126,6 +89,7 @@ func TestBuildOTelCollectorDeployment(t *testing.T) {
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
 
 	params := InClusterPostgreSQLConnectionParams(shard)
+	params.CACertSecretName = "test-shard-postgresql-ca-keypair"
 	deploy := BuildOTelCollectorDeployment(shard, "test-shard-postgresql-credentials", "test-shard-postgresql-metrics-config-abc123", params)
 
 	g.Expect(deploy.Name).To(Equal("test-shard-postgresql-metrics"))
@@ -154,9 +118,11 @@ func TestBuildOTelCollectorDeployment(t *testing.T) {
 	g.Expect(c.LivenessProbe).ToNot(BeNil())
 	g.Expect(c.ReadinessProbe).ToNot(BeNil())
 
-	g.Expect(deploy.Spec.Template.Spec.Volumes).To(HaveLen(1))
+	g.Expect(deploy.Spec.Template.Spec.Volumes).To(HaveLen(2))
 	g.Expect(deploy.Spec.Template.Spec.Volumes[0].ConfigMap.Name).To(
 		Equal("test-shard-postgresql-metrics-config-abc123"))
+	g.Expect(deploy.Spec.Template.Spec.Volumes[1].Name).To(Equal("tls-ca"))
+	g.Expect(deploy.Spec.Template.Spec.Volumes[1].Secret.SecretName).To(Equal("test-shard-postgresql-ca-keypair"))
 }
 
 func TestBuildOTelCollectorDeployment_TLS_MountsCA(t *testing.T) {
@@ -167,7 +133,6 @@ func TestBuildOTelCollectorDeployment_TLS_MountsCA(t *testing.T) {
 		Host:             "db.example.com",
 		Port:             "5432",
 		DBName:           "kine",
-		SSLMode:          "require",
 		CACertSecretName: "my-ca-secret",
 	}
 
@@ -192,7 +157,6 @@ func TestBuildOTelCollectorDeployment_TLS_CustomCACertKey(t *testing.T) {
 		Host:             "db.example.com",
 		Port:             "5432",
 		DBName:           "kine",
-		SSLMode:          "verify-full",
 		CACertSecretName: "my-ca-secret",
 		CACertSecretKey:  "server-ca.pem",
 	}
@@ -275,7 +239,6 @@ func TestParsePostgreSQLDSN(t *testing.T) {
 	g.Expect(params.User).To(Equal("myuser"))
 	g.Expect(params.Password).To(Equal("mypass"))
 	g.Expect(params.DBName).To(Equal("mydb"))
-	g.Expect(params.SSLMode).To(Equal("require"))
 }
 
 func TestParsePostgreSQLDSN_DefaultPort(t *testing.T) {
@@ -286,7 +249,6 @@ func TestParsePostgreSQLDSN_DefaultPort(t *testing.T) {
 	g.Expect(params.Host).To(Equal("host"))
 	g.Expect(params.Port).To(Equal("5432"))
 	g.Expect(params.DBName).To(Equal("db"))
-	g.Expect(params.SSLMode).To(Equal("disable"))
 }
 
 func TestParsePostgreSQLDSN_InvalidScheme(t *testing.T) {
@@ -332,7 +294,6 @@ func TestInClusterPostgreSQLConnectionParams(t *testing.T) {
 	g.Expect(params.Port).To(Equal("5432"))
 	g.Expect(params.User).To(Equal("kine"))
 	g.Expect(params.DBName).To(Equal("kine"))
-	g.Expect(params.SSLMode).To(Equal("disable"))
 }
 
 func TestBuildPostgreSQLMetricsServiceMonitor(t *testing.T) {
