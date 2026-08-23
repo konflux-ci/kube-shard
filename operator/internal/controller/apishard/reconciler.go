@@ -572,8 +572,8 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 	})
 }
 
-// cleanupMonitoringResources removes OTel Collector hashed ConfigMaps and clears
-// the MonitoringDegraded condition when monitoring is disabled.
+// cleanupMonitoringResources removes OTel Collector hashed ConfigMaps owned by
+// this shard and clears the MonitoringDegraded condition when monitoring is disabled.
 func (r *Reconciler) cleanupMonitoringResources(ctx context.Context, shard *kubeshardv1alpha1.APIShard) {
 	logger := log.FromContext(ctx)
 
@@ -583,6 +583,9 @@ func (r *Reconciler) cleanupMonitoringResources(ctx context.Context, shard *kube
 		client.MatchingLabels{resources.LabelOTelConfig: "true"},
 	); err == nil {
 		for i := range cmList.Items {
+			if !isOwnedBy(&cmList.Items[i], shard) {
+				continue
+			}
 			if err := r.Delete(ctx, &cmList.Items[i]); err != nil {
 				logger.V(1).Info("Failed to delete orphaned OTel ConfigMap",
 					"configmap", cmList.Items[i].Name, "error", err)
@@ -591,6 +594,16 @@ func (r *Reconciler) cleanupMonitoringResources(ctx context.Context, shard *kube
 	}
 
 	meta.RemoveStatusCondition(&shard.Status.Conditions, kubeshardv1alpha1.ConditionMonitoringDegraded)
+}
+
+// isOwnedBy returns true if obj has a controller owner reference pointing to owner.
+func isOwnedBy(obj metav1.Object, owner metav1.Object) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.UID == owner.GetUID() {
+			return true
+		}
+	}
+	return false
 }
 
 // applyOTelCollector creates or updates the OTel Collector ConfigMap (with content hash),
