@@ -635,9 +635,9 @@ spec:
 		Eventually(func(g Gomega) {
 			out, err := curlOTelMetrics("curl-otel-warmup", pgShardNamespace, metricsURL)
 			g.Expect(err).NotTo(HaveOccurred(), "curl failed: %s", out)
-			g.Expect(out).To(ContainSubstring("postgresql_"),
-				"OTel collector has not emitted PostgreSQL metrics yet")
-		}, 3*time.Minute, 10*time.Second).Should(Succeed())
+			g.Expect(out).To(ContainSubstring("postgresql_db_size"),
+				"OTel collector has not emitted database-level metrics yet")
+		}, 5*time.Minute, 15*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {
