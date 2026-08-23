@@ -116,6 +116,8 @@ func TestBuildOTelCollectorConfig_DSN_SingleQuoted(t *testing.T) {
 
 	g.Expect(config).To(ContainSubstring("user='${env:PG_USERNAME}'"))
 	g.Expect(config).To(ContainSubstring("password='${env:PG_PASSWORD}'"))
+	g.Expect(config).To(ContainSubstring("host='" + params.Host + "'"))
+	g.Expect(config).To(ContainSubstring("dbname='" + params.DBName + "'"))
 }
 
 func TestBuildOTelCollectorDeployment(t *testing.T) {

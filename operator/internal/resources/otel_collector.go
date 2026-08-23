@@ -110,7 +110,7 @@ receivers:
 
   sqlquery:
     driver: postgres
-    datasource: "host=%s port=%s user='${env:PG_USERNAME}' password='${env:PG_PASSWORD}' dbname=%s sslmode=%s%s"
+    datasource: "host='%s' port=%s user='${env:PG_USERNAME}' password='${env:PG_PASSWORD}' dbname='%s' sslmode=%s%s"
     collection_interval: %s
     queries:
       - sql: |

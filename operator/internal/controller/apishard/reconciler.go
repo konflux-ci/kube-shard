@@ -483,6 +483,7 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 	ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard,
 ) {
 	if !resources.StorageMonitoringEnabled(shard) {
+		r.cleanupMonitoringResources(ctx, shard)
 		return
 	}
 
@@ -534,6 +535,14 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 			params.CACertSecretKey = shard.Spec.Storage.Monitoring.CACertSecret.Key
 		}
 
+		if params.SSLMode != "disable" && params.CACertSecretName == "" {
+			err = fmt.Errorf(
+				"sslmode=%q requires caCertSecret to be set in spec.storage.monitoring",
+				params.SSLMode,
+			)
+			break
+		}
+
 		credentialSecret, secretErr := r.ensureOTelCredentialSecret(ctx, tc, shard, params)
 		if secretErr != nil {
 			err = secretErr
@@ -561,6 +570,27 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 		Message:            "PostgreSQL metrics collector is deployed",
 		ObservedGeneration: shard.Generation,
 	})
+}
+
+// cleanupMonitoringResources removes OTel Collector hashed ConfigMaps and clears
+// the MonitoringDegraded condition when monitoring is disabled.
+func (r *Reconciler) cleanupMonitoringResources(ctx context.Context, shard *kubeshardv1alpha1.APIShard) {
+	logger := log.FromContext(ctx)
+
+	cmList := &corev1.ConfigMapList{}
+	if err := r.List(ctx, cmList,
+		client.InNamespace(shard.Spec.TargetNamespace),
+		client.MatchingLabels{resources.LabelOTelConfig: "true"},
+	); err == nil {
+		for i := range cmList.Items {
+			if err := r.Delete(ctx, &cmList.Items[i]); err != nil {
+				logger.V(1).Info("Failed to delete orphaned OTel ConfigMap",
+					"configmap", cmList.Items[i].Name, "error", err)
+			}
+		}
+	}
+
+	meta.RemoveStatusCondition(&shard.Status.Conditions, kubeshardv1alpha1.ConditionMonitoringDegraded)
 }
 
 // applyOTelCollector creates or updates the OTel Collector ConfigMap (with content hash),
