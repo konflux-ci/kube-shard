@@ -176,11 +176,36 @@ func TestBuildOTelCollectorDeployment_TLS_MountsCA(t *testing.T) {
 	g.Expect(deploy.Spec.Template.Spec.Volumes).To(HaveLen(2))
 	g.Expect(deploy.Spec.Template.Spec.Volumes[1].Name).To(Equal("tls-ca"))
 	g.Expect(deploy.Spec.Template.Spec.Volumes[1].Secret.SecretName).To(Equal("my-ca-secret"))
+	g.Expect(deploy.Spec.Template.Spec.Volumes[1].Secret.Items[0].Key).To(Equal("ca.crt"))
 
 	c := deploy.Spec.Template.Spec.Containers[0]
 	g.Expect(c.VolumeMounts).To(HaveLen(2))
 	g.Expect(c.VolumeMounts[1].Name).To(Equal("tls-ca"))
 	g.Expect(c.VolumeMounts[1].MountPath).To(Equal("/etc/otel/tls"))
+}
+
+func TestBuildOTelCollectorDeployment_TLS_CustomCACertKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+
+	params := OTelConnectionParams{
+		Host:             "db.example.com",
+		Port:             "5432",
+		DBName:           "kine",
+		SSLMode:          "verify-full",
+		CACertSecretName: "my-ca-secret",
+		CACertSecretKey:  "server-ca.pem",
+	}
+
+	deploy := BuildOTelCollectorDeployment(shard, "creds", "config-hash123", params)
+
+	g.Expect(deploy.Spec.Template.Spec.Volumes).To(HaveLen(2))
+	tlsVol := deploy.Spec.Template.Spec.Volumes[1]
+	g.Expect(tlsVol.Name).To(Equal("tls-ca"))
+	g.Expect(tlsVol.Secret.SecretName).To(Equal("my-ca-secret"))
+	g.Expect(tlsVol.Secret.Items).To(HaveLen(1))
+	g.Expect(tlsVol.Secret.Items[0].Key).To(Equal("server-ca.pem"))
+	g.Expect(tlsVol.Secret.Items[0].Path).To(Equal("ca.crt"))
 }
 
 func TestBuildOTelCollectorService(t *testing.T) {

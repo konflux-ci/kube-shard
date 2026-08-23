@@ -1966,6 +1966,117 @@ var _ = Describe("reconcileMetrics", func() {
 	})
 })
 
+var _ = Describe("reconcilePostgreSQLMetrics", func() {
+	var (
+		shard      *kubeshardv1alpha1.APIShard
+		tc         *tracking.Client
+		reconciler *Reconciler
+		ns         *corev1.Namespace
+	)
+
+	BeforeEach(func() {
+		ns = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "pgmetrics-test-" + randString(6)}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+		shard = &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{Name: "pgm-shard-" + randString(6)},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: ns.Name,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				Kine:      kubeshardv1alpha1.KineSpec{Replicas: 1},
+				Secondary: kubeshardv1alpha1.SecondarySpec{Replicas: 1},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+		tc = newTrackingClient(shard)
+	})
+
+	AfterEach(func() {
+		_ = k8sClient.Delete(ctx, shard)
+	})
+
+	It("removes MonitoringDegraded when monitoring is disabled", func() {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:    kubeshardv1alpha1.ConditionMonitoringDegraded,
+			Status:  metav1.ConditionTrue,
+			Reason:  "TestSetup",
+			Message: "pre-existing condition",
+		})
+
+		reconciler.reconcilePostgreSQLMetrics(ctx, tc, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionMonitoringDegraded)
+		Expect(cond).To(BeNil())
+	})
+
+	It("sets MonitoringDegraded for SQLite storage type", func() {
+		shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeSQLite
+		shard.Spec.Storage.Monitoring = &kubeshardv1alpha1.StorageMonitoringSpec{Enabled: true}
+
+		reconciler.reconcilePostgreSQLMetrics(ctx, tc, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionMonitoringDegraded)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("UnsupportedStorageType"))
+	})
+
+	It("sets MonitoringDegraded when external PostgreSQL requires TLS but no CACertSecret is set", func() {
+		connSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pg-conn",
+				Namespace: ns.Name,
+			},
+			Data: map[string][]byte{
+				"dsn": []byte("postgres://user:pass@db.example.com:5432/kine?sslmode=require"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, connSecret)).To(Succeed())
+
+		shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypePostgreSQL
+		shard.Spec.Storage.ConnectionSecretRef = &kubeshardv1alpha1.SecretKeyReference{
+			Name: "pg-conn",
+			Key:  "dsn",
+		}
+		shard.Spec.Storage.Monitoring = &kubeshardv1alpha1.StorageMonitoringSpec{Enabled: true}
+
+		reconciler.reconcilePostgreSQLMetrics(ctx, tc, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionMonitoringDegraded)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("MetricsCollectorFailed"))
+		Expect(cond.Message).To(ContainSubstring("caCertSecret"))
+	})
+
+	It("deploys OTel Collector for InClusterPostgreSQL and sets condition healthy", func() {
+		shard.Spec.Storage.Monitoring = &kubeshardv1alpha1.StorageMonitoringSpec{Enabled: true}
+
+		reconciler.reconcilePostgreSQLMetrics(ctx, tc, shard)
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionMonitoringDegraded)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("MetricsCollectorHealthy"))
+	})
+})
+
 var _ = Describe("ensureNamespace", func() {
 	var reconciler *Reconciler
 

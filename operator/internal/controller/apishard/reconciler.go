@@ -602,6 +602,7 @@ func (r *Reconciler) applyOTelCollector(
 	// Register the hashed ConfigMap with the tracking client so that
 	// CleanupOrphans deletes it automatically when monitoring is disabled
 	// (the ConfigMap won't be tracked that cycle → treated as orphan).
+	result.ConfigMap.SetManagedFields(nil)
 	if err := tc.ApplyOwned(ctx, result.ConfigMap); err != nil {
 		return fmt.Errorf("otel collector configmap tracking: %w", err)
 	}
