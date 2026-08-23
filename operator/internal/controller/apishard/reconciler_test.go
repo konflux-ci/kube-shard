@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -478,6 +479,91 @@ var _ = Describe("reconcileInClusterPostgreSQL security context overrides", func
 			"RunAsUser must not be set on OpenShift so the SCC assigns from the namespace range")
 		Expect(podSC.FSGroup).To(BeNil(),
 			"FSGroup must not be set on OpenShift; the SCC assigns from the namespace range")
+	})
+})
+
+var _ = Describe("buildCertResources", func() {
+	newShard := func(storageType kubeshardv1alpha1.StorageType) *kubeshardv1alpha1.APIShard {
+		return &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{Name: "cert-res-test"},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: "cert-res-ns",
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: storageType,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+	}
+
+	hasResource := func(resources []*unstructured.Unstructured, name string) bool {
+		for _, r := range resources {
+			if r.GetName() == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	It("should include PostgreSQL cert resources for InClusterPostgreSQL storage", func() {
+		shard := newShard(kubeshardv1alpha1.StorageTypeInClusterPostgreSQL)
+		resources := buildCertResources(shard)
+
+		Expect(hasResource(resources, certs.PostgreSQLCAIssuerName(shard))).To(BeTrue(),
+			"PostgreSQL CA Issuer should be present")
+		Expect(hasResource(resources, certs.PostgreSQLCACertificateName(shard))).To(BeTrue(),
+			"PostgreSQL CA Certificate should be present")
+		Expect(hasResource(resources, certs.PostgreSQLServingCertificateName(shard))).To(BeTrue(),
+			"PostgreSQL Serving Certificate should be present")
+	})
+
+	It("should not include PostgreSQL cert resources for SQLite storage", func() {
+		shard := newShard(kubeshardv1alpha1.StorageTypeSQLite)
+		resources := buildCertResources(shard)
+
+		Expect(hasResource(resources, certs.PostgreSQLCAIssuerName(shard))).To(BeFalse(),
+			"PostgreSQL CA Issuer should not be present for SQLite")
+		Expect(hasResource(resources, certs.PostgreSQLCACertificateName(shard))).To(BeFalse(),
+			"PostgreSQL CA Certificate should not be present for SQLite")
+		Expect(hasResource(resources, certs.PostgreSQLServingCertificateName(shard))).To(BeFalse(),
+			"PostgreSQL Serving Certificate should not be present for SQLite")
+	})
+
+	It("should not include PostgreSQL cert resources for external PostgreSQL storage", func() {
+		shard := newShard(kubeshardv1alpha1.StorageTypePostgreSQL)
+		resources := buildCertResources(shard)
+
+		Expect(hasResource(resources, certs.PostgreSQLCAIssuerName(shard))).To(BeFalse(),
+			"PostgreSQL CA Issuer should not be present for external PostgreSQL")
+		Expect(hasResource(resources, certs.PostgreSQLCACertificateName(shard))).To(BeFalse(),
+			"PostgreSQL CA Certificate should not be present for external PostgreSQL")
+		Expect(hasResource(resources, certs.PostgreSQLServingCertificateName(shard))).To(BeFalse(),
+			"PostgreSQL Serving Certificate should not be present for external PostgreSQL")
+	})
+
+	It("should always include the base shard and Kine cert resources", func() {
+		for _, storageType := range []kubeshardv1alpha1.StorageType{
+			kubeshardv1alpha1.StorageTypeSQLite,
+			kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+			kubeshardv1alpha1.StorageTypePostgreSQL,
+		} {
+			shard := newShard(storageType)
+			resources := buildCertResources(shard)
+
+			Expect(len(resources)).To(BeNumerically(">=", 10),
+				"base cert resources should always be present for storage type %s", storageType)
+			Expect(hasResource(resources, certs.IssuerName(shard))).To(BeTrue(),
+				"shard CA Issuer should be present for storage type %s", storageType)
+			Expect(hasResource(resources, certs.KineCAIssuerName(shard))).To(BeTrue(),
+				"Kine CA Issuer should be present for storage type %s", storageType)
+		}
 	})
 })
 

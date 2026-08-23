@@ -556,7 +556,20 @@ func (r *Reconciler) getOrGeneratePostgresPassword(ctx context.Context, shard *k
 // certificate can authenticate to Kine — not the admin client cert or any
 // other shard cert. The PostgreSQL CA enables Kine to connect with sslmode=verify-full.
 func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard) error {
-	certResources := []*unstructured.Unstructured{
+	for _, res := range buildCertResources(shard) {
+		if err := tc.ApplyOwned(ctx, res); err != nil {
+			return fmt.Errorf("applying %s %s: %w", res.GetKind(), res.GetName(), err)
+		}
+	}
+
+	return nil
+}
+
+// buildCertResources returns the cert-manager resources to create for the given
+// shard. The PostgreSQL CA chain is only included when the storage type is
+// InClusterPostgreSQL.
+func buildCertResources(shard *kubeshardv1alpha1.APIShard) []*unstructured.Unstructured {
+	resources := []*unstructured.Unstructured{
 		// Shard-wide CA chain (API server serving + admin client).
 		certs.BuildSelfSignedIssuer(shard),
 		certs.BuildCACertificate(shard),
@@ -569,20 +582,18 @@ func (r *Reconciler) reconcileCertManager(ctx context.Context, tc *tracking.Clie
 		certs.BuildKineCAIssuer(shard),
 		certs.BuildKineServingCertificate(shard),
 		certs.BuildEtcdClientCertificate(shard),
-		// PostgreSQL-dedicated CA chain (in-cluster PostgreSQL server TLS).
-		certs.BuildPostgreSQLSelfSignedIssuer(shard),
-		certs.BuildPostgreSQLCACertificate(shard),
-		certs.BuildPostgreSQLCAIssuer(shard),
-		certs.BuildPostgreSQLServingCertificate(shard),
 	}
 
-	for _, res := range certResources {
-		if err := tc.ApplyOwned(ctx, res); err != nil {
-			return fmt.Errorf("applying %s %s: %w", res.GetKind(), res.GetName(), err)
-		}
+	if shard.Spec.Storage.Type == kubeshardv1alpha1.StorageTypeInClusterPostgreSQL {
+		resources = append(resources,
+			certs.BuildPostgreSQLSelfSignedIssuer(shard),
+			certs.BuildPostgreSQLCACertificate(shard),
+			certs.BuildPostgreSQLCAIssuer(shard),
+			certs.BuildPostgreSQLServingCertificate(shard),
+		)
 	}
 
-	return nil
+	return resources
 }
 
 // reconcileAuthConfig creates a ConfigMap containing the kubeconfigs used by the

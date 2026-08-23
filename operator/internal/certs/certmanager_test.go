@@ -273,6 +273,7 @@ func TestBuildPostgreSQLSelfSignedIssuer(t *testing.T) {
 	g.Expect(issuer.GetName()).ToNot(Equal(kineIssuer.GetName()))
 }
 
+// TestBuildAdminClientCertificate verifies the admin client cert uses the
 // shard-wide CA (not the Kine CA) and includes system:masters organization.
 func TestBuildAdminClientCertificate(t *testing.T) {
 	g := NewGomegaWithT(t)
