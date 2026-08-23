@@ -54,10 +54,10 @@ type StorageMonitoringSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="duration must be a valid non-negative Go duration"
 	CollectionInterval string `json:"collectionInterval,omitempty"`
-	// CACertSecret references a Secret containing the CA certificate
-	// used to verify the PostgreSQL server's TLS certificate. The Key field
-	// specifies which key in the Secret holds the CA certificate. Required when
-	// sslmode is anything other than "disable".
+	// CACertSecret references a Secret containing the CA certificate used to
+	// verify the PostgreSQL server's TLS certificate. The Key field specifies
+	// which key in the Secret holds the certificate (defaults to "ca.crt").
+	// Required when the PostgreSQL connection uses TLS.
 	// +optional
 	CACertSecret *SecretKeyReference `json:"caCertSecret,omitempty"`
 	// PostgreSQL holds settings specific to PostgreSQL monitoring.

@@ -483,7 +483,7 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 	ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard,
 ) {
 	if !resources.StorageMonitoringEnabled(shard) {
-		r.cleanupMonitoringResources(ctx, shard)
+		meta.RemoveStatusCondition(&shard.Status.Conditions, kubeshardv1alpha1.ConditionMonitoringDegraded)
 		return
 	}
 
@@ -572,40 +572,6 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 	})
 }
 
-// cleanupMonitoringResources removes OTel Collector hashed ConfigMaps owned by
-// this shard and clears the MonitoringDegraded condition when monitoring is disabled.
-func (r *Reconciler) cleanupMonitoringResources(ctx context.Context, shard *kubeshardv1alpha1.APIShard) {
-	logger := log.FromContext(ctx)
-
-	cmList := &corev1.ConfigMapList{}
-	if err := r.List(ctx, cmList,
-		client.InNamespace(shard.Spec.TargetNamespace),
-		client.MatchingLabels{resources.LabelOTelConfig: "true"},
-	); err == nil {
-		for i := range cmList.Items {
-			if !isOwnedBy(&cmList.Items[i], shard) {
-				continue
-			}
-			if err := r.Delete(ctx, &cmList.Items[i]); err != nil {
-				logger.V(1).Info("Failed to delete orphaned OTel ConfigMap",
-					"configmap", cmList.Items[i].Name, "error", err)
-			}
-		}
-	}
-
-	meta.RemoveStatusCondition(&shard.Status.Conditions, kubeshardv1alpha1.ConditionMonitoringDegraded)
-}
-
-// isOwnedBy returns true if obj has a controller owner reference pointing to owner.
-func isOwnedBy(obj metav1.Object, owner metav1.Object) bool {
-	for _, ref := range obj.GetOwnerReferences() {
-		if ref.UID == owner.GetUID() {
-			return true
-		}
-	}
-	return false
-}
-
 // applyOTelCollector creates or updates the OTel Collector ConfigMap (with content hash),
 // Deployment, and Service. Uses hashedconfigmap so pods automatically restart on config change.
 func (r *Reconciler) applyOTelCollector(
@@ -631,6 +597,13 @@ func (r *Reconciler) applyOTelCollector(
 	result, err := hcm.Apply(ctx, configContent, shard)
 	if err != nil {
 		return fmt.Errorf("otel collector configmap: %w", err)
+	}
+
+	// Register the hashed ConfigMap with the tracking client so that
+	// CleanupOrphans deletes it automatically when monitoring is disabled
+	// (the ConfigMap won't be tracked that cycle → treated as orphan).
+	if err := tc.ApplyOwned(ctx, result.ConfigMap); err != nil {
+		return fmt.Errorf("otel collector configmap tracking: %w", err)
 	}
 
 	deploy := resources.BuildOTelCollectorDeployment(shard, credentialSecretName, result.ConfigMapName, params)
