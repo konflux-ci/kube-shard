@@ -82,7 +82,7 @@ func BuildKineServiceMonitor(shard *kubeshardv1alpha1.APIShard) *monitoringv1.Se
 											LocalObjectReference: corev1.LocalObjectReference{
 												Name: kineServingSecretName(shard),
 											},
-											Key: "ca.crt",
+											Key: CACertKey,
 										},
 									},
 									ServerName: ptr.To(fmt.Sprintf(
@@ -149,7 +149,7 @@ func BuildSecondaryServiceMonitor(shard *kubeshardv1alpha1.APIShard) *monitoring
 											LocalObjectReference: corev1.LocalObjectReference{
 												Name: pkiSecretName(shard),
 											},
-											Key: "ca.crt",
+											Key: CACertKey,
 										},
 									},
 									ServerName: ptr.To(fmt.Sprintf(

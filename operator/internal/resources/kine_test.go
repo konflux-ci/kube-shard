@@ -457,3 +457,58 @@ func TestBuildKineDeployment_TLSVolumeMount(t *testing.T) {
 	g.Expect(tlsVol.Secret).ToNot(BeNil())
 	g.Expect(tlsVol.Secret.SecretName).To(Equal("test-shard-kine-serving-cert"))
 }
+
+// TestBuildKineDeployment_SQLite_NoPGCAVolume verifies the PostgreSQL CA volume
+// is absent when storage is SQLite.
+func TestBuildKineDeployment_SQLite_NoPGCAVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeSQLite
+
+	deploy := BuildKineDeployment(shard)
+
+	for _, vol := range deploy.Spec.Template.Spec.Volumes {
+		g.Expect(vol.Name).ToNot(Equal(postgresqlCAVolumeName),
+			"postgresql-ca volume should not be present for SQLite storage")
+	}
+	for _, mount := range deploy.Spec.Template.Spec.Containers[0].VolumeMounts {
+		g.Expect(mount.Name).ToNot(Equal(postgresqlCAVolumeName),
+			"postgresql-ca volume mount should not be present for SQLite storage")
+	}
+}
+
+// TestBuildKineDeployment_InClusterPostgreSQL_PGCAVolume verifies the PostgreSQL CA
+// volume is mounted for verify-full TLS when storage is InClusterPostgreSQL.
+func TestBuildKineDeployment_InClusterPostgreSQL_PGCAVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
+	shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
+
+	deploy := BuildKineDeployment(shard)
+
+	volumes := deploy.Spec.Template.Spec.Volumes
+	var pgCAVol *corev1.Volume
+	for i := range volumes {
+		if volumes[i].Name == postgresqlCAVolumeName {
+			pgCAVol = &volumes[i]
+			break
+		}
+	}
+	g.Expect(pgCAVol).ToNot(BeNil(), "expected postgresql-ca volume")
+	g.Expect(pgCAVol.Secret).ToNot(BeNil())
+	g.Expect(pgCAVol.Secret.SecretName).To(Equal("test-shard-postgresql-ca-keypair"))
+	g.Expect(pgCAVol.Secret.Items).To(ConsistOf(corev1.KeyToPath{Key: CACertKey, Path: CACertKey}))
+
+	mounts := deploy.Spec.Template.Spec.Containers[0].VolumeMounts
+	var pgCAMount *corev1.VolumeMount
+	for i := range mounts {
+		if mounts[i].Name == postgresqlCAVolumeName {
+			pgCAMount = &mounts[i]
+			break
+		}
+	}
+	g.Expect(pgCAMount).ToNot(BeNil(), "expected postgresql-ca volume mount")
+	g.Expect(pgCAMount.MountPath).To(Equal(postgresqlCAMountPath))
+	g.Expect(pgCAMount.ReadOnly).To(BeTrue())
+}

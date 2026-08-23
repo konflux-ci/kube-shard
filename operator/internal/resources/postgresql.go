@@ -32,8 +32,13 @@ import (
 )
 
 const (
-	DefaultPostgreSQLImage = "registry.access.redhat.com/hi/postgresql:18.4"
-	PostgreSQLPort         = 5432
+	DefaultPostgreSQLImage      = "registry.access.redhat.com/hi/postgresql:18.4"
+	PostgreSQLPort              = 5432
+	postgresqlTLSVolumeName     = "postgresql-tls"
+	postgresqlTLSMountPath      = "/etc/postgresql/tls"
+	postgresqlServingSecretName = "%s-postgresql-serving-cert"
+	postgresqlTLSCertMode       = int32(0644)
+	postgresqlTLSKeyMode        = int32(0640)
 )
 
 func PostgreSQLStatefulSetName(shard *kubeshardv1alpha1.APIShard) string {
@@ -50,7 +55,7 @@ func PostgreSQLSecretName(shard *kubeshardv1alpha1.APIShard) string {
 
 // PostgreSQLDSN returns the connection string for Kine to connect to the in-cluster PostgreSQL.
 func PostgreSQLDSN(shard *kubeshardv1alpha1.APIShard, user, password string) string {
-	return fmt.Sprintf("postgres://%s:%s@%s.%s.svc:%d/kine?sslmode=disable",
+	return fmt.Sprintf("postgres://%s:%s@%s.%s.svc:%d/kine?sslmode=verify-full&sslrootcert=/etc/kine/pg-ca/ca.crt",
 		user, password,
 		PostgreSQLServiceName(shard),
 		shard.Spec.TargetNamespace,
@@ -150,6 +155,19 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 			EmptyDir: &corev1.EmptyDirVolumeSource{},
 		},
 	})
+	volumes = append(volumes, corev1.Volume{
+		Name: postgresqlTLSVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: fmt.Sprintf(postgresqlServingSecretName, shard.Name),
+				Items: []corev1.KeyToPath{
+					{Key: "tls.crt", Path: "tls.crt", Mode: ptr.To(postgresqlTLSCertMode)},
+					{Key: "tls.key", Path: "tls.key", Mode: ptr.To(postgresqlTLSKeyMode)},
+					{Key: CACertKey, Path: CACertKey, Mode: ptr.To(postgresqlTLSCertMode)},
+				},
+			},
+		},
+	})
 
 	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{
@@ -196,6 +214,12 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 									Value: "/var/lib/postgresql/data/pgdata",
 								},
 							},
+							Args: []string{
+								"-c", "ssl=on",
+								"-c", "ssl_cert_file=" + postgresqlTLSMountPath + "/tls.crt",
+								"-c", "ssl_key_file=" + postgresqlTLSMountPath + "/tls.key",
+								"-c", "ssl_ca_file=" + postgresqlTLSMountPath + "/ca.crt",
+							},
 							Resources: resourceReqs,
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -205,6 +229,11 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 								{
 									Name:      "tmp",
 									MountPath: "/tmp",
+								},
+								{
+									Name:      postgresqlTLSVolumeName,
+									MountPath: postgresqlTLSMountPath,
+									ReadOnly:  true,
 								},
 							},
 							ReadinessProbe: &corev1.Probe{
