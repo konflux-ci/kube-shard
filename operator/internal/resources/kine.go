@@ -191,7 +191,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: fmt.Sprintf(postgresqlCASecretName, shard.Name),
 					Items: []corev1.KeyToPath{
-						{Key: "ca.crt", Path: "ca.crt"},
+						{Key: CACertKey, Path: CACertKey},
 					},
 				},
 			},

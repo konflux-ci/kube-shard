@@ -458,6 +458,8 @@ func TestBuildKineDeployment_TLSVolumeMount(t *testing.T) {
 	g.Expect(tlsVol.Secret.SecretName).To(Equal("test-shard-kine-serving-cert"))
 }
 
+// TestBuildKineDeployment_SQLite_NoPGCAVolume verifies the PostgreSQL CA volume
+// is absent when storage is SQLite.
 func TestBuildKineDeployment_SQLite_NoPGCAVolume(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -475,6 +477,8 @@ func TestBuildKineDeployment_SQLite_NoPGCAVolume(t *testing.T) {
 	}
 }
 
+// TestBuildKineDeployment_InClusterPostgreSQL_PGCAVolume verifies the PostgreSQL CA
+// volume is mounted for verify-full TLS when storage is InClusterPostgreSQL.
 func TestBuildKineDeployment_InClusterPostgreSQL_PGCAVolume(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -494,7 +498,7 @@ func TestBuildKineDeployment_InClusterPostgreSQL_PGCAVolume(t *testing.T) {
 	g.Expect(pgCAVol).ToNot(BeNil(), "expected postgresql-ca volume")
 	g.Expect(pgCAVol.Secret).ToNot(BeNil())
 	g.Expect(pgCAVol.Secret.SecretName).To(Equal("test-shard-postgresql-ca-keypair"))
-	g.Expect(pgCAVol.Secret.Items).To(ConsistOf(corev1.KeyToPath{Key: "ca.crt", Path: "ca.crt"}))
+	g.Expect(pgCAVol.Secret.Items).To(ConsistOf(corev1.KeyToPath{Key: CACertKey, Path: CACertKey}))
 
 	mounts := deploy.Spec.Template.Spec.Containers[0].VolumeMounts
 	var pgCAMount *corev1.VolumeMount

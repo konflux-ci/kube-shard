@@ -163,7 +163,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 				Items: []corev1.KeyToPath{
 					{Key: "tls.crt", Path: "tls.crt", Mode: ptr.To(postgresqlTLSCertMode)},
 					{Key: "tls.key", Path: "tls.key", Mode: ptr.To(postgresqlTLSKeyMode)},
-					{Key: "ca.crt", Path: "ca.crt", Mode: ptr.To(postgresqlTLSCertMode)},
+					{Key: CACertKey, Path: CACertKey, Mode: ptr.To(postgresqlTLSCertMode)},
 				},
 			},
 		},

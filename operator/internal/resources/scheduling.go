@@ -20,6 +20,8 @@ const (
 
 	NameKine      = "kine"
 	NameAPIServer = "kube-apiserver"
+
+	CACertKey = "ca.crt"
 )
 
 // isColocateEnabled returns true if component colocation is enabled for the shard.

@@ -154,6 +154,7 @@ func TestBuildPostgreSQLStatefulSet_TmpVolume(t *testing.T) {
 	g.Expect(tmpMount).ToNot(BeNil(), "expected /tmp volume mount")
 }
 
+// TestPostgreSQLDSN verifies the DSN uses sslmode=verify-full and the correct sslrootcert path.
 func TestPostgreSQLDSN(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
@@ -165,6 +166,8 @@ func TestPostgreSQLDSN(t *testing.T) {
 	))
 }
 
+// TestBuildPostgreSQLStatefulSet_TLSVolume verifies the TLS secret volume with per-file modes
+// and the postgres -c ssl=on runtime arguments.
 func TestBuildPostgreSQLStatefulSet_TLSVolume(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
