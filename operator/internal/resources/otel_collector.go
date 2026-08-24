@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package resources
 
 import (
@@ -105,6 +121,7 @@ receivers:
     collection_interval: %s
     queries:
       - sql: |
+          CREATE EXTENSION IF NOT EXISTS pgstattuple;
           SET statement_timeout = '30s';
           SELECT
             coalesce(sum(dead_tuple_len + free_space), 0)::bigint AS reclaimable_bytes,
@@ -399,6 +416,10 @@ func ParsePostgreSQLDSN(dsn string) (OTelConnectionParams, error) {
 	params.Host = u.Hostname()
 	if params.Host == "" {
 		return params, fmt.Errorf("invalid DSN: host is empty")
+	}
+
+	if params.User == "" {
+		return params, fmt.Errorf("invalid DSN: user is empty")
 	}
 
 	if port := u.Port(); port != "" {

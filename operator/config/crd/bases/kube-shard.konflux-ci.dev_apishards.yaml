@@ -998,6 +998,11 @@ spec:
                 required:
                 - type
                 type: object
+                x-kubernetes-validations:
+                - message: connectionSecretRef.key is required when storage type is
+                    PostgreSQL
+                  rule: self.type != 'PostgreSQL' || !has(self.connectionSecretRef)
+                    || self.connectionSecretRef.key.size() > 0
               targetNamespace:
                 type: string
             required:

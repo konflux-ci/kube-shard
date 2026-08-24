@@ -35,6 +35,7 @@ type APIGroupSpec struct {
 	Versions []string `json:"versions"`
 }
 
+// +kubebuilder:validation:XValidation:rule="self.type != 'PostgreSQL' || !has(self.connectionSecretRef) || self.connectionSecretRef.key.size() > 0",message="connectionSecretRef.key is required when storage type is PostgreSQL"
 type StorageSpec struct {
 	// +kubebuilder:validation:Enum=SQLite;InClusterPostgreSQL;PostgreSQL
 	Type                StorageType            `json:"type"`
