@@ -842,14 +842,13 @@ spec:
                       The Secret must reside in the APIShard's targetNamespace (same namespace as Kine).
                     properties:
                       key:
-                        description: Key within the Secret that contains the Kine-compatible
-                          connection string.
+                        description: Key within the Secret that holds the relevant
+                          data.
                         type: string
                       name:
                         description: Name of the Secret.
                         type: string
                     required:
-                    - key
                     - name
                     type: object
                   inCluster:
@@ -951,14 +950,13 @@ spec:
                           the operator provisions TLS certificates automatically.
                         properties:
                           key:
-                            description: Key within the Secret that contains the Kine-compatible
-                              connection string.
+                            description: Key within the Secret that holds the relevant
+                              data.
                             type: string
                           name:
                             description: Name of the Secret.
                             type: string
                         required:
-                        - key
                         - name
                         type: object
                       collectionInterval:

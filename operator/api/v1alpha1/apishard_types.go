@@ -83,8 +83,9 @@ type PostgreSQLMonitoringSpec struct {
 type SecretKeyReference struct {
 	// Name of the Secret.
 	Name string `json:"name"`
-	// Key within the Secret that contains the Kine-compatible connection string.
-	Key string `json:"key"`
+	// Key within the Secret that holds the relevant data.
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 type InClusterStorage struct {
