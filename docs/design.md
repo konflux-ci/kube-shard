@@ -326,6 +326,53 @@ For new deployments, no migration is needed -- the operator installs CRDs on the
 
 The blast radius of secondary API server failure is similar to today's etcd failure -- both stop all Tekton operations. This design replaces one critical dependency (managed etcd) with another (Konflux-managed secondary KAS + PostgreSQL), trading a hard size constraint for operational responsibility.
 
+## APIService Switchover and Controller Behavior
+
+When an APIShard is first created, the operator registers APIService objects that redirect the main kube-apiserver to proxy requests for the sharded API groups to the secondary server. This switchover changes the backend serving watch streams mid-flight. Controllers watching those API groups experience a watch disconnect at the moment of switchover.
+
+### How most controllers recover
+
+Most controller-runtime based controllers handle the switchover transparently. The client-go reflector (which powers informer watch streams) detects the disconnect -- typically a connection error or HTTP `410 Gone` response -- and automatically triggers a re-list followed by a new watch against the (now-proxied) endpoint. The controller resumes processing events within seconds without any manual intervention.
+
+Controllers built with standard controller-runtime patterns (SharedInformerFactory, controller-runtime manager) inherit this reconnection behavior automatically. In testing, the Tekton Pipelines controller and Tekton Chains controller both recovered from the switchover without interruption.
+
+### Controllers that may silently stop processing
+
+Some controllers do not recover from the watch disconnect. After the switchover, these controllers:
+
+- Remain `Running` (pass readiness and liveness probes)
+- Continue to hold their leader election lease
+- Produce no error logs
+- Simply stop reacting to new events in the sharded API groups
+
+The informer cache becomes stale -- the controller believes it has an active watch, but the underlying connection was severed during the switchover and was not re-established. New resources created after the switchover are never delivered to the controller's event handlers.
+
+This behavior was observed with `tekton-kueue`, which watches PipelineRun resources. After the switchover, new PipelineRuns remained in `PipelineRunPending` state indefinitely because no Kueue Workload was created for them, even though the tekton-kueue controller appeared healthy.
+
+The exact failure mode depends on the controller's informer and watch reconnection implementation. Controllers that use custom informer configurations, suppress reconnection errors in their leader election flow, or do not propagate watch errors to the reflector layer are most susceptible.
+
+### Diagnosing a stalled controller
+
+If resources in a sharded API group stop being processed after an APIShard is created, check whether the responsible controller was running before the switchover. Key indicators:
+
+1. The controller pod is `Running` and `Ready`
+2. The controller holds its leader election lease (check the Lease object)
+3. No errors or watch-related log entries appear after the switchover timestamp
+4. Other controllers watching the same resources continue to work normally
+5. Resources created before the switchover were processed; resources created after are not
+
+### Workaround
+
+Restart the affected controller after the APIShard reaches `Ready`:
+
+```bash
+kubectl rollout restart deployment/<controller-name> -n <namespace>
+```
+
+The new pod picks up pending resources immediately because it establishes a fresh watch connection against the aggregated endpoint from startup.
+
+For clusters where this is a known issue, consider adding the restart to the APIShard deployment runbook or automating it via a post-deployment hook.
+
 ## Risks and Open Questions
 
 | Risk | Severity | Mitigation |
