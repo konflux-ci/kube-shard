@@ -40,6 +40,10 @@ const (
 
 	// ConditionReconciled indicates whether the last reconcile loop completed successfully.
 	ConditionReconciled = "Reconciled"
+
+	// ConditionRestartTargetsCompleted indicates whether the operator has
+	// completed rollout restarts for all configured restartTargets.
+	ConditionRestartTargetsCompleted = "RestartTargetsCompleted"
 )
 
 const (

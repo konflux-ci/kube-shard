@@ -190,6 +190,17 @@ type KineSpec struct {
 	WatchProgressNotifyInterval *metav1.Duration `json:"watchProgressNotifyInterval,omitempty"`
 }
 
+// RestartTarget identifies a Deployment that the operator should trigger a
+// rollout restart on after the shard reaches Ready. Some controllers do not
+// gracefully reconnect their watch streams after an APIService switchover;
+// restarting them forces a fresh connection to the new aggregated endpoint.
+type RestartTarget struct {
+	// Name of the Deployment.
+	Name string `json:"name"`
+	// Namespace of the Deployment.
+	Namespace string `json:"namespace"`
+}
+
 // MonitoringSpec configures Prometheus metrics collection for the shard.
 type MonitoringSpec struct {
 	// PrometheusServiceAccountName is the name of the ServiceAccount used by
@@ -225,6 +236,17 @@ type APIShardSpec struct {
 	// +optional
 	// +kubebuilder:default=true
 	ColocateComponents *bool `json:"colocateComponents,omitempty"`
+
+	// RestartTargets lists Deployments that should be rolled out after
+	// the shard initially becomes Ready. When the APIService switchover
+	// redirects traffic to the secondary API server, some controllers
+	// may not gracefully reconnect their watch streams. Restarting them
+	// forces a fresh informer connection through the new aggregated
+	// endpoint. The operator triggers a rollout restart (equivalent to
+	// `kubectl rollout restart`) once when the shard first reaches
+	// Ready and again if this list changes.
+	// +optional
+	RestartTargets []RestartTarget `json:"restartTargets,omitempty"`
 }
 
 type ConnectionSecretReference struct {
