@@ -28,6 +28,8 @@ import (
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
 )
 
+// TestAlignPostgreSQLVolumeClaims_PreservesLiveSize verifies that a larger
+// requested size is overwritten by the live VolumeClaimTemplate size.
 func TestAlignPostgreSQLVolumeClaims_PreservesLiveSize(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	live := BuildPostgreSQLStatefulSet(persistentShard("20Gi"))
@@ -40,6 +42,8 @@ func TestAlignPostgreSQLVolumeClaims_PreservesLiveSize(t *testing.T) {
 	g.Expect(got.String()).To(gomega.Equal("20Gi"))
 }
 
+// TestAlignPostgreSQLVolumeClaims_EmptyDirToPersistenceKeepsEmptyDir verifies
+// that enabling persistence on an emptyDir StatefulSet does not add a VCT.
 func TestAlignPostgreSQLVolumeClaims_EmptyDirToPersistenceKeepsEmptyDir(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	live := BuildPostgreSQLStatefulSet(emptyDirShard())
@@ -51,6 +55,8 @@ func TestAlignPostgreSQLVolumeClaims_EmptyDirToPersistenceKeepsEmptyDir(t *testi
 	g.Expect(hasEmptyDirVolume(desired.Spec.Template.Spec.Volumes, dataVolumeName)).To(gomega.BeTrue())
 }
 
+// TestAlignPostgreSQLVolumeClaims_PersistenceToEmptyDirKeepsVCT verifies that
+// removing persistence keeps the live VolumeClaimTemplate.
 func TestAlignPostgreSQLVolumeClaims_PersistenceToEmptyDirKeepsVCT(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 	live := BuildPostgreSQLStatefulSet(persistentShard("20Gi"))
@@ -62,11 +68,14 @@ func TestAlignPostgreSQLVolumeClaims_PersistenceToEmptyDirKeepsVCT(t *testing.T)
 	g.Expect(hasEmptyDirVolume(desired.Spec.Template.Spec.Volumes, dataVolumeName)).To(gomega.BeFalse())
 }
 
+// TestVolumeClaimTemplatesMatch covers size and storage-class comparison,
+// including nil versus explicit empty storageClassName.
 func TestVolumeClaimTemplatesMatch(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
-	twenty := vct(dataVolumeName, "20Gi", nil)
-	hundred := vct(dataVolumeName, "100Gi", nil)
-	withClass := vct(dataVolumeName, "20Gi", ptr.To("gp3"))
+	twenty := vct("20Gi", nil)
+	hundred := vct("100Gi", nil)
+	withClass := vct("20Gi", ptr.To("gp3"))
+	none := vct("20Gi", ptr.To(""))
 	one := func(c corev1.PersistentVolumeClaim) []corev1.PersistentVolumeClaim {
 		return []corev1.PersistentVolumeClaim{c}
 	}
@@ -78,8 +87,30 @@ func TestVolumeClaimTemplatesMatch(t *testing.T) {
 	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(withClass))).To(gomega.BeTrue(),
 		"nil requested storage class must ignore live defaulting")
 	g.Expect(VolumeClaimTemplatesMatch(one(withClass), one(twenty))).To(gomega.BeFalse())
+	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(none))).To(gomega.BeFalse(),
+		"nil requested class must not match a live explicit empty class")
+	g.Expect(VolumeClaimTemplatesMatch(one(none), one(none))).To(gomega.BeTrue())
 }
 
+// TestDescribeVolumeClaimTemplates distinguishes omitted, empty, and named
+// storage classes in status text.
+func TestDescribeVolumeClaimTemplates(t *testing.T) {
+	g := gomega.NewGomegaWithT(t)
+
+	g.Expect(DescribeVolumeClaimTemplates(nil)).To(gomega.Equal("emptyDir (no persistent volume)"))
+	g.Expect(DescribeVolumeClaimTemplates([]corev1.PersistentVolumeClaim{
+		vct("20Gi", nil),
+	})).To(gomega.ContainSubstring("storageClassName <default>"))
+	g.Expect(DescribeVolumeClaimTemplates([]corev1.PersistentVolumeClaim{
+		vct("20Gi", ptr.To("")),
+	})).To(gomega.ContainSubstring("storageClassName <none>"))
+	g.Expect(DescribeVolumeClaimTemplates([]corev1.PersistentVolumeClaim{
+		vct("20Gi", ptr.To("gp3")),
+	})).To(gomega.ContainSubstring("storageClassName gp3"))
+}
+
+// persistentShard returns an APIShard with InClusterPostgreSQL persistence
+// of the given size and no explicit storage class.
 func persistentShard(size string) *kubeshardv1alpha1.APIShard {
 	shard := newTestShard()
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
@@ -91,6 +122,7 @@ func persistentShard(size string) *kubeshardv1alpha1.APIShard {
 	return shard
 }
 
+// emptyDirShard returns an APIShard with InClusterPostgreSQL and no persistence.
 func emptyDirShard() *kubeshardv1alpha1.APIShard {
 	shard := newTestShard()
 	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
@@ -98,9 +130,10 @@ func emptyDirShard() *kubeshardv1alpha1.APIShard {
 	return shard
 }
 
-func vct(name, size string, storageClass *string) corev1.PersistentVolumeClaim {
+// vct builds a VolumeClaimTemplate-shaped PVC named data for comparison tests.
+func vct(size string, storageClass *string) corev1.PersistentVolumeClaim {
 	return corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: dataVolumeName},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			StorageClassName: storageClass,
 			Resources: corev1.VolumeResourceRequirements{
@@ -112,6 +145,8 @@ func vct(name, size string, storageClass *string) corev1.PersistentVolumeClaim {
 	}
 }
 
+// hasEmptyDirVolume reports whether vols contains an emptyDir volume with the
+// given name.
 func hasEmptyDirVolume(vols []corev1.Volume, name string) bool {
 	for _, v := range vols {
 		if v.Name == name && v.EmptyDir != nil {

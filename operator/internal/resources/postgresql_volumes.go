@@ -54,8 +54,9 @@ func AlignPostgreSQLVolumeClaims(desired, existing *appsv1.StatefulSet) {
 }
 
 // VolumeClaimTemplatesMatch reports whether spec-requested VCTs are compatible
-// with the live StatefulSet. A nil storageClassName in the spec is treated as
-// a match so API-server defaulting does not look like a user change.
+// with the live StatefulSet. A nil storageClassName in the spec matches a live
+// defaulted class name so API-server defaulting is not treated as a user
+// change. It does not match a live explicit empty string.
 func VolumeClaimTemplatesMatch(requested, live []corev1.PersistentVolumeClaim) bool {
 	if len(requested) != len(live) {
 		return false
@@ -83,24 +84,35 @@ func DescribeVolumeClaimTemplates(vcts []corev1.PersistentVolumeClaim) string {
 		return "emptyDir (no persistent volume)"
 	}
 	size := vcts[0].Spec.Resources.Requests[corev1.ResourceStorage]
-	sc := "<default>"
-	if vcts[0].Spec.StorageClassName != nil && *vcts[0].Spec.StorageClassName != "" {
-		sc = *vcts[0].Spec.StorageClassName
-	}
+	sc := describeStorageClassName(vcts[0].Spec.StorageClassName)
 	return fmt.Sprintf("size %s, storageClassName %s", size.String(), sc)
 }
 
 // storageClassNamesMatch compares requested and live StorageClassName values.
-// A nil requested class matches any live value because the API server may
-// default the field on the live StatefulSet.
+// A nil requested class matches a live defaulted class name because the API
+// server may fill in the cluster default. It does not match a live explicit
+// empty string, which disables dynamic provisioning.
 func storageClassNamesMatch(requested, live *string) bool {
 	if requested == nil {
-		return true
+		return live == nil || *live != ""
 	}
 	if live == nil {
 		return false
 	}
 	return *requested == *live
+}
+
+// describeStorageClassName renders a StorageClassName pointer for logs and
+// status messages. Nil means the cluster default; an explicit empty string
+// disables dynamic provisioning.
+func describeStorageClassName(sc *string) string {
+	if sc == nil {
+		return "<default>"
+	}
+	if *sc == "" {
+		return "<none>"
+	}
+	return *sc
 }
 
 // volumeClaimTemplateNames returns the set of VolumeClaimTemplate names.
