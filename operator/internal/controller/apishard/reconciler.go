@@ -486,7 +486,9 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 // VolumeClaimTemplates onto desired so server-side apply does not attempt an
 // immutable field update. Persistence size, storage class, and emptyDir↔PVC
 // changes are ignored; StorageReady reports the mismatch instead of returning
-// an error that would requeue the whole APIShard.
+// an error that would requeue the whole APIShard. When no StatefulSet exists
+// yet, StorageReady is set True so first create is not left without a
+// condition.
 func (r *Reconciler) preservePostgreSQLVolumeClaimTemplates(
 	ctx context.Context,
 	shard *kubeshardv1alpha1.APIShard,
@@ -501,9 +503,16 @@ func (r *Reconciler) preservePostgreSQLVolumeClaimTemplates(
 	}, existing)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+				Type:               kubeshardv1alpha1.ConditionStorageReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             "VolumeClaimTemplateUnchanged",
+				Message:            "no existing PostgreSQL StatefulSet; applying requested volume claim templates",
+				ObservedGeneration: shard.Generation,
+			})
 			return nil
 		}
-		return fmt.Errorf("fetching existing StatefulSet: %w", err)
+		return fmt.Errorf("fetching existing statefulset: %w", err)
 	}
 
 	requestedVCTs := desired.Spec.VolumeClaimTemplates

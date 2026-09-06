@@ -2806,6 +2806,20 @@ var _ = Describe("preservePostgreSQLVolumeClaimTemplates", func() {
 		Expect(liveSize.String()).To(Equal("20Gi"))
 	})
 
+	It("should set StorageReady=True when creating the PostgreSQL StatefulSet", func() {
+		suffix := "create-" + randString(4)
+		shard := createPersistentPGShard(suffix, nil)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("VolumeClaimTemplateUnchanged"))
+	})
+
 	It("should set StorageReady=True when persistence size is unchanged", func() {
 		suffix := "same-" + randString(4)
 		shard := createPersistentPGShard(suffix, nil)
