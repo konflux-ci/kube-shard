@@ -19,7 +19,7 @@ package resources
 import (
 	"testing"
 
-	"github.com/onsi/gomega"
+	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,47 +31,47 @@ import (
 // TestAlignPostgreSQLVolumeClaims_PreservesLiveSize verifies that a larger
 // requested size is overwritten by the live VolumeClaimTemplate size.
 func TestAlignPostgreSQLVolumeClaims_PreservesLiveSize(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
+	g := NewGomegaWithT(t)
 	live := BuildPostgreSQLStatefulSet(persistentShard("20Gi"))
 	desired := BuildPostgreSQLStatefulSet(persistentShard("100Gi"))
 
 	AlignPostgreSQLVolumeClaims(desired, live)
 
-	g.Expect(desired.Spec.VolumeClaimTemplates).To(gomega.HaveLen(1))
+	g.Expect(desired.Spec.VolumeClaimTemplates).To(HaveLen(1))
 	got := desired.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
-	g.Expect(got.String()).To(gomega.Equal("20Gi"))
+	g.Expect(got.String()).To(Equal("20Gi"))
 }
 
 // TestAlignPostgreSQLVolumeClaims_EmptyDirToPersistenceKeepsEmptyDir verifies
 // that enabling persistence on an emptyDir StatefulSet does not add a VCT.
 func TestAlignPostgreSQLVolumeClaims_EmptyDirToPersistenceKeepsEmptyDir(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
+	g := NewGomegaWithT(t)
 	live := BuildPostgreSQLStatefulSet(emptyDirShard())
 	desired := BuildPostgreSQLStatefulSet(persistentShard("20Gi"))
 
 	AlignPostgreSQLVolumeClaims(desired, live)
 
-	g.Expect(desired.Spec.VolumeClaimTemplates).To(gomega.BeEmpty())
-	g.Expect(hasEmptyDirVolume(desired.Spec.Template.Spec.Volumes, dataVolumeName)).To(gomega.BeTrue())
+	g.Expect(desired.Spec.VolumeClaimTemplates).To(BeEmpty())
+	g.Expect(hasEmptyDirVolume(desired.Spec.Template.Spec.Volumes, dataVolumeName)).To(BeTrue())
 }
 
 // TestAlignPostgreSQLVolumeClaims_PersistenceToEmptyDirKeepsVCT verifies that
 // removing persistence keeps the live VolumeClaimTemplate.
 func TestAlignPostgreSQLVolumeClaims_PersistenceToEmptyDirKeepsVCT(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
+	g := NewGomegaWithT(t)
 	live := BuildPostgreSQLStatefulSet(persistentShard("20Gi"))
 	desired := BuildPostgreSQLStatefulSet(emptyDirShard())
 
 	AlignPostgreSQLVolumeClaims(desired, live)
 
-	g.Expect(desired.Spec.VolumeClaimTemplates).To(gomega.HaveLen(1))
-	g.Expect(hasEmptyDirVolume(desired.Spec.Template.Spec.Volumes, dataVolumeName)).To(gomega.BeFalse())
+	g.Expect(desired.Spec.VolumeClaimTemplates).To(HaveLen(1))
+	g.Expect(hasEmptyDirVolume(desired.Spec.Template.Spec.Volumes, dataVolumeName)).To(BeFalse())
 }
 
 // TestVolumeClaimTemplatesMatch covers size and storage-class comparison,
 // including nil versus explicit empty storageClassName.
 func TestVolumeClaimTemplatesMatch(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
+	g := NewGomegaWithT(t)
 	twenty := vct("20Gi", nil)
 	hundred := vct("100Gi", nil)
 	withClass := vct("20Gi", ptr.To("gp3"))
@@ -80,33 +80,33 @@ func TestVolumeClaimTemplatesMatch(t *testing.T) {
 		return []corev1.PersistentVolumeClaim{c}
 	}
 
-	g.Expect(VolumeClaimTemplatesMatch(nil, nil)).To(gomega.BeTrue())
-	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(twenty))).To(gomega.BeTrue())
-	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(hundred))).To(gomega.BeFalse())
-	g.Expect(VolumeClaimTemplatesMatch(nil, one(twenty))).To(gomega.BeFalse())
-	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(withClass))).To(gomega.BeTrue(),
+	g.Expect(VolumeClaimTemplatesMatch(nil, nil)).To(BeTrue())
+	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(twenty))).To(BeTrue())
+	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(hundred))).To(BeFalse())
+	g.Expect(VolumeClaimTemplatesMatch(nil, one(twenty))).To(BeFalse())
+	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(withClass))).To(BeTrue(),
 		"nil requested storage class must ignore live defaulting")
-	g.Expect(VolumeClaimTemplatesMatch(one(withClass), one(twenty))).To(gomega.BeFalse())
-	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(none))).To(gomega.BeFalse(),
+	g.Expect(VolumeClaimTemplatesMatch(one(withClass), one(twenty))).To(BeFalse())
+	g.Expect(VolumeClaimTemplatesMatch(one(twenty), one(none))).To(BeFalse(),
 		"nil requested class must not match a live explicit empty class")
-	g.Expect(VolumeClaimTemplatesMatch(one(none), one(none))).To(gomega.BeTrue())
+	g.Expect(VolumeClaimTemplatesMatch(one(none), one(none))).To(BeTrue())
 }
 
 // TestDescribeVolumeClaimTemplates distinguishes omitted, empty, and named
 // storage classes in status text.
 func TestDescribeVolumeClaimTemplates(t *testing.T) {
-	g := gomega.NewGomegaWithT(t)
+	g := NewGomegaWithT(t)
 
-	g.Expect(DescribeVolumeClaimTemplates(nil)).To(gomega.Equal("emptyDir (no persistent volume)"))
+	g.Expect(DescribeVolumeClaimTemplates(nil)).To(Equal("emptyDir (no persistent volume)"))
 	g.Expect(DescribeVolumeClaimTemplates([]corev1.PersistentVolumeClaim{
 		vct("20Gi", nil),
-	})).To(gomega.ContainSubstring("storageClassName <default>"))
+	})).To(ContainSubstring("storageClassName <default>"))
 	g.Expect(DescribeVolumeClaimTemplates([]corev1.PersistentVolumeClaim{
 		vct("20Gi", ptr.To("")),
-	})).To(gomega.ContainSubstring("storageClassName <none>"))
+	})).To(ContainSubstring("storageClassName <none>"))
 	g.Expect(DescribeVolumeClaimTemplates([]corev1.PersistentVolumeClaim{
 		vct("20Gi", ptr.To("gp3")),
-	})).To(gomega.ContainSubstring("storageClassName gp3"))
+	})).To(ContainSubstring("storageClassName gp3"))
 }
 
 // persistentShard returns an APIShard with InClusterPostgreSQL persistence
