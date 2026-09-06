@@ -613,6 +613,17 @@ func (r *Reconciler) applyOTelCollector(
 		return fmt.Errorf("otel collector service: %w", err)
 	}
 
+	// The PostgreSQL metrics ServiceMonitor is created here alongside the
+	// other OTel Collector resources so that a failure stays non-blocking
+	// (reconcilePostgreSQLMetrics sets MonitoringDegraded instead of
+	// halting reconciliation).
+	if r.ServiceMonitorAvailable {
+		pgSM := resources.BuildPostgreSQLMetricsServiceMonitor(shard)
+		if err := tc.ApplyOwned(ctx, pgSM); err != nil {
+			return fmt.Errorf("postgresql metrics service monitor: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -988,14 +999,6 @@ func (r *Reconciler) reconcileMetrics(
 	rb := resources.BuildPrometheusDiscoveryRoleBinding(shard)
 	if err := tc.ApplyOwned(ctx, rb); err != nil {
 		return fmt.Errorf("prometheus discovery role binding: %w", err)
-	}
-
-	if resources.StorageMonitoringEnabled(shard) &&
-		shard.Spec.Storage.Type != kubeshardv1alpha1.StorageTypeSQLite {
-		pgSM := resources.BuildPostgreSQLMetricsServiceMonitor(shard)
-		if err := tc.ApplyOwned(ctx, pgSM); err != nil {
-			return fmt.Errorf("postgresql metrics service monitor: %w", err)
-		}
 	}
 
 	return nil

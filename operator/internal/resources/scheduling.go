@@ -13,13 +13,15 @@ const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelComponent = "app.kubernetes.io/component"
 
-	ManagedByValue     = "kube-shard-operator"
-	ComponentAPIServer = "apiserver"
-	ComponentStorage   = "storage"
-	ComponentDatabase  = "database"
+	ManagedByValue      = "kube-shard-operator"
+	ComponentAPIServer  = "apiserver"
+	ComponentStorage    = "storage"
+	ComponentDatabase   = "database"
+	ComponentMonitoring = "monitoring"
 
-	NameKine      = "kine"
-	NameAPIServer = "kube-apiserver"
+	NameKine          = "kine"
+	NameAPIServer     = "kube-apiserver"
+	NameOTelCollector = "otel-collector"
 
 	CACertKey = "ca.crt"
 

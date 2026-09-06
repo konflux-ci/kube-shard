@@ -18,6 +18,7 @@ package resources
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -37,9 +38,6 @@ const (
 	OTelMetricsPort           int32 = 9187
 	OTelHealthPort            int32 = 13133
 	OTelMetricsPortName             = "otel-metrics"
-
-	NameOTelCollector   = "otel-collector"
-	ComponentMonitoring = "monitoring"
 
 	defaultCollectionInterval = "30s"
 	defaultBloatInterval      = "5m"
@@ -63,11 +61,6 @@ func OTelCollectorServiceName(shard *kubeshardv1alpha1.APIShard) string {
 // (used as input to the hashed configmap utility).
 func OTelCollectorConfigMapBaseName(shard *kubeshardv1alpha1.APIShard) string {
 	return fmt.Sprintf("%s-postgresql-metrics-config", shard.Name)
-}
-
-// PostgreSQLInitConfigMapName returns the name of the init script ConfigMap.
-func PostgreSQLInitConfigMapName(shard *kubeshardv1alpha1.APIShard) string {
-	return fmt.Sprintf("%s-postgresql-init", shard.Name)
 }
 
 // OTelConnectionParams holds parsed PostgreSQL connection parameters
@@ -100,13 +93,15 @@ func BuildOTelCollectorConfig(shard *kubeshardv1alpha1.APIShard, params OTelConn
 		}
 	}
 
+	endpoint := net.JoinHostPort(params.Host, params.Port)
+
 	return fmt.Sprintf(`extensions:
   health_check:
     endpoint: "0.0.0.0:%d"
 
 receivers:
   postgresql:
-    endpoint: %s:%s
+    endpoint: %s
     username: ${env:PG_USERNAME}
     password: ${env:PG_PASSWORD}
     databases: [%s]
@@ -117,7 +112,7 @@ receivers:
 
   sqlquery:
     driver: postgres
-    datasource: "host='%s' port=%s user='${env:PG_USERNAME}' password='${env:PG_PASSWORD}' dbname='%s' sslmode=verify-full sslrootcert=%s"
+    datasource: "host='%s' port='%s' user='${env:PG_USERNAME}' password='${env:PG_PASSWORD}' dbname='%s' sslmode=verify-full sslrootcert=%s"
     collection_interval: %s
     queries:
       - sql: |
@@ -165,7 +160,7 @@ service:
       exporters: [prometheus]
 `,
 		OTelHealthPort,
-		params.Host, params.Port,
+		endpoint,
 		params.DBName,
 		collectionInterval,
 		otelCACertFile,
@@ -356,26 +351,6 @@ func BuildOTelCollectorService(shard *kubeshardv1alpha1.APIShard) *corev1.Servic
 	}
 }
 
-// BuildPostgreSQLInitConfigMap creates a ConfigMap containing the SQL init script
-// that creates the pgstattuple extension. This is mounted into the PostgreSQL
-// container at /docker-entrypoint-initdb.d/ and runs on first database startup.
-func BuildPostgreSQLInitConfigMap(shard *kubeshardv1alpha1.APIShard) *corev1.ConfigMap {
-	return &corev1.ConfigMap{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "ConfigMap",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      PostgreSQLInitConfigMapName(shard),
-			Namespace: shard.Spec.TargetNamespace,
-			Labels:    postgresLabels(shard),
-		},
-		Data: map[string]string{
-			"init-pgstattuple.sql": "CREATE EXTENSION IF NOT EXISTS pgstattuple;\n",
-		},
-	}
-}
-
 // InClusterPostgreSQLConnectionParams returns the OTel connection parameters
 // for the in-cluster PostgreSQL instance.
 func InClusterPostgreSQLConnectionParams(shard *kubeshardv1alpha1.APIShard) OTelConnectionParams {
@@ -426,9 +401,30 @@ func ParsePostgreSQLDSN(dsn string) (OTelConnectionParams, error) {
 		params.Port = port
 	}
 
+	// Validate port contains only digits.
+	for _, c := range params.Port {
+		if c < '0' || c > '9' {
+			return params, fmt.Errorf("invalid DSN: port %q contains non-digit characters", params.Port)
+		}
+	}
+
 	dbName := strings.TrimPrefix(u.Path, "/")
 	if dbName != "" {
 		params.DBName = dbName
+	}
+
+	// Reject values that could inject YAML when interpolated into the
+	// OTel Collector config template (e.g. newlines from %-encoded DSNs).
+	for _, check := range []struct {
+		name, value string
+	}{
+		{"host", params.Host},
+		{"dbname", params.DBName},
+		{"user", params.User},
+	} {
+		if strings.ContainsAny(check.value, "\n\r") {
+			return params, fmt.Errorf("invalid DSN: %s contains newline characters", check.name)
+		}
 	}
 
 	return params, nil

@@ -333,3 +333,28 @@ func persistenceFromShard(shard *kubeshardv1alpha1.APIShard) *kubeshardv1alpha1.
 func StorageMonitoringEnabled(shard *kubeshardv1alpha1.APIShard) bool {
 	return shard.Spec.Storage.Monitoring != nil && shard.Spec.Storage.Monitoring.Enabled
 }
+
+// PostgreSQLInitConfigMapName returns the name of the init script ConfigMap.
+func PostgreSQLInitConfigMapName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-postgresql-init", shard.Name)
+}
+
+// BuildPostgreSQLInitConfigMap creates a ConfigMap containing the SQL init script
+// that creates the pgstattuple extension. This is mounted into the PostgreSQL
+// container at /docker-entrypoint-initdb.d/ and runs on first database startup.
+func BuildPostgreSQLInitConfigMap(shard *kubeshardv1alpha1.APIShard) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      PostgreSQLInitConfigMapName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+			Labels:    postgresLabels(shard),
+		},
+		Data: map[string]string{
+			"init-pgstattuple.sql": "CREATE EXTENSION IF NOT EXISTS pgstattuple;\n",
+		},
+	}
+}

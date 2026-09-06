@@ -308,6 +308,40 @@ func TestParsePostgreSQLDSN_WhitespaceTrimmed(t *testing.T) {
 	g.Expect(params.Host).To(Equal("host"))
 }
 
+func TestParsePostgreSQLDSN_NewlineInDBName(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	_, err := ParsePostgreSQLDSN("postgres://user:pass@host/db%0Ainjected")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("newline"))
+}
+
+func TestParsePostgreSQLDSN_NonDigitPort(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	_, err := ParsePostgreSQLDSN("postgres://user:pass@host:abc/db")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("invalid port"))
+}
+
+func TestBuildOTelCollectorConfig_IPv6Endpoint(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Monitoring = &kubeshardv1alpha1.StorageMonitoringSpec{Enabled: true}
+
+	params := OTelConnectionParams{
+		Host:             "::1",
+		Port:             "5432",
+		User:             "testuser",
+		DBName:           "testdb",
+		CACertSecretName: "ca-secret",
+	}
+
+	config := BuildOTelCollectorConfig(shard, params)
+	g.Expect(config).To(ContainSubstring("endpoint: [::1]:5432"),
+		"IPv6 address must be bracketed in the endpoint")
+}
+
 func TestInClusterPostgreSQLConnectionParams(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()
