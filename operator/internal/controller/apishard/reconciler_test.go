@@ -2688,3 +2688,245 @@ var _ = Describe("syncCRDsToSecondary", func() {
 		Expect(err.Error()).To(ContainSubstring("get CRD nonexistent.synctest.example.com from primary"))
 	})
 })
+
+var _ = Describe("preservePostgreSQLVolumeClaimTemplates", func() {
+	var reconciler *Reconciler
+
+	BeforeEach(func() {
+		reconciler = &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+	})
+
+	// createPersistentPGShard creates an APIShard with InClusterPostgreSQL
+	// persistence at 20Gi in a unique namespace.
+	createPersistentPGShard := func(suffix string, storageClass *string) *kubeshardv1alpha1.APIShard {
+		nsName := "test-vct-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-vct-" + suffix,
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+					InCluster: &kubeshardv1alpha1.InClusterStorage{
+						Persistence: &kubeshardv1alpha1.PersistenceSpec{
+							Size:             resource.MustParse("20Gi"),
+							StorageClassName: storageClass,
+						},
+					},
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		return shard
+	}
+
+	getPostgreSQLStatefulSet := func(shard *kubeshardv1alpha1.APIShard) *appsv1.StatefulSet {
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.PostgreSQLStatefulSetName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+		}, sts)).To(Succeed())
+		return sts
+	}
+
+	It("should preserve the live VCT and set StorageReady=False when persistence size changes", func() {
+		suffix := "size-" + randString(4)
+		shard := createPersistentPGShard(suffix, nil)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		sts := getPostgreSQLStatefulSet(shard)
+		Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+		origSize := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(origSize.String()).To(Equal("20Gi"))
+
+		shard.Spec.Storage.InCluster.Persistence.Size = resource.MustParse("100Gi")
+		tc = newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		sts = getPostgreSQLStatefulSet(shard)
+		liveSize := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(liveSize.String()).To(Equal("20Gi"))
+
+		cond := meta.FindStatusCondition(
+			shard.Status.Conditions,
+			kubeshardv1alpha1.ConditionStorageReady,
+		)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("VolumeClaimTemplateImmutable"))
+		Expect(cond.Message).To(ContainSubstring("20Gi"))
+		Expect(cond.Message).To(ContainSubstring("100Gi"))
+	})
+
+	It("should set StorageReady=True when the spec is restored to the live VCT size", func() {
+		suffix := "restore-" + randString(4)
+		shard := createPersistentPGShard(suffix, nil)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		shard.Spec.Storage.InCluster.Persistence.Size = resource.MustParse("100Gi")
+		tc = newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+
+		shard.Spec.Storage.InCluster.Persistence.Size = resource.MustParse("20Gi")
+		tc = newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		cond = meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("VolumeClaimTemplateUnchanged"))
+
+		sts := getPostgreSQLStatefulSet(shard)
+		liveSize := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(liveSize.String()).To(Equal("20Gi"))
+	})
+
+	It("should set StorageReady=True when persistence size is unchanged", func() {
+		suffix := "same-" + randString(4)
+		shard := createPersistentPGShard(suffix, nil)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+		tc = newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("VolumeClaimTemplateUnchanged"))
+	})
+
+	It("should preserve the live storage class and set StorageReady=False when it changes", func() {
+		suffix := "sc-" + randString(4)
+		original := "original-sc"
+		shard := createPersistentPGShard(suffix, &original)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		updated := "updated-sc"
+		shard.Spec.Storage.InCluster.Persistence.StorageClassName = &updated
+		tc = newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		sts := getPostgreSQLStatefulSet(shard)
+		Expect(sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName).NotTo(BeNil())
+		Expect(*sts.Spec.VolumeClaimTemplates[0].Spec.StorageClassName).To(Equal("original-sc"))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("VolumeClaimTemplateImmutable"))
+		Expect(cond.Message).To(ContainSubstring("original-sc"))
+		Expect(cond.Message).To(ContainSubstring("updated-sc"))
+	})
+
+	It("should not add a VCT when persistence is enabled on an emptyDir StatefulSet", func() {
+		suffix := "addir-" + randString(4)
+		nsName := "test-vct-" + suffix
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		_ = k8sClient.Create(ctx, ns)
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-vct-" + suffix},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type:      kubeshardv1alpha1.StorageTypeInClusterPostgreSQL,
+					InCluster: &kubeshardv1alpha1.InClusterStorage{},
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+		sts := getPostgreSQLStatefulSet(shard)
+		Expect(sts.Spec.VolumeClaimTemplates).To(BeEmpty())
+
+		shard.Spec.Storage.InCluster.Persistence = &kubeshardv1alpha1.PersistenceSpec{
+			Size: resource.MustParse("20Gi"),
+		}
+		tc = newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		sts = getPostgreSQLStatefulSet(shard)
+		Expect(sts.Spec.VolumeClaimTemplates).To(BeEmpty())
+		hasDataEmptyDir := false
+		for _, v := range sts.Spec.Template.Spec.Volumes {
+			if v.Name == "data" && v.EmptyDir != nil {
+				hasDataEmptyDir = true
+			}
+		}
+		Expect(hasDataEmptyDir).To(BeTrue())
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("VolumeClaimTemplateImmutable"))
+		Expect(cond.Message).To(ContainSubstring("emptyDir"))
+		Expect(cond.Message).To(ContainSubstring("20Gi"))
+	})
+
+	It("should keep the live VCT when persistence is removed", func() {
+		suffix := "rmdir-" + randString(4)
+		shard := createPersistentPGShard(suffix, nil)
+		defer func() { _ = k8sClient.Delete(ctx, shard) }()
+
+		tc := newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		shard.Spec.Storage.InCluster.Persistence = nil
+		tc = newTrackingClient(shard)
+		Expect(reconciler.reconcileInClusterPostgreSQL(ctx, tc, shard)).To(Succeed())
+
+		sts := getPostgreSQLStatefulSet(shard)
+		Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+		liveSize := sts.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]
+		Expect(liveSize.String()).To(Equal("20Gi"))
+
+		cond := meta.FindStatusCondition(shard.Status.Conditions, kubeshardv1alpha1.ConditionStorageReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("VolumeClaimTemplateImmutable"))
+		Expect(cond.Message).To(ContainSubstring("emptyDir"))
+		Expect(cond.Message).To(ContainSubstring("20Gi"))
+	})
+})

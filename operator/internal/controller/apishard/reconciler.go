@@ -463,6 +463,13 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 		sts.Spec.Template.Spec.SecurityContext.RunAsUser = ptr.To(int64(999))
 		sts.Spec.Template.Spec.SecurityContext.FSGroup = ptr.To(int64(999))
 	}
+
+	// VolumeClaimTemplates are immutable. Preserve the live templates so a
+	// spec change cannot fail the apply and block the rest of reconcile.
+	if err := r.preservePostgreSQLVolumeClaimTemplates(ctx, shard, sts); err != nil {
+		return fmt.Errorf("preserving postgresql volume claim templates: %w", err)
+	}
+
 	if err := tc.ApplyOwned(ctx, sts); err != nil {
 		return fmt.Errorf("postgresql statefulset: %w", err)
 	}
@@ -472,6 +479,63 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 		return fmt.Errorf("postgresql service: %w", err)
 	}
 
+	return nil
+}
+
+// preservePostgreSQLVolumeClaimTemplates copies the live StatefulSet's
+// VolumeClaimTemplates onto desired so server-side apply does not attempt an
+// immutable field update. Persistence size, storage class, and emptyDir↔PVC
+// changes are ignored; StorageReady reports the mismatch instead of returning
+// an error that would requeue the whole APIShard.
+func (r *Reconciler) preservePostgreSQLVolumeClaimTemplates(
+	ctx context.Context,
+	shard *kubeshardv1alpha1.APIShard,
+	desired *appsv1.StatefulSet,
+) error {
+	logger := log.FromContext(ctx)
+
+	existing := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      desired.Name,
+		Namespace: desired.Namespace,
+	}, existing)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("fetching existing StatefulSet: %w", err)
+	}
+
+	requestedVCTs := desired.Spec.VolumeClaimTemplates
+	resources.AlignPostgreSQLVolumeClaims(desired, existing)
+
+	if resources.VolumeClaimTemplatesMatch(requestedVCTs, existing.Spec.VolumeClaimTemplates) {
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionStorageReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             "VolumeClaimTemplateUnchanged",
+			Message:            "PostgreSQL volume claim templates match the live StatefulSet",
+			ObservedGeneration: shard.Generation,
+		})
+		return nil
+	}
+
+	logger.Info("ignoring PostgreSQL volumeClaimTemplates change; field is immutable",
+		"live", resources.DescribeVolumeClaimTemplates(existing.Spec.VolumeClaimTemplates),
+		"requested", resources.DescribeVolumeClaimTemplates(requestedVCTs),
+	)
+	meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+		Type:   kubeshardv1alpha1.ConditionStorageReady,
+		Status: metav1.ConditionFalse,
+		Reason: "VolumeClaimTemplateImmutable",
+		Message: fmt.Sprintf(
+			"volumeClaimTemplates are immutable; live %s, spec requested %s. "+
+				"Update the APIShard to match the live volume or recreate the shard.",
+			resources.DescribeVolumeClaimTemplates(existing.Spec.VolumeClaimTemplates),
+			resources.DescribeVolumeClaimTemplates(requestedVCTs),
+		),
+		ObservedGeneration: shard.Generation,
+	})
 	return nil
 }
 
