@@ -130,7 +130,7 @@ receivers:
           FROM (
             SELECT (pgstattuple(oid)).*
             FROM pg_class
-            WHERE relkind = 'r'
+            WHERE relkind IN ('r', 't')
               AND relnamespace NOT IN (
                 SELECT oid FROM pg_namespace
                 WHERE nspname IN ('pg_catalog', 'information_schema')
