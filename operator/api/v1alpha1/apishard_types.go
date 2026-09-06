@@ -35,11 +35,48 @@ type APIGroupSpec struct {
 	Versions []string `json:"versions"`
 }
 
+// +kubebuilder:validation:XValidation:rule="self.type != 'PostgreSQL' || !has(self.connectionSecretRef) || self.connectionSecretRef.key.size() > 0",message="connectionSecretRef.key is required when storage type is PostgreSQL"
 type StorageSpec struct {
 	// +kubebuilder:validation:Enum=SQLite;InClusterPostgreSQL;PostgreSQL
-	Type                StorageType         `json:"type"`
-	ConnectionSecretRef *SecretKeyReference `json:"connectionSecretRef,omitempty"`
-	InCluster           *InClusterStorage   `json:"inCluster,omitempty"`
+	Type                StorageType            `json:"type"`
+	ConnectionSecretRef *SecretKeyReference    `json:"connectionSecretRef,omitempty"`
+	InCluster           *InClusterStorage      `json:"inCluster,omitempty"`
+	Monitoring          *StorageMonitoringSpec `json:"monitoring,omitempty"`
+}
+
+// StorageMonitoringSpec configures metrics collection for the storage backend.
+// The operator deploys an OpenTelemetry Collector that scrapes the database and
+// exposes Prometheus metrics. The appropriate backend-specific section must match
+// the storage type; mismatched sections are ignored.
+type StorageMonitoringSpec struct {
+	// Enabled enables metrics collection for the storage backend.
+	Enabled bool `json:"enabled"`
+	// CollectionInterval for standard storage metrics. Default: "30s".
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="duration must be a valid non-negative Go duration"
+	CollectionInterval string `json:"collectionInterval,omitempty"`
+	// CACertSecret references a Secret containing the CA certificate used to
+	// verify the PostgreSQL server's TLS certificate. The Key field specifies
+	// which key in the Secret holds the certificate (defaults to "ca.crt").
+	// Required when storage type is PostgreSQL (external). For InClusterPostgreSQL
+	// the operator provisions TLS certificates automatically.
+	// +optional
+	CACertSecret *SecretKeyReference `json:"caCertSecret,omitempty"`
+	// PostgreSQL holds settings specific to PostgreSQL monitoring.
+	// Applicable when storage type is InClusterPostgreSQL or PostgreSQL.
+	// +optional
+	PostgreSQL *PostgreSQLMonitoringSpec `json:"postgresql,omitempty"`
+}
+
+// PostgreSQLMonitoringSpec contains PostgreSQL-specific monitoring settings.
+type PostgreSQLMonitoringSpec struct {
+	// BloatInterval controls how often reclaimable-space queries run (pgstattuple).
+	// This performs a full table scan so should not be too frequent. Default: "5m".
+	// For external PostgreSQL, the pgstattuple extension must be pre-installed
+	// by the database administrator.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="duration must be a valid non-negative Go duration"
+	BloatInterval string `json:"bloatInterval,omitempty"`
 }
 
 // SecretKeyReference identifies a specific key within a Secret.
@@ -47,8 +84,9 @@ type StorageSpec struct {
 type SecretKeyReference struct {
 	// Name of the Secret.
 	Name string `json:"name"`
-	// Key within the Secret that contains the Kine-compatible connection string.
-	Key string `json:"key"`
+	// Key within the Secret that holds the relevant data.
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 type InClusterStorage struct {

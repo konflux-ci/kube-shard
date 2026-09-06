@@ -842,14 +842,13 @@ spec:
                       The Secret must reside in the APIShard's targetNamespace (same namespace as Kine).
                     properties:
                       key:
-                        description: Key within the Secret that contains the Kine-compatible
-                          connection string.
+                        description: Key within the Secret that holds the relevant
+                          data.
                         type: string
                       name:
                         description: Name of the Secret.
                         type: string
                     required:
-                    - key
                     - name
                     type: object
                   inCluster:
@@ -935,6 +934,61 @@ spec:
                             type: object
                         type: object
                     type: object
+                  monitoring:
+                    description: |-
+                      StorageMonitoringSpec configures metrics collection for the storage backend.
+                      The operator deploys an OpenTelemetry Collector that scrapes the database and
+                      exposes Prometheus metrics. The appropriate backend-specific section must match
+                      the storage type; mismatched sections are ignored.
+                    properties:
+                      caCertSecret:
+                        description: |-
+                          CACertSecret references a Secret containing the CA certificate used to
+                          verify the PostgreSQL server's TLS certificate. The Key field specifies
+                          which key in the Secret holds the certificate (defaults to "ca.crt").
+                          Required when storage type is PostgreSQL (external). For InClusterPostgreSQL
+                          the operator provisions TLS certificates automatically.
+                        properties:
+                          key:
+                            description: Key within the Secret that holds the relevant
+                              data.
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      collectionInterval:
+                        description: 'CollectionInterval for standard storage metrics.
+                          Default: "30s".'
+                        type: string
+                        x-kubernetes-validations:
+                        - message: duration must be a valid non-negative Go duration
+                          rule: duration(self) >= duration('0s')
+                      enabled:
+                        description: Enabled enables metrics collection for the storage
+                          backend.
+                        type: boolean
+                      postgresql:
+                        description: |-
+                          PostgreSQL holds settings specific to PostgreSQL monitoring.
+                          Applicable when storage type is InClusterPostgreSQL or PostgreSQL.
+                        properties:
+                          bloatInterval:
+                            description: |-
+                              BloatInterval controls how often reclaimable-space queries run (pgstattuple).
+                              This performs a full table scan so should not be too frequent. Default: "5m".
+                              For external PostgreSQL, the pgstattuple extension must be pre-installed
+                              by the database administrator.
+                            type: string
+                            x-kubernetes-validations:
+                            - message: duration must be a valid non-negative Go duration
+                              rule: duration(self) >= duration('0s')
+                        type: object
+                    required:
+                    - enabled
+                    type: object
                   type:
                     enum:
                     - SQLite
@@ -944,6 +998,11 @@ spec:
                 required:
                 - type
                 type: object
+                x-kubernetes-validations:
+                - message: connectionSecretRef.key is required when storage type is
+                    PostgreSQL
+                  rule: self.type != 'PostgreSQL' || !has(self.connectionSecretRef)
+                    || self.connectionSecretRef.key.size() > 0
               targetNamespace:
                 type: string
             required:

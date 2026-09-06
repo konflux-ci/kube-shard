@@ -349,3 +349,37 @@ func BuildPrometheusDiscoveryRoleBinding(shard *kubeshardv1alpha1.APIShard) *rba
 		},
 	}
 }
+
+// BuildPostgreSQLMetricsServiceMonitor constructs a ServiceMonitor that scrapes
+// the OTel Collector's Prometheus exporter endpoint for PostgreSQL metrics.
+func BuildPostgreSQLMetricsServiceMonitor(shard *kubeshardv1alpha1.APIShard) *monitoringv1.ServiceMonitor {
+	return &monitoringv1.ServiceMonitor{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "monitoring.coreos.com/v1",
+			Kind:       "ServiceMonitor",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-postgresql-metrics", shard.Name),
+			Namespace: shard.Spec.TargetNamespace,
+			Labels: map[string]string{
+				LabelManagedBy: ManagedByValue,
+				LabelInstance:  shard.Name,
+			},
+		},
+		Spec: monitoringv1.ServiceMonitorSpec{
+			Selector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					LabelName:     NameOTelCollector,
+					LabelInstance: shard.Name,
+				},
+			},
+			Endpoints: []monitoringv1.Endpoint{
+				{
+					Port:     OTelMetricsPortName,
+					Path:     "/metrics",
+					Interval: metricsScrapeInterval,
+				},
+			},
+		},
+	}
+}

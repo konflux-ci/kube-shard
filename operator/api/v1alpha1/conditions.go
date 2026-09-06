@@ -40,6 +40,9 @@ const (
 
 	// ConditionReconciled indicates whether the last reconcile loop completed successfully.
 	ConditionReconciled = "Reconciled"
+
+	// ConditionMonitoringDegraded indicates that the storage metrics collector failed to deploy.
+	ConditionMonitoringDegraded = "MonitoringDegraded"
 )
 
 const (

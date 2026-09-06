@@ -13,15 +13,20 @@ const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelComponent = "app.kubernetes.io/component"
 
-	ManagedByValue     = "kube-shard-operator"
-	ComponentAPIServer = "apiserver"
-	ComponentStorage   = "storage"
-	ComponentDatabase  = "database"
+	ManagedByValue      = "kube-shard-operator"
+	ComponentAPIServer  = "apiserver"
+	ComponentStorage    = "storage"
+	ComponentDatabase   = "database"
+	ComponentMonitoring = "monitoring"
 
-	NameKine      = "kine"
-	NameAPIServer = "kube-apiserver"
+	NameKine          = "kine"
+	NameAPIServer     = "kube-apiserver"
+	NameOTelCollector = "otel-collector"
 
 	CACertKey = "ca.crt"
+
+	// LabelOTelConfig is used by the hashedconfigmap utility to track OTel Collector ConfigMaps.
+	LabelOTelConfig = "kube-shard.konflux-ci.dev/otel-config"
 )
 
 // isColocateEnabled returns true if component colocation is enabled for the shard.

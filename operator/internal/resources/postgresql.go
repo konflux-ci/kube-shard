@@ -32,6 +32,7 @@ import (
 )
 
 const (
+	// renovate: datasource=docker depName=registry.access.redhat.com/hi/postgresql
 	DefaultPostgreSQLImage      = "registry.access.redhat.com/hi/postgresql:18.4"
 	PostgreSQLPort              = 5432
 	postgresqlTLSVolumeName     = "postgresql-tls"
@@ -169,6 +170,25 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 		},
 	})
 
+	volumes = append(volumes, corev1.Volume{
+		Name: "init-scripts",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: PostgreSQLInitConfigMapName(shard),
+				},
+				Optional: ptr.To(true),
+			},
+		},
+	})
+	initVolumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "init-scripts",
+			MountPath: "/docker-entrypoint-initdb.d",
+			ReadOnly:  true,
+		},
+	}
+
 	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "apps/v1",
@@ -221,7 +241,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 								"-c", "ssl_ca_file=" + postgresqlTLSMountPath + "/ca.crt",
 							},
 							Resources: resourceReqs,
-							VolumeMounts: []corev1.VolumeMount{
+							VolumeMounts: append([]corev1.VolumeMount{
 								{
 									Name:      dataVolumeName,
 									MountPath: "/var/lib/postgresql/data",
@@ -235,7 +255,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 									MountPath: postgresqlTLSMountPath,
 									ReadOnly:  true,
 								},
-							},
+							}, initVolumeMounts...),
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									TCPSocket: &corev1.TCPSocketAction{
@@ -307,4 +327,34 @@ func persistenceFromShard(shard *kubeshardv1alpha1.APIShard) *kubeshardv1alpha1.
 		return nil
 	}
 	return shard.Spec.Storage.InCluster.Persistence
+}
+
+// StorageMonitoringEnabled returns true if storage monitoring is configured and enabled.
+func StorageMonitoringEnabled(shard *kubeshardv1alpha1.APIShard) bool {
+	return shard.Spec.Storage.Monitoring != nil && shard.Spec.Storage.Monitoring.Enabled
+}
+
+// PostgreSQLInitConfigMapName returns the name of the init script ConfigMap.
+func PostgreSQLInitConfigMapName(shard *kubeshardv1alpha1.APIShard) string {
+	return fmt.Sprintf("%s-postgresql-init", shard.Name)
+}
+
+// BuildPostgreSQLInitConfigMap creates a ConfigMap containing the SQL init script
+// that creates the pgstattuple extension. This is mounted into the PostgreSQL
+// container at /docker-entrypoint-initdb.d/ and runs on first database startup.
+func BuildPostgreSQLInitConfigMap(shard *kubeshardv1alpha1.APIShard) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      PostgreSQLInitConfigMapName(shard),
+			Namespace: shard.Spec.TargetNamespace,
+			Labels:    postgresLabels(shard),
+		},
+		Data: map[string]string{
+			"init-pgstattuple.sql": "CREATE EXTENSION IF NOT EXISTS pgstattuple;\n",
+		},
+	}
 }

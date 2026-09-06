@@ -61,9 +61,13 @@ func TestBuildPostgreSQLStatefulSet_WithPersistence_UsesVCT(t *testing.T) {
 
 	sts := BuildPostgreSQLStatefulSet(shard)
 
-	g.Expect(sts.Spec.Template.Spec.Volumes).To(HaveLen(2),
-		"tmp + postgresql-tls volumes expected when persistence is set (data via VCT)")
-	g.Expect(sts.Spec.Template.Spec.Volumes[0].Name).To(Equal("tmp"))
+	g.Expect(sts.Spec.Template.Spec.Volumes).To(HaveLen(3),
+		"tmp + postgresql-tls + init-scripts volumes expected when persistence is set (data via VCT)")
+	volumeNames := make([]string, len(sts.Spec.Template.Spec.Volumes))
+	for i, v := range sts.Spec.Template.Spec.Volumes {
+		volumeNames[i] = v.Name
+	}
+	g.Expect(volumeNames).To(ContainElements("tmp", postgresqlTLSVolumeName, "init-scripts"))
 
 	g.Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
 	vct := sts.Spec.VolumeClaimTemplates[0]
@@ -117,7 +121,8 @@ func TestBuildPostgreSQLStatefulSet_SecurityContext(t *testing.T) {
 	g.Expect(podSC).ToNot(BeNil())
 	g.Expect(*podSC.RunAsNonRoot).To(BeTrue())
 	g.Expect(podSC.RunAsUser).To(BeNil(), "RunAsUser must not be set so OpenShift can assign from the namespace range")
-	g.Expect(podSC.FSGroup).To(BeNil(), "FSGroup must not be set; OpenShift restricted-v2 assigns from the namespace range")
+	g.Expect(podSC.FSGroup).To(BeNil(),
+		"FSGroup must not be set; OpenShift restricted-v2 assigns from the namespace range")
 	g.Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
 
 	csc := sts.Spec.Template.Spec.Containers[0].SecurityContext

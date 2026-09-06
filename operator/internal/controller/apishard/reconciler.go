@@ -49,6 +49,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/konflux-ci/konflux-ci/operator/pkg/hashedconfigmap"
 	"github.com/konflux-ci/konflux-ci/operator/pkg/tracking"
 
 	kubeshardv1alpha1 "github.com/konflux-ci/kube-shard/operator/api/v1alpha1"
@@ -333,7 +334,14 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, tc *tracking.Client, 
 			return fmt.Errorf("external PostgreSQL: %w", err)
 		}
 	}
-	return r.reconcileKine(ctx, tc, shard)
+
+	if err := r.reconcileKine(ctx, tc, shard); err != nil {
+		return fmt.Errorf("kine: %w", err)
+	}
+
+	r.reconcilePostgreSQLMetrics(ctx, tc, shard)
+
+	return nil
 }
 
 // reconcileKine ensures the Kine deployment and service exist in the target namespace.
@@ -439,6 +447,11 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 		return fmt.Errorf("postgresql secret: %w", err)
 	}
 
+	initCM := resources.BuildPostgreSQLInitConfigMap(shard)
+	if err := tc.ApplyOwned(ctx, initCM); err != nil {
+		return fmt.Errorf("postgresql init configmap: %w", err)
+	}
+
 	sts := resources.BuildPostgreSQLStatefulSet(shard)
 	if !r.SCCAvailable {
 		// The PostgreSQL image sets USER postgres (non-numeric). Kubernetes
@@ -460,6 +473,191 @@ func (r *Reconciler) reconcileInClusterPostgreSQL(ctx context.Context, tc *track
 	}
 
 	return nil
+}
+
+// reconcilePostgreSQLMetrics deploys an OpenTelemetry Collector that collects
+// PostgreSQL metrics from the configured storage backend. It manages the
+// MonitoringDegraded status condition internally and never returns — monitoring
+// failures are non-blocking so they do not halt reconciliation.
+func (r *Reconciler) reconcilePostgreSQLMetrics(
+	ctx context.Context, tc *tracking.Client, shard *kubeshardv1alpha1.APIShard,
+) {
+	if !resources.StorageMonitoringEnabled(shard) {
+		meta.RemoveStatusCondition(&shard.Status.Conditions, kubeshardv1alpha1.ConditionMonitoringDegraded)
+		return
+	}
+
+	logger := log.FromContext(ctx)
+
+	var err error
+	switch shard.Spec.Storage.Type {
+	case kubeshardv1alpha1.StorageTypeSQLite:
+		logger.Info("Storage monitoring enabled but storage type is SQLite; skipping PostgreSQL metrics collector")
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionMonitoringDegraded,
+			Status:             metav1.ConditionTrue,
+			Reason:             "UnsupportedStorageType",
+			Message:            "Storage monitoring is not supported for SQLite; disable monitoring.enabled or switch to PostgreSQL",
+			ObservedGeneration: shard.Generation,
+		})
+		return
+
+	case kubeshardv1alpha1.StorageTypeInClusterPostgreSQL:
+		params := resources.InClusterPostgreSQLConnectionParams(shard)
+		params.CACertSecretName = certs.PostgreSQLCASecretName(shard)
+		params.CACertSecretKey = "ca.crt"
+		credentialSecret := resources.PostgreSQLSecretName(shard)
+		err = r.applyOTelCollector(ctx, tc, shard, params, credentialSecret)
+
+	case kubeshardv1alpha1.StorageTypePostgreSQL:
+		ref := shard.Spec.Storage.ConnectionSecretRef
+		if ref == nil {
+			err = fmt.Errorf("storage.monitoring enabled but connectionSecretRef is not set")
+			break
+		}
+
+		secret := &corev1.Secret{}
+		if err = r.Get(ctx, types.NamespacedName{
+			Name:      ref.Name,
+			Namespace: shard.Spec.TargetNamespace,
+		}, secret); err != nil {
+			err = fmt.Errorf("reading connection secret for metrics: %w", err)
+			break
+		}
+
+		dsn := string(secret.Data[ref.Key])
+		params, parseErr := resources.ParsePostgreSQLDSN(dsn)
+		if parseErr != nil {
+			err = fmt.Errorf("parsing DSN for metrics collector: %w", parseErr)
+			break
+		}
+
+		if shard.Spec.Storage.Monitoring.CACertSecret == nil {
+			err = fmt.Errorf("caCertSecret must be set in spec.storage.monitoring for external PostgreSQL")
+			break
+		}
+		params.CACertSecretName = shard.Spec.Storage.Monitoring.CACertSecret.Name
+		params.CACertSecretKey = shard.Spec.Storage.Monitoring.CACertSecret.Key
+
+		credentialSecret, secretErr := r.ensureOTelCredentialSecret(ctx, tc, shard, params)
+		if secretErr != nil {
+			err = secretErr
+			break
+		}
+		err = r.applyOTelCollector(ctx, tc, shard, params, credentialSecret)
+	}
+
+	if err != nil {
+		logger.Error(err, "Non-critical: failed to reconcile PostgreSQL metrics collector")
+		meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+			Type:               kubeshardv1alpha1.ConditionMonitoringDegraded,
+			Status:             metav1.ConditionTrue,
+			Reason:             "MetricsCollectorFailed",
+			Message:            fmt.Sprintf("Failed to deploy metrics collector: %v", err),
+			ObservedGeneration: shard.Generation,
+		})
+		return
+	}
+
+	meta.SetStatusCondition(&shard.Status.Conditions, metav1.Condition{
+		Type:               kubeshardv1alpha1.ConditionMonitoringDegraded,
+		Status:             metav1.ConditionFalse,
+		Reason:             "MetricsCollectorHealthy",
+		Message:            "PostgreSQL metrics collector is deployed",
+		ObservedGeneration: shard.Generation,
+	})
+}
+
+// applyOTelCollector creates or updates the OTel Collector ConfigMap (with content hash),
+// Deployment, and Service. Uses hashedconfigmap so pods automatically restart on config change.
+func (r *Reconciler) applyOTelCollector(
+	ctx context.Context,
+	tc *tracking.Client,
+	shard *kubeshardv1alpha1.APIShard,
+	params resources.OTelConnectionParams,
+	credentialSecretName string,
+) error {
+	configContent := resources.BuildOTelCollectorConfig(shard, params)
+	baseName := resources.OTelCollectorConfigMapBaseName(shard)
+
+	hcm := hashedconfigmap.New(
+		r.Client,
+		r.Scheme,
+		baseName,
+		shard.Spec.TargetNamespace,
+		"config.yaml",
+		resources.LabelOTelConfig,
+		fieldManager,
+	)
+
+	result, err := hcm.Apply(ctx, configContent, shard)
+	if err != nil {
+		return fmt.Errorf("otel collector configmap: %w", err)
+	}
+
+	// Register the hashed ConfigMap with the tracking client so that
+	// CleanupOrphans deletes it automatically when monitoring is disabled
+	// (the ConfigMap won't be tracked that cycle → treated as orphan).
+	result.ConfigMap.SetManagedFields(nil)
+	if err := tc.ApplyOwned(ctx, result.ConfigMap); err != nil {
+		return fmt.Errorf("otel collector configmap tracking: %w", err)
+	}
+
+	deploy := resources.BuildOTelCollectorDeployment(shard, credentialSecretName, result.ConfigMapName, params)
+	if err := tc.ApplyOwned(ctx, deploy); err != nil {
+		return fmt.Errorf("otel collector deployment: %w", err)
+	}
+
+	svc := resources.BuildOTelCollectorService(shard)
+	if err := tc.ApplyOwned(ctx, svc); err != nil {
+		return fmt.Errorf("otel collector service: %w", err)
+	}
+
+	// The PostgreSQL metrics ServiceMonitor is created here alongside the
+	// other OTel Collector resources so that a failure stays non-blocking
+	// (reconcilePostgreSQLMetrics sets MonitoringDegraded instead of
+	// halting reconciliation).
+	if r.ServiceMonitorAvailable {
+		pgSM := resources.BuildPostgreSQLMetricsServiceMonitor(shard)
+		if err := tc.ApplyOwned(ctx, pgSM); err != nil {
+			return fmt.Errorf("postgresql metrics service monitor: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ensureOTelCredentialSecret creates a derived Secret with POSTGRES_USER and
+// POSTGRES_PASSWORD extracted from the external DSN, suitable for the OTel
+// Collector's env var references. Returns the Secret name.
+func (r *Reconciler) ensureOTelCredentialSecret(
+	ctx context.Context,
+	tc *tracking.Client,
+	shard *kubeshardv1alpha1.APIShard,
+	params resources.OTelConnectionParams,
+) (string, error) {
+	secretName := fmt.Sprintf("%s-postgresql-metrics-credentials", shard.Name)
+
+	secret := &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Secret",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: shard.Spec.TargetNamespace,
+		},
+		StringData: map[string]string{
+			"POSTGRES_USER":     params.User,
+			"POSTGRES_PASSWORD": params.Password,
+		},
+	}
+
+	if err := tc.ApplyOwned(ctx, secret); err != nil {
+		return "", fmt.Errorf("otel credential secret: %w", err)
+	}
+
+	return secretName, nil
 }
 
 // validateExternalPostgreSQLSecret checks that the user-provided Secret exists
