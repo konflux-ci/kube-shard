@@ -726,12 +726,12 @@ spec:
 				out, err := curlOTelMetrics("curl-otel-bloat", pgShardNamespace, metricsURL)
 				g.Expect(err).NotTo(HaveOccurred(),
 					"curl failed; output: %s", out)
-				g.Expect(out).To(ContainSubstring("postgresql_reclaimable_bytes"),
-					"expected reclaimable_bytes bloat metric")
-				g.Expect(out).To(ContainSubstring("postgresql_live_bytes"),
-					"expected live_bytes bloat metric")
-				g.Expect(out).To(ContainSubstring("postgresql_total_table_bytes"),
-					"expected total_table_bytes bloat metric")
+				g.Expect(out).To(ContainSubstring("postgresql_tables_reclaimable_bytes"),
+					"expected tables_reclaimable_bytes bloat metric")
+				g.Expect(out).To(ContainSubstring("postgresql_tables_live_bytes"),
+					"expected tables_live_bytes bloat metric")
+				g.Expect(out).To(ContainSubstring("postgresql_tables_size_bytes"),
+					"expected tables_size_bytes bloat metric")
 			}, 5*time.Minute, 15*time.Second).Should(Succeed())
 		})
 	})

@@ -137,21 +137,21 @@ receivers:
               )
           ) t
         metrics:
-          - metric_name: postgresql.reclaimable_bytes
+          - metric_name: postgresql.tables_reclaimable_bytes
             value_column: reclaimable_bytes
             data_type: gauge
             value_type: int
-            description: "Bytes reclaimable by VACUUM FULL (dead tuples + free space)"
-          - metric_name: postgresql.live_bytes
+            description: "Bytes reclaimable by VACUUM FULL across all user tables (dead tuples + free space)"
+          - metric_name: postgresql.tables_live_bytes
             value_column: live_bytes
             data_type: gauge
             value_type: int
-            description: "Bytes used by live tuples"
-          - metric_name: postgresql.total_table_bytes
+            description: "Bytes used by live tuples across all user tables"
+          - metric_name: postgresql.tables_size_bytes
             value_column: total_table_bytes
             data_type: gauge
             value_type: int
-            description: "Total table bytes on disk (live + dead + free)"
+            description: "Total bytes on disk across all user tables (live + dead + free)"
 
 exporters:
   prometheus:
