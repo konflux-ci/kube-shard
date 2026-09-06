@@ -181,7 +181,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
-	// Ensure target namespace exists
+	// Ensure target namespace exists — hard prerequisite for all subsequent
+	// steps since they create resources in the target namespace.
 	if err := r.ensureNamespace(ctx, &shard); err != nil {
 		logger.Error(err, "Failed to ensure target namespace")
 		return r.setErrorAndRequeue(ctx, &shard, err)
@@ -203,85 +204,130 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		FieldManager:      fieldManager,
 	})
 
+	// Accumulate errors from independent steps instead of returning on the
+	// first failure. This allows later, independent work (webhook sync,
+	// namespace sync, CRD conflict resolution, APIServices, etc.) to
+	// proceed even when an earlier step (e.g. storage) is persistently
+	// failing. See #119.
+	var reconcileErrors []error
+	allAppliesSucceeded := true
+
 	// Reconcile storage backend and Kine
 	if err := r.reconcileStorage(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile storage")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+		reconcileErrors = append(reconcileErrors, err)
+		allAppliesSucceeded = false
 	}
 
 	// Reconcile cert-manager resources for TLS
 	if err := r.reconcileCertManager(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile cert-manager resources")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+		reconcileErrors = append(reconcileErrors, err)
+		allAppliesSucceeded = false
 	}
 
 	// Reconcile auth-config ConfigMap for webhook authorization
 	if err := r.reconcileAuthConfig(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile auth config")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+		reconcileErrors = append(reconcileErrors, err)
+		allAppliesSucceeded = false
 	}
 
 	// Create dedicated ServiceAccount for the secondary apiserver
 	if err := r.reconcileSecondaryServiceAccount(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile secondary service account")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+		reconcileErrors = append(reconcileErrors, err)
+		allAppliesSucceeded = false
 	}
 
 	// Bind the secondary's ServiceAccount to system:auth-delegator
 	if err := r.reconcileAuthDelegator(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile auth-delegator binding")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+		reconcileErrors = append(reconcileErrors, err)
+		allAppliesSucceeded = false
 	}
 
 	// On OpenShift, create a custom SCC that permits the kube-apiserver's
 	// file capabilities (the upstream binary has cap_net_bind_service set)
 	if err := r.reconcileAPIServerSCC(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile apiserver SCC")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+		reconcileErrors = append(reconcileErrors, err)
+		allAppliesSucceeded = false
 	}
 
-	// Copy front-proxy CA from primary for request-header authentication
-	requestHeaderAllowedNames, err := r.reconcileRequestHeaderCA(ctx, tc, &shard)
-	if err != nil {
-		logger.Error(err, "Failed to reconcile requestheader CA")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+	// Copy front-proxy CA from primary for request-header authentication.
+	// The returned allowed names are required to build the secondary
+	// deployment spec; if this step fails, reconcileSecondary is skipped.
+	requestHeaderAllowedNames, rhErr := r.reconcileRequestHeaderCA(ctx, tc, &shard)
+	if rhErr != nil {
+		logger.Error(rhErr, "Failed to reconcile requestheader CA")
+		reconcileErrors = append(reconcileErrors, rhErr)
+		allAppliesSucceeded = false
 	}
 
-	// Create admin kubeconfig Secret (depends on PKI secret, not the secondary)
+	// Create admin kubeconfig Secret (depends on PKI secret, not the secondary).
+	// Handles missing cert-manager secrets gracefully (returns nil when not found).
 	if err := r.reconcileAdminKubeconfig(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile admin kubeconfig")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+		reconcileErrors = append(reconcileErrors, err)
+		allAppliesSucceeded = false
 	}
 
-	// Reconcile Secondary API server
-	if err := r.reconcileSecondary(ctx, tc, &shard, requestHeaderAllowedNames); err != nil {
-		logger.Error(err, "Failed to reconcile secondary API server")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+	// Reconcile Secondary API server. Skipped when reconcileRequestHeaderCA
+	// failed because the allowed names are needed to build the deployment
+	// spec. When the secondary was already deployed in a previous cycle,
+	// it continues running with its existing configuration.
+	if rhErr == nil {
+		if err := r.reconcileSecondary(ctx, tc, &shard, requestHeaderAllowedNames); err != nil {
+			logger.Error(err, "Failed to reconcile secondary API server")
+			reconcileErrors = append(reconcileErrors, err)
+			allAppliesSucceeded = false
+		}
+	} else {
+		allAppliesSucceeded = false
 	}
 
 	// Reconcile metrics scraping infrastructure (ServiceMonitors, RBAC)
 	if err := r.reconcileMetrics(ctx, tc, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile metrics")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+		reconcileErrors = append(reconcileErrors, err)
+		allAppliesSucceeded = false
 	}
 
 	// Register APIService objects on the primary cluster
 	if err := r.reconcileAPIServices(ctx, &shard); err != nil {
 		logger.Error(err, "Failed to reconcile APIServices")
-		return r.setErrorAndRequeue(ctx, &shard, err)
+		reconcileErrors = append(reconcileErrors, err)
+		allAppliesSucceeded = false
 	}
 
 	r.reconcileCRDConflicts(ctx, &shard)
 
-	healthResult, err := r.updateHealthStatus(ctx, tc, &shard)
-	if err != nil {
-		return ctrl.Result{}, err
+	healthResult, healthErr := r.updateHealthStatus(ctx, tc, &shard)
+	if healthErr != nil {
+		reconcileErrors = append(reconcileErrors, healthErr)
+		allAppliesSucceeded = false
 	}
 
-	// Cleanup orphaned resources only after all apply steps have completed,
+	// Cleanup orphaned resources only when all apply steps succeeded,
 	// so the tracked set is complete and nothing gets incorrectly deleted.
-	if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, managedGVKs); err != nil {
-		logger.Error(err, "Failed to cleanup orphans")
+	// When any step failed or was skipped, some intended resources may not
+	// have been applied — those existing objects would be missing from the
+	// tracked set and would be incorrectly deleted as orphans.
+	if allAppliesSucceeded {
+		if err := tc.CleanupOrphans(ctx, ownerLabelKey, shard.Name, managedGVKs); err != nil {
+			logger.Error(err, "Failed to cleanup orphans")
+		}
+	} else {
+		logger.Info("Skipping orphan cleanup: not all reconcile steps succeeded, tracked set may be incomplete")
+	}
+
+	// If any errors occurred, surface them all and requeue for retry.
+	// The individual steps have already logged their errors and set
+	// relevant status conditions; here we aggregate them so the
+	// APIShard status reports the full picture.
+	if len(reconcileErrors) > 0 {
+		return r.setErrorAndRequeue(ctx, &shard, errors.Join(reconcileErrors...))
 	}
 
 	shard.Status.Message = ""
