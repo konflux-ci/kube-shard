@@ -63,7 +63,16 @@ This keeps multi-version conversion functional on the secondary without requirin
 
 ## Status
 
-Operator-managed deployment. See [docs/design.md](docs/design.md) for the full design document.
+The `APIShard` status includes conditions for each subsystem. `StorageReady` reports whether the configured backend is usable:
+
+| Reason | Status | When |
+|--------|--------|------|
+| `VolumeClaimTemplateUnchanged` | True | In-cluster PostgreSQL volume claim templates match the live StatefulSet, or the StatefulSet is being created |
+| `VolumeClaimTemplateImmutable` | False | The spec changed persistence size, storage class, or emptyDir↔PVC mode. Kubernetes cannot mutate live `volumeClaimTemplates`; the operator keeps the live values. Align the spec with the live volume, or recreate the shard |
+| `SecretValid` | True | External PostgreSQL connection secret exists and contains the configured key |
+| `MissingConnectionSecretRef` / `SecretNotFound` / `KeyNotFound` / `SecretReadError` | False | External PostgreSQL connection secret is missing or unreadable |
+
+See [docs/design.md](docs/design.md) for the full design document.
 
 ## Getting Started
 
@@ -186,6 +195,8 @@ The operator defines three CRDs:
 | `apiGroups` | List of API groups and versions to offload |
 | `storage.type` | Backend: `SQLite`, `InClusterPostgreSQL`, or `PostgreSQL` (external) |
 | `storage.connectionSecretRef` | Secret reference for external PostgreSQL connection string |
+| `storage.inCluster.persistence.size` | PVC size for in-cluster PostgreSQL. Changing this on an existing StatefulSet is ignored (`volumeClaimTemplates` are immutable); `StorageReady` becomes False |
+| `storage.inCluster.persistence.storageClassName` | StorageClass for the PVC. Omitted uses the cluster default; `""` disables dynamic provisioning. Changes on an existing StatefulSet are ignored the same way as size |
 | `namespaceSync.labelSelector` | Label selector for namespaces to sync to the secondary |
 | `secondary.replicas` | Replica count for the secondary kube-apiserver |
 | `secondary.image` | Container image for kube-apiserver |
