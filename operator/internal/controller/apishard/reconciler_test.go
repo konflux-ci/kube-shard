@@ -2688,3 +2688,232 @@ var _ = Describe("syncCRDsToSecondary", func() {
 		Expect(err.Error()).To(ContainSubstring("get CRD nonexistent.synctest.example.com from primary"))
 	})
 })
+
+var _ = Describe("Reconcile error continuation (#119)", func() {
+	// ensureRequestHeaderCA creates or updates the extension-apiserver-authentication
+	// ConfigMap in kube-system so that reconcileRequestHeaderCA succeeds. This allows
+	// the secondary deployment to be attempted even when cert-manager is unavailable.
+	ensureRequestHeaderCA := func() {
+		cm := &corev1.ConfigMap{}
+		err := k8sClient.Get(ctx, types.NamespacedName{
+			Name: extensionAPIServerAuthCM, Namespace: kubeSystemNamespace,
+		}, cm)
+		if err == nil {
+			if cm.Data == nil || cm.Data["requestheader-client-ca-file"] == "" {
+				cm.Data = map[string]string{
+					"requestheader-client-ca-file": "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
+				}
+				Expect(k8sClient.Update(ctx, cm)).To(Succeed())
+			}
+			return
+		}
+		cm = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      extensionAPIServerAuthCM,
+				Namespace: kubeSystemNamespace,
+			},
+			Data: map[string]string{
+				"requestheader-client-ca-file": "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
+			},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+	}
+
+	It("should continue reconciling independent steps when an earlier step fails", func() {
+		ensureRequestHeaderCA()
+
+		nsName := "test-continue-" + randString(6)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-continue-" + randString(6),
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				Secondary: kubeshardv1alpha1.SecondarySpec{Replicas: 1},
+				Kine:      kubeshardv1alpha1.KineSpec{Replicas: 1},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		defer func() {
+			current := &kubeshardv1alpha1.APIShard{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, current); err == nil {
+				if controllerutil.ContainsFinalizer(current, finalizerName) {
+					controllerutil.RemoveFinalizer(current, finalizerName)
+					Expect(k8sClient.Update(ctx, current)).To(Succeed())
+				}
+				_ = k8sClient.Delete(ctx, current)
+			}
+			crb := &rbacv1.ClusterRoleBinding{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name + "-auth-delegator"}, crb); err == nil {
+				_ = k8sClient.Delete(ctx, crb)
+			}
+		}()
+
+		reconciler := &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+
+		// Reconcile returns errors because cert-manager CRDs are not
+		// installed in envtest. Previously this would abort the entire
+		// reconcile; now independent steps after the failure still execute.
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: shard.Name},
+		})
+		Expect(err).To(HaveOccurred())
+		// The accumulated error should include the cert-manager failure.
+		Expect(err.Error()).To(ContainSubstring("Issuer"))
+
+		// --- Steps BEFORE cert-manager should have run as before ---
+
+		// Kine deployment (created by reconcileStorage, before cert-manager)
+		kineDeploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.KineDeploymentName(shard),
+			Namespace: nsName,
+		}, kineDeploy)).To(Succeed(), "Kine deployment should be created")
+
+		// --- Steps AFTER cert-manager should now also have run ---
+
+		// Auth config ConfigMap (reconcileAuthConfig, after cert-manager)
+		authCM := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      shard.Name + "-authz-config",
+			Namespace: nsName,
+		}, authCM)).To(Succeed(),
+			"auth config should be created despite cert-manager failure")
+
+		// Secondary ServiceAccount (reconcileSecondaryServiceAccount)
+		sa := &corev1.ServiceAccount{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.SecondaryServiceAccountName(shard),
+			Namespace: nsName,
+		}, sa)).To(Succeed(),
+			"secondary SA should be created despite cert-manager failure")
+
+		// Auth-delegator ClusterRoleBinding (reconcileAuthDelegator)
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: shard.Name + "-auth-delegator",
+		}, crb)).To(Succeed(),
+			"auth-delegator CRB should be created despite cert-manager failure")
+
+		// Requestheader CA ConfigMap (reconcileRequestHeaderCA)
+		rhCM := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      shard.Name + "-requestheader-ca",
+			Namespace: nsName,
+		}, rhCM)).To(Succeed(),
+			"requestheader CA should be created despite cert-manager failure")
+
+		// Secondary deployment (reconcileSecondary — attempted because
+		// requestHeaderCA succeeded, providing the allowed names)
+		secondaryDeploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      resources.SecondaryDeploymentName(shard),
+			Namespace: nsName,
+		}, secondaryDeploy)).To(Succeed(),
+			"secondary deployment should be created despite cert-manager failure")
+
+		// --- Status should report the error ---
+
+		updated := &kubeshardv1alpha1.APIShard{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(kubeshardv1alpha1.PhaseError))
+		Expect(updated.Status.Message).To(ContainSubstring("Issuer"),
+			"status message should surface the cert-manager error")
+	})
+
+	It("should skip orphan cleanup when any reconcile step fails", func() {
+		ensureRequestHeaderCA()
+
+		nsName := "test-cleanup-" + randString(6)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+		shard := &kubeshardv1alpha1.APIShard{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-cleanup-" + randString(6),
+			},
+			Spec: kubeshardv1alpha1.APIShardSpec{
+				TargetNamespace: nsName,
+				APIGroups: []kubeshardv1alpha1.APIGroupSpec{
+					{Group: "tekton.dev", Versions: []string{"v1"}},
+				},
+				Storage: kubeshardv1alpha1.StorageSpec{
+					Type: kubeshardv1alpha1.StorageTypeSQLite,
+				},
+				NamespaceSync: kubeshardv1alpha1.NamespaceSyncConfig{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"type": "tenant"},
+					},
+				},
+				Secondary: kubeshardv1alpha1.SecondarySpec{Replicas: 1},
+				Kine:      kubeshardv1alpha1.KineSpec{Replicas: 1},
+			},
+		}
+		Expect(k8sClient.Create(ctx, shard)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, shard)).To(Succeed())
+		defer func() {
+			current := &kubeshardv1alpha1.APIShard{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: shard.Name}, current); err == nil {
+				if controllerutil.ContainsFinalizer(current, finalizerName) {
+					controllerutil.RemoveFinalizer(current, finalizerName)
+					Expect(k8sClient.Update(ctx, current)).To(Succeed())
+				}
+				_ = k8sClient.Delete(ctx, current)
+			}
+		}()
+
+		// Pre-create a ConfigMap labelled as owned by the shard. If orphan
+		// cleanup ran, this would be deleted because it wasn't tracked via
+		// ApplyOwned. Since cert-manager makes the reconcile partial, cleanup
+		// must be skipped and this resource must survive.
+		orphanCM := &corev1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      shard.Name + "-stale-resource",
+				Namespace: nsName,
+				Labels: map[string]string{
+					ownerLabelKey:     shard.Name,
+					componentLabelKey: "apishard",
+				},
+			},
+			Data: map[string]string{"purpose": "orphan-cleanup-test"},
+		}
+		Expect(k8sClient.Create(ctx, orphanCM)).To(Succeed())
+
+		reconciler := &Reconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: shard.Name},
+		})
+		Expect(err).To(HaveOccurred(), "reconcile should fail due to cert-manager")
+
+		// The stale resource must still exist — cleanup was skipped because
+		// the reconcile was partial (cert-manager failed).
+		surviving := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name:      orphanCM.Name,
+			Namespace: nsName,
+		}, surviving)).To(Succeed(),
+			"orphan cleanup must be skipped on partial reconcile so stale resources are not incorrectly deleted")
+	})
+})
