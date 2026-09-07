@@ -31,7 +31,7 @@ import (
 
 const (
 	// renovate: datasource=docker depName=ghcr.io/k3s-io/kine
-	DefaultKineImage          = "ghcr.io/k3s-io/kine:v0.16.3"
+	DefaultKineImage          = "ghcr.io/k3s-io/kine:v0.17.0"
 	KinePort                  = 2379
 	KineMetricsPort           = 8080
 	dataVolumeName            = "data"
