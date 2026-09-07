@@ -34,7 +34,7 @@ import (
 
 const (
 	// renovate: datasource=docker depName=registry.access.redhat.com/hi/opentelemetry-collector-contrib
-	DefaultOTelCollectorImage       = "registry.access.redhat.com/hi/opentelemetry-collector-contrib:0.155.0"
+	DefaultOTelCollectorImage       = "registry.access.redhat.com/hi/opentelemetry-collector-contrib:0.160.0"
 	OTelMetricsPort           int32 = 9187
 	OTelHealthPort            int32 = 13133
 	OTelMetricsPortName             = "otel-metrics"
