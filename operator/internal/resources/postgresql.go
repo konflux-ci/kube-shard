@@ -33,7 +33,7 @@ import (
 
 const (
 	// renovate: datasource=docker depName=registry.access.redhat.com/hi/postgresql
-	DefaultPostgreSQLImage      = "registry.access.redhat.com/hi/postgresql:18.4"
+	DefaultPostgreSQLImage      = "registry.access.redhat.com/hi/postgresql:18.6"
 	PostgreSQLPort              = 5432
 	postgresqlTLSVolumeName     = "postgresql-tls"
 	postgresqlTLSMountPath      = "/etc/postgresql/tls"
