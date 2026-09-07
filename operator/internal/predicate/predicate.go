@@ -20,6 +20,7 @@ import (
 	"maps"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -123,6 +124,76 @@ var StatefulSetReadinessPredicate = predicate.Funcs{
 	CreateFunc:  func(e event.CreateEvent) bool { return true },
 	DeleteFunc:  func(e event.DeleteEvent) bool { return true },
 	GenericFunc: func(e event.GenericEvent) bool { return true },
+}
+
+// metadataChanged checks whether labels, annotations, or ownerReferences
+// differ between old and new objects. Used by data-focused predicates for
+// resources without a status subresource (ConfigMaps, Secrets).
+func metadataChanged(oldObj, newObj client.Object) bool {
+	if !maps.Equal(oldObj.GetLabels(), newObj.GetLabels()) {
+		return true
+	}
+	if !maps.Equal(oldObj.GetAnnotations(), newObj.GetAnnotations()) {
+		return true
+	}
+	return !apiequality.Semantic.DeepEqual(oldObj.GetOwnerReferences(), newObj.GetOwnerReferences())
+}
+
+// ConfigMapDataPredicate filters out updates where only managedFields or
+// resourceVersion changed. ConfigMaps do not have a status subresource or
+// generation tracking, so this predicate compares data, binaryData, labels,
+// annotations, and ownerReferences to decide whether an update is meaningful.
+//
+// Use this for Owns(&corev1.ConfigMap{}) to prevent SSA-only writes (which
+// bump resourceVersion without changing content) from requeuing the controller.
+var ConfigMapDataPredicate = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		if e.ObjectOld == nil || e.ObjectNew == nil {
+			return true
+		}
+		if metadataChanged(e.ObjectOld, e.ObjectNew) {
+			return true
+		}
+		oldCM, ok1 := e.ObjectOld.(*corev1.ConfigMap)
+		newCM, ok2 := e.ObjectNew.(*corev1.ConfigMap)
+		if !ok1 || !ok2 {
+			return true
+		}
+		if !maps.Equal(oldCM.Data, newCM.Data) {
+			return true
+		}
+		return !apiequality.Semantic.DeepEqual(oldCM.BinaryData, newCM.BinaryData)
+	},
+	CreateFunc:  func(_ event.CreateEvent) bool { return true },
+	DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
+	GenericFunc: func(_ event.GenericEvent) bool { return true },
+}
+
+// SecretDataPredicate filters out updates where only managedFields or
+// resourceVersion changed. Secrets do not have a status subresource or
+// generation tracking, so this predicate compares data, labels, annotations,
+// and ownerReferences to decide whether an update is meaningful.
+//
+// Use this for Owns(&corev1.Secret{}) to prevent SSA-only writes (which
+// bump resourceVersion without changing content) from requeuing the controller.
+var SecretDataPredicate = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		if e.ObjectOld == nil || e.ObjectNew == nil {
+			return true
+		}
+		if metadataChanged(e.ObjectOld, e.ObjectNew) {
+			return true
+		}
+		oldSecret, ok1 := e.ObjectOld.(*corev1.Secret)
+		newSecret, ok2 := e.ObjectNew.(*corev1.Secret)
+		if !ok1 || !ok2 {
+			return true
+		}
+		return !apiequality.Semantic.DeepEqual(oldSecret.Data, newSecret.Data)
+	},
+	CreateFunc:  func(_ event.CreateEvent) bool { return true },
+	DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
+	GenericFunc: func(_ event.GenericEvent) bool { return true },
 }
 
 // apiServiceAvailableStatus extracts the Available condition status from an

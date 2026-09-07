@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -251,4 +252,205 @@ func TestAPIServiceAvailabilityPredicate_TriggersOnNewCondition(t *testing.T) {
 	})
 	g.Expect(result).To(BeTrue(),
 		"should trigger when Available condition appears")
+}
+
+// --- ConfigMapDataPredicate tests ---
+
+// TestConfigMapDataPredicate_IgnoresRVOnlyUpdate verifies that the predicate
+// filters out updates where only resourceVersion or managedFields changed.
+func TestConfigMapDataPredicate_IgnoresRVOnlyUpdate(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cm-1", ResourceVersion: "100",
+			Labels: map[string]string{"app": "test"},
+		},
+		Data: map[string]string{"key": "value"},
+	}
+	updatedCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cm-1", ResourceVersion: "101",
+			Labels: map[string]string{"app": "test"},
+		},
+		Data: map[string]string{"key": "value"},
+	}
+
+	result := ConfigMapDataPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldCM, ObjectNew: updatedCM,
+	})
+	g.Expect(result).To(BeFalse(),
+		"should not trigger when only resourceVersion changed")
+}
+
+// TestConfigMapDataPredicate_TriggersOnDataChange verifies that the predicate
+// fires when ConfigMap data changes.
+func TestConfigMapDataPredicate_TriggersOnDataChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "cm-1"},
+		Data:       map[string]string{"key": "old-value"},
+	}
+	updatedCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "cm-1"},
+		Data:       map[string]string{"key": "new-value"},
+	}
+
+	result := ConfigMapDataPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldCM, ObjectNew: updatedCM,
+	})
+	g.Expect(result).To(BeTrue(),
+		"should trigger when data changed")
+}
+
+// TestConfigMapDataPredicate_TriggersOnLabelChange verifies that the predicate
+// fires when ConfigMap labels change.
+func TestConfigMapDataPredicate_TriggersOnLabelChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "cm-1",
+			Labels: map[string]string{"app": "v1"},
+		},
+		Data: map[string]string{"key": "value"},
+	}
+	updatedCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "cm-1",
+			Labels: map[string]string{"app": "v2"},
+		},
+		Data: map[string]string{"key": "value"},
+	}
+
+	result := ConfigMapDataPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldCM, ObjectNew: updatedCM,
+	})
+	g.Expect(result).To(BeTrue(),
+		"should trigger when labels changed")
+}
+
+// TestConfigMapDataPredicate_TriggersOnBinaryDataChange verifies that the
+// predicate fires when ConfigMap binaryData changes.
+func TestConfigMapDataPredicate_TriggersOnBinaryDataChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "cm-1"},
+		BinaryData: map[string][]byte{"bin": {0x01}},
+	}
+	updatedCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "cm-1"},
+		BinaryData: map[string][]byte{"bin": {0x02}},
+	}
+
+	result := ConfigMapDataPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldCM, ObjectNew: updatedCM,
+	})
+	g.Expect(result).To(BeTrue(),
+		"should trigger when binaryData changed")
+}
+
+// TestConfigMapDataPredicate_TriggersOnOwnerRefChange verifies that the
+// predicate fires when ownerReferences change.
+func TestConfigMapDataPredicate_TriggersOnOwnerRefChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "cm-1"},
+		Data:       map[string]string{"key": "value"},
+	}
+	updatedCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cm-1",
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: "v1", Kind: "APIShard", Name: "test"},
+			},
+		},
+		Data: map[string]string{"key": "value"},
+	}
+
+	result := ConfigMapDataPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldCM, ObjectNew: updatedCM,
+	})
+	g.Expect(result).To(BeTrue(),
+		"should trigger when ownerReferences changed")
+}
+
+// --- SecretDataPredicate tests ---
+
+// TestSecretDataPredicate_IgnoresRVOnlyUpdate verifies that the predicate
+// filters out updates where only resourceVersion or managedFields changed.
+func TestSecretDataPredicate_IgnoresRVOnlyUpdate(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "s-1", ResourceVersion: "100",
+			Labels: map[string]string{"app": "test"},
+		},
+		Data: map[string][]byte{"key": []byte("value")},
+	}
+	updatedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "s-1", ResourceVersion: "101",
+			Labels: map[string]string{"app": "test"},
+		},
+		Data: map[string][]byte{"key": []byte("value")},
+	}
+
+	result := SecretDataPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldSecret, ObjectNew: updatedSecret,
+	})
+	g.Expect(result).To(BeFalse(),
+		"should not trigger when only resourceVersion changed")
+}
+
+// TestSecretDataPredicate_TriggersOnDataChange verifies that the predicate
+// fires when Secret data changes.
+func TestSecretDataPredicate_TriggersOnDataChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "s-1"},
+		Data:       map[string][]byte{"key": []byte("old-value")},
+	}
+	updatedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "s-1"},
+		Data:       map[string][]byte{"key": []byte("new-value")},
+	}
+
+	result := SecretDataPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldSecret, ObjectNew: updatedSecret,
+	})
+	g.Expect(result).To(BeTrue(),
+		"should trigger when data changed")
+}
+
+// TestSecretDataPredicate_TriggersOnLabelChange verifies that the predicate
+// fires when Secret labels change.
+func TestSecretDataPredicate_TriggersOnLabelChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	oldSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "s-1",
+			Labels: map[string]string{"app": "v1"},
+		},
+		Data: map[string][]byte{"key": []byte("value")},
+	}
+	updatedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "s-1",
+			Labels: map[string]string{"app": "v2"},
+		},
+		Data: map[string][]byte{"key": []byte("value")},
+	}
+
+	result := SecretDataPredicate.Update(event.UpdateEvent{
+		ObjectOld: oldSecret, ObjectNew: updatedSecret,
+	})
+	g.Expect(result).To(BeTrue(),
+		"should trigger when labels changed")
 }

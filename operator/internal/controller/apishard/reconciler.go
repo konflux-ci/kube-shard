@@ -643,6 +643,11 @@ func (r *Reconciler) reconcilePostgreSQLMetrics(
 
 // applyOTelCollector creates or updates the OTel Collector ConfigMap (with content hash),
 // Deployment, and Service. Uses hashedconfigmap so pods automatically restart on config change.
+//
+// The ConfigMap is applied once via the tracking client with the full label set
+// (otel-config + owner + component). This avoids a double SSA apply that would
+// bump resourceVersion on every reconcile and trigger an infinite requeue loop
+// through the ConfigMap Owns watch.
 func (r *Reconciler) applyOTelCollector(
 	ctx context.Context,
 	tc *tracking.Client,
@@ -653,30 +658,41 @@ func (r *Reconciler) applyOTelCollector(
 	configContent := resources.BuildOTelCollectorConfig(shard, params)
 	baseName := resources.OTelCollectorConfigMapBaseName(shard)
 
-	hcm := hashedconfigmap.New(
-		r.Client,
-		r.Scheme,
-		baseName,
-		shard.Spec.TargetNamespace,
-		"config.yaml",
-		resources.LabelOTelConfig,
-		fieldManager,
-	)
+	// Compute the content-hashed name without applying — the tracking client
+	// will perform the single SSA apply below with the full label set.
+	configMapName := hashedconfigmap.BuildConfigMapName(baseName, configContent)
 
-	result, err := hcm.Apply(ctx, configContent, shard)
-	if err != nil {
+	logger := log.FromContext(ctx)
+	logger.Info("Applying hashed ConfigMap", "name", configMapName, "namespace", shard.Spec.TargetNamespace)
+
+	configMap := &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "ConfigMap",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: shard.Spec.TargetNamespace,
+			Labels: map[string]string{
+				resources.LabelOTelConfig: "true",
+			},
+		},
+		Data: map[string]string{
+			"config.yaml": configContent,
+		},
+	}
+
+	// Single SSA apply with the full label set (otel-config + owner +
+	// component). The tracking client merges ownership labels and sets the
+	// controller reference, so subsequent reconciles produce a no-op SSA
+	// patch. CleanupOrphans at the end of the reconcile loop deletes old
+	// hashed ConfigMaps (different hash suffix) because they carry the owner
+	// label but are not tracked this cycle.
+	if err := tc.ApplyOwned(ctx, configMap); err != nil {
 		return fmt.Errorf("otel collector configmap: %w", err)
 	}
 
-	// Register the hashed ConfigMap with the tracking client so that
-	// CleanupOrphans deletes it automatically when monitoring is disabled
-	// (the ConfigMap won't be tracked that cycle → treated as orphan).
-	result.ConfigMap.SetManagedFields(nil)
-	if err := tc.ApplyOwned(ctx, result.ConfigMap); err != nil {
-		return fmt.Errorf("otel collector configmap tracking: %w", err)
-	}
-
-	deploy := resources.BuildOTelCollectorDeployment(shard, credentialSecretName, result.ConfigMapName, params)
+	deploy := resources.BuildOTelCollectorDeployment(shard, credentialSecretName, configMapName, params)
 	if err := tc.ApplyOwned(ctx, deploy); err != nil {
 		return fmt.Errorf("otel collector deployment: %w", err)
 	}
@@ -1793,8 +1809,8 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}, builder.WithPredicates(shardpredicate.DeploymentReadinessPredicate)).
 		Owns(&appsv1.StatefulSet{}, builder.WithPredicates(shardpredicate.StatefulSetReadinessPredicate)).
 		Owns(&corev1.Service{}).
-		Owns(&corev1.Secret{}).
-		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}, builder.WithPredicates(shardpredicate.SecretDataPredicate)).
+		Owns(&corev1.ConfigMap{}, builder.WithPredicates(shardpredicate.ConfigMapDataPredicate)).
 		Owns(&kubeshardv1alpha1.NamespaceSync{}).
 		Owns(&kubeshardv1alpha1.WebhookSync{}).
 		Owns(&apiregistrationv1.APIService{}, builder.WithPredicates(shardpredicate.APIServiceAvailabilityPredicate)).
