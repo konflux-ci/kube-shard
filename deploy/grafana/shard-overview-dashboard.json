@@ -468,7 +468,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "avg(container_memory_working_set_bytes{pod=~\"konflux-tekton-shard-apiserver-.*\", namespace=\"$namespace\", container=\"\"})",
+          "expr": "avg(container_memory_working_set_bytes{pod=~\".*-apiserver-.*\", namespace=\"$namespace\", container=\"\"})",
           "legendFormat": "avg memory",
           "refId": "A"
         }
@@ -482,7 +482,7 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never", "axisLabel": "cores" },
           "unit": "short"
         },
         "overrides": []
@@ -493,7 +493,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "avg(pod:container_cpu_usage:sum{pod=~\"konflux-tekton-shard-apiserver-.*\", namespace=\"$namespace\"})",
+          "expr": "avg(pod:container_cpu_usage:sum{pod=~\".*-apiserver-.*\", namespace=\"$namespace\"})",
           "legendFormat": "avg cpu",
           "refId": "A"
         }
