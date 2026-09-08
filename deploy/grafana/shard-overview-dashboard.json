@@ -453,7 +453,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Average pod-level memory working set for shard apiserver pods. Matches OpenShift console metrics view.",
+      "description": "Average memory working set across KAS pods. Uses container=\"kube-apiserver\" to match existing KAS resource panels (ids 50–52).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -468,9 +468,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "avg(container_memory_working_set_bytes{pod=~\".*-apiserver-.*\", namespace=\"$namespace\", container=\"\"})",
-          "legendFormat": "avg memory",
-          "refId": "A"
+          "expr": "avg(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"kube-apiserver\"})",
+          "legendFormat": "avg memory"
         }
       ],
       "title": "KAS Memory (avg per pod)",
@@ -478,7 +477,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Average CPU per shard apiserver pod (OpenShift recording rule pod:container_cpu_usage:sum).",
+      "description": "Average CPU per KAS pod via OpenShift recording rule pod:container_cpu_usage:sum. Pod regex matches operator naming ({shardName}-apiserver-*); container filter is unavailable on this recording rule.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -494,8 +493,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "avg(pod:container_cpu_usage:sum{pod=~\".*-apiserver-.*\", namespace=\"$namespace\"})",
-          "legendFormat": "avg cpu",
-          "refId": "A"
+          "legendFormat": "avg cpu"
         }
       ],
       "title": "KAS CPU (avg per pod)",
