@@ -477,7 +477,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Average CPU per KAS pod via OpenShift recording rule pod:container_cpu_usage:sum. Pod regex matches operator naming ({shardName}-apiserver-*); container filter is unavailable on this recording rule.",
+      "description": "Average CPU per KAS pod via OpenShift recording rule pod:container_cpu_usage:sum (whole-pod scope, all containers). Adjacent memory panel filters container=\"kube-apiserver\" only.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -496,7 +496,7 @@
           "legendFormat": "avg cpu"
         }
       ],
-      "title": "KAS CPU (avg per pod)",
+      "title": "KAS CPU (avg per pod, all containers)",
       "type": "timeseries"
     },
     {
