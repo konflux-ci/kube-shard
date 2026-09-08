@@ -477,7 +477,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Average CPU per KAS pod via OpenShift recording rule pod:container_cpu_usage:sum (whole-pod scope, all containers). Adjacent memory panel filters container=\"kube-apiserver\" only.",
+      "description": "Average CPU across KAS pods. Uses container=\"kube-apiserver\" to match the memory panel and existing KAS resource panels (ids 50–52).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -492,11 +492,11 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "avg(pod:container_cpu_usage:sum{pod=~\".*-apiserver-.*\", namespace=\"$namespace\"})",
+          "expr": "avg(sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"kube-apiserver\"}[5m])) by (pod))",
           "legendFormat": "avg cpu"
         }
       ],
-      "title": "KAS CPU (avg per pod, all containers)",
+      "title": "KAS CPU (avg per pod)",
       "type": "timeseries"
     },
     {
