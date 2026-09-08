@@ -694,7 +694,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 90 },
       "id": 106,
-      "title": "PostgreSQL — The backing database for Kine. Resource pressure here cascades into higher SQL latencies for both reads and writes.",
+      "title": "PostgreSQL Resources — Container-level CPU, memory, disk, and restarts. Pressure here cascades into higher SQL latencies for both reads and writes.",
       "type": "row"
     },
     {
@@ -802,6 +802,393 @@
       ],
       "title": "PostgreSQL Container Restarts",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 99 },
+      "id": 107,
+      "title": "PostgreSQL Storage — Live vs reclaimable space (includes TOAST, where Kine stores resource bodies). High reclaimable bytes mean compaction/VACUUM is not returning disk to the OS.",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Database size vs table composition from pgstattuple_approx (regular + TOAST tables).\n\n- **db_size**: pg_database_size — whole database including indexes, FSM, and WAL leftovers\n- **tables_size**: on-disk size of user tables (live + dead + free)\n- **live**: approximate bytes in live tuples (current Kine data)\n- **reclaimable**: dead tuples + free space (returned only by VACUUM FULL / CLUSTER, not regular VACUUM)\n\nIf reclaimable grows while live is flat, Kine compaction is deleting rows but PostgreSQL has not yet compacted the heap/TOAST files.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 100 },
+      "id": 70,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(postgresql_db_size_bytes{namespace=\"$namespace\"})", "legendFormat": "db_size" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(postgresql_tables_size_bytes{namespace=\"$namespace\"})", "legendFormat": "tables_size" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(postgresql_tables_live_bytes{namespace=\"$namespace\"})", "legendFormat": "live" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(postgresql_tables_reclaimable_bytes{namespace=\"$namespace\"})", "legendFormat": "reclaimable" }
+      ],
+      "title": "Database Size (Live vs Reclaimable)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Fraction of table bytes that are dead tuples or free space (reclaimable / tables_size). Above ~50% means most of the on-disk kine/TOAST data is wasted; consider more aggressive Kine compaction or a one-shot VACUUM FULL during a maintenance window. This is an approximate gauge updated every bloatInterval (default 5m).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "max": 1,
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.3 }, { "color": "red", "value": 0.6 }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 100 },
+      "id": 71,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(postgresql_tables_reclaimable_bytes{namespace=\"$namespace\"}) / clamp_min(sum(postgresql_tables_size_bytes{namespace=\"$namespace\"}), 1)",
+          "legendFormat": "reclaimable / tables_size"
+        }
+      ],
+      "title": "Table Bloat Ratio",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Estimated live vs dead heap tuples from pg_stat_user_tables (not TOAST). Dead heap tuples are what regular VACUUM can mark reusable. If dead rows climb, autovacuum is falling behind Kine's insert/delete rate — tune autovacuum_vacuum_scale_factor / autovacuum_vacuum_threshold on the kine table. TOAST bloat will not show up here; use the size/bloat panels for that.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "showPoints": "never", "stacking": { "mode": "normal" } },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 100 },
+      "id": 72,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(postgresql_rows{namespace=\"$namespace\"}) by (state)", "legendFormat": "{{state}}" }
+      ],
+      "title": "Heap Tuples (Live vs Dead)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 108 },
+      "id": 108,
+      "title": "PostgreSQL Buffer Cache — Hit ratio by page type. Kine resource bodies live in TOAST; a low TOAST hit ratio means shared_buffers is too small for the working set and queries wait on disk.",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Heap buffer cache hit ratio: heap_hit / (heap_hit + heap_read). Target ≥99% for OLTP. Lower values mean table pages are not staying in shared_buffers.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "decimals": 2,
+          "max": 1,
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.95 }, { "color": "green", "value": 0.99 }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 109 },
+      "id": 80,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=\"heap_hit\"}[5m])) / clamp_min(sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=~\"heap_hit|heap_read\"}[5m])), 1e-9)"
+        }
+      ],
+      "title": "Heap Cache Hit",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Index buffer cache hit ratio: idx_hit / (idx_hit + idx_read). Kine's GetSingleVal / AfterAllOldVal paths are index-heavy. Target ≥99%.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "decimals": 2,
+          "max": 1,
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.95 }, { "color": "green", "value": 0.99 }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 109 },
+      "id": 81,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=\"idx_hit\"}[5m])) / clamp_min(sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=~\"idx_hit|idx_read\"}[5m])), 1e-9)"
+        }
+      ],
+      "title": "Index Cache Hit",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "TOAST buffer cache hit ratio: toast_hit / (toast_hit + toast_read). This is the most important cache metric for kube-shard — Kine stores resource YAML in a TOAST column. A low ratio (this cluster was ~76%) means PipelineRun bodies are read from disk; raise shared_buffers or reduce live data.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "decimals": 2,
+          "max": 1,
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.95 }, { "color": "green", "value": 0.99 }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 109 },
+      "id": 82,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=\"toast_hit\"}[5m])) / clamp_min(sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=~\"toast_hit|toast_read\"}[5m])), 1e-9)"
+        }
+      ],
+      "title": "TOAST Cache Hit",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "TOAST index cache hit ratio: tidx_hit / (tidx_hit + tidx_read). The TOAST index maps chunk_id to TOAST pages. Should stay high even when TOAST heap pages miss.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "decimals": 2,
+          "max": 1,
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.95 }, { "color": "green", "value": 0.99 }] },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 109 },
+      "id": 83,
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=\"tidx_hit\"}[5m])) / clamp_min(sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=~\"tidx_hit|tidx_read\"}[5m])), 1e-9)"
+        }
+      ],
+      "title": "TOAST Index Cache Hit",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Buffer cache hit ratio over time for heap, indexes, TOAST, and TOAST indexes. Use this to size shared_buffers: if TOAST stays below ~95% while indexes are fine, the working set of resource bodies does not fit in cache. Correlate drops with SQL p99 and PostgreSQL CPU.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 113 },
+      "id": 84,
+      "options": { "legend": { "calcs": ["mean", "lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=\"heap_hit\"}[5m])) / clamp_min(sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=~\"heap_hit|heap_read\"}[5m])), 1e-9)", "legendFormat": "heap" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=\"idx_hit\"}[5m])) / clamp_min(sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=~\"idx_hit|idx_read\"}[5m])), 1e-9)", "legendFormat": "index" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=\"toast_hit\"}[5m])) / clamp_min(sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=~\"toast_hit|toast_read\"}[5m])), 1e-9)", "legendFormat": "toast" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=\"tidx_hit\"}[5m])) / clamp_min(sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=~\"tidx_hit|tidx_read\"}[5m])), 1e-9)", "legendFormat": "toast index" }
+      ],
+      "title": "Cache Hit Ratio by Page Type",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Disk block reads (cache misses) per second by page type. toast_read is the signal that Kine is fetching resource bodies from disk. Rising heap_read/idx_read with flat QPS means the cache is being evicted (shared_buffers too small, or checkpoints flushing too hard).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "showPoints": "never", "stacking": { "mode": "normal" } },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 113 },
+      "id": 85,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(postgresql_blocks_read_total{namespace=\"$namespace\", source=~\".*_read\"}[5m])) by (source)",
+          "legendFormat": "{{source}}"
+        }
+      ],
+      "title": "Disk Block Reads (Cache Misses)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 121 },
+      "id": 109,
+      "title": "PostgreSQL Activity — Connections, transactions, row ops, and checkpoints. Use these to size max_connections / Kine pool and to catch checkpoint storms that spike CPU and kill cache hit ratio.",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Backends vs max_connections. Kine opens a pool of SQL connections; each Kine replica adds more. If backends approach max, new Kine queries block on connection acquisition — raise max_connections (and memory) or lower Kine pool size. Includes autovacuum workers.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "max_connections" },
+            "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }, { "id": "custom.fillOpacity", "value": 0 }, { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 122 },
+      "id": 90,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(postgresql_backends{namespace=\"$namespace\"})", "legendFormat": "backends" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(postgresql_connection_max{namespace=\"$namespace\"})", "legendFormat": "max_connections" }
+      ],
+      "title": "Connections vs Max",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Commit vs rollback rate. Rollbacks are expected from Kine optimistic-concurrency conflicts (SQLSTATE 23505) that abort the transaction. A rollback ratio that tracks the Insert conflict panel is healthy; a spike without matching 23505 errors may indicate statement timeouts (e.g. the bloat query) or deadlocks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 122 },
+      "id": 91,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(rate(postgresql_commits_total{namespace=\"$namespace\"}[5m]))", "legendFormat": "commits/s" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(rate(postgresql_rollbacks_total{namespace=\"$namespace\"}[5m]))", "legendFormat": "rollbacks/s" }
+      ],
+      "title": "Commits vs Rollbacks",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Heap row operations. Kine is append-mostly: Insert creates a new revision, Compact deletes old ones. hot_upd should stay near 0 (Kine does not HOT-update the value column). If ins >> del over a long window, compaction is behind and live+dead rows will grow. Correlate with Kine insert/compact ratio.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "showPoints": "never", "stacking": { "mode": "normal" } },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 122 },
+      "id": 92,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(postgresql_operations_total{namespace=\"$namespace\"}[5m])) by (operation)",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "title": "Row Operations (ins/upd/del)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Checkpoint rate by type. scheduled = checkpoint_timeout. requested = max_wal_size hit or CREATE INDEX / explicit checkpoint. If requested approaches or exceeds scheduled, WAL is filling too fast — raise max_wal_size or checkpoint_timeout. Requested storms flush shared_buffers, which tanks the TOAST cache hit ratio and spikes CPU.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 130 },
+      "id": 93,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(postgresql_bgwriter_checkpoint_count_total{namespace=\"$namespace\"}[5m])) by (type)",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "title": "Checkpoints (Scheduled vs Requested)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Time spent in checkpoint write vs fsync, as a rate of milliseconds per second (1000 = checkpoints are busy the whole interval). High write time = dirtying too many buffers between checkpoints (raise checkpoint_timeout / max_wal_size, or more bgwriter). High sync time = slow disk or too much to flush at once (checkpoint_completion_target).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 130 },
+      "id": 94,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(postgresql_bgwriter_duration_milliseconds_total{namespace=\"$namespace\"}[5m])) by (type)",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "title": "Checkpoint Duration (write vs sync)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Buffers written by source. checkpoints = checkpoint flushes (expected). bgwriter = background writer keeping pace between checkpoints. backend = backends had to write their own dirty pages (bad — cache eviction under query load). If backend writes rise, increase bgwriter_lru_maxpages / lower bgwriter_delay, or raise shared_buffers so less churn.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "showPoints": "never", "stacking": { "mode": "normal" } },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 130 },
+      "id": 95,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(postgresql_bgwriter_buffers_writes_total{namespace=\"$namespace\"}[5m])) by (source)",
+          "legendFormat": "{{source}}"
+        }
+      ],
+      "title": "Buffers Written by Source",
+      "type": "timeseries"
     }
   ],
   "schemaVersion": 39,
@@ -846,5 +1233,5 @@
   "timezone": "browser",
   "title": "Kube-Shard / Shard Overview",
   "uid": "kube-shard-kine",
-  "version": 3
+  "version": 4
 }

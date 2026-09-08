@@ -370,7 +370,8 @@ A Grafana dashboard for monitoring the kube-shard stack is available at [`deploy
 - **Read/Write path** -- watch poll, get, list, and insert latencies with conflict visibility
 - **Compaction health** -- compaction rate, latency, and insert-to-compact ratio
 - **Resource usage** -- memory, CPU, goroutines, and container restarts for Kine, KAS, and PostgreSQL pods
-- **Storage** -- PostgreSQL PVC usage vs capacity
+- **Storage** -- PostgreSQL PVC usage vs capacity; live vs reclaimable table bytes (including TOAST)
+- **PostgreSQL internals** -- buffer cache hit ratio (heap, index, TOAST, TOAST index), connections, commits/rollbacks, row operations, and checkpoint activity
 
 ### Deploying to Grafana Operator (v5)
 
@@ -399,7 +400,7 @@ spec:
 EOF
 ```
 
-The dashboard requires a Prometheus datasource with access to `kine_*` metrics (from Kine ServiceMonitors) and `kubelet_volume_stats_*` metrics (from kubelet).
+The dashboard requires a Prometheus datasource with access to `kine_*` metrics (from Kine ServiceMonitors), `postgresql_*` metrics (from the OTel Collector ServiceMonitor when storage monitoring is enabled), and `kubelet_volume_stats_*` metrics (from kubelet).
 
 ## Development
 
