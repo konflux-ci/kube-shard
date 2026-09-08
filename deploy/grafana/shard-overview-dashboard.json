@@ -453,6 +453,56 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Average pod-level memory working set for shard apiserver pods. Matches OpenShift console metrics view.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 58 },
+      "id": 207,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "avg(container_memory_working_set_bytes{pod=~\"konflux-tekton-shard-apiserver-.*\", namespace=\"$namespace\", container=\"\"})",
+          "legendFormat": "avg memory",
+          "refId": "A"
+        }
+      ],
+      "title": "KAS Memory (avg per pod)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Average CPU per shard apiserver pod (OpenShift recording rule pod:container_cpu_usage:sum).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 58 },
+      "id": 208,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "avg(pod:container_cpu_usage:sum{pod=~\"konflux-tekton-shard-apiserver-.*\", namespace=\"$namespace\"})",
+          "legendFormat": "avg cpu",
+          "refId": "A"
+        }
+      ],
+      "title": "KAS CPU (avg per pod)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "description": "Number of objects stored per resource type. Shows the top 10 by count. Large resource counts (e.g., TaskRuns) drive memory usage in both KAS watch caches and Kine.",
       "fieldConfig": {
         "defaults": {
@@ -462,7 +512,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 58 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 66 },
       "id": 200,
       "options": { "displayMode": "gradient", "minVizHeight": 16, "minVizWidth": 0, "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showUnfilled": true },
       "targets": [
@@ -487,7 +537,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 58 },
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 66 },
       "id": 201,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -511,7 +561,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 66 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 74 },
       "id": 202,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -535,7 +585,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 66 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 74 },
       "id": 203,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -559,7 +609,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 74 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 82 },
       "id": 204,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -583,7 +633,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 74 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 82 },
       "id": 205,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -607,7 +657,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 74 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 82 },
       "id": 206,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -629,7 +679,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 82 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 90 },
       "id": 50,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -653,7 +703,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 82 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 90 },
       "id": 51,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -677,7 +727,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 82 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 90 },
       "id": 52,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -692,7 +742,7 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 90 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 98 },
       "id": 106,
       "title": "PostgreSQL — The backing database for Kine. Resource pressure here cascades into higher SQL latencies for both reads and writes.",
       "type": "row"
@@ -708,7 +758,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 91 },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 99 },
       "id": 60,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -732,7 +782,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 91 },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 99 },
       "id": 61,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -761,7 +811,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 91 },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 99 },
       "id": 63,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -790,7 +840,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 91 },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 99 },
       "id": 62,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -846,5 +896,5 @@
   "timezone": "browser",
   "title": "Kube-Shard / Shard Overview",
   "uid": "kube-shard-kine",
-  "version": 3
+  "version": 4
 }
