@@ -453,7 +453,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Average memory working set across KAS pods. Uses container=\"kube-apiserver\" to match existing KAS resource panels (ids 50–52).",
+      "description": "Average memory working set per KAS pod, aggregated across all kube-apiserver containers in the shard namespace.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -468,7 +468,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "avg(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"kube-apiserver\"})",
+          "expr": "avg(sum(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"kube-apiserver\"}) by (pod))",
           "legendFormat": "avg memory"
         }
       ],
@@ -477,7 +477,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Average CPU across KAS pods. Uses container=\"kube-apiserver\" to match the memory panel and existing KAS resource panels (ids 50–52).",
+      "description": "Average CPU usage per KAS pod, aggregated across all kube-apiserver containers in the shard namespace.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
