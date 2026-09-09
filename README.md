@@ -194,7 +194,9 @@ The operator defines three CRDs:
 | `targetNamespace` | Namespace where the secondary stack is deployed |
 | `apiGroups` | List of API groups and versions to offload |
 | `storage.type` | Backend: `SQLite`, `InClusterPostgreSQL`, or `PostgreSQL` (external) |
-| `storage.connectionSecretRef` | Secret reference for external PostgreSQL connection string |
+| `storage.connectionSecretRef` | Secret reference for external PostgreSQL connection string (`KINE_ENDPOINT` DSN) |
+| `storage.inCluster.resources` | CPU/memory requests and limits for in-cluster PostgreSQL |
+| `storage.inCluster.postgresql.sharedBuffers` | PostgreSQL `shared_buffers`. If omitted, 25% of the memory limit (else the memory request). Changing this restarts PostgreSQL |
 | `storage.inCluster.persistence.size` | PVC size for in-cluster PostgreSQL. Changing this on an existing StatefulSet is ignored (`volumeClaimTemplates` are immutable); `StorageReady` becomes False |
 | `storage.inCluster.persistence.storageClassName` | StorageClass for the PVC. Omitted uses the cluster default; `""` disables dynamic provisioning. Changes on an existing StatefulSet are ignored the same way as size |
 | `namespaceSync.labelSelector` | Label selector for namespaces to sync to the secondary |
@@ -259,7 +261,86 @@ Key considerations:
 - **Set requests equal to limits** (Guaranteed QoS) for Kine and the apiserver to avoid OOM kills under load.
 - **Kine memory** must be large enough to buffer the largest LIST response. If your largest API group contains N objects of average size S, Kine needs at least `N * S` of headroom on top of its base usage.
 - **Multiple Kine replicas** distribute LIST/WATCH load across instances.
-- **PostgreSQL** is less memory-sensitive but benefits from enough RAM to cache the working set.
+- **PostgreSQL** needs RAM to cache the live working set (Kine resource bodies live in TOAST). See [PostgreSQL configuration](#postgresql-configuration).
+
+### PostgreSQL configuration
+
+Kine stores each object revision as a SQL row. Large resource bodies are stored in PostgreSQL TOAST. If `shared_buffers` is left at the image default (128MB) on a machine with many GiB of RAM, indexes can still hit in cache while TOAST misses, and LIST/WATCH latency climbs.
+
+#### In-cluster PostgreSQL
+
+When `storage.type` is `InClusterPostgreSQL`, the operator always passes `-c shared_buffers=...`:
+
+1. **Override:** `spec.storage.inCluster.postgresql.sharedBuffers` (a Kubernetes quantity such as `2Gi`).
+2. **Default:** 25% of `spec.storage.inCluster.resources.limits.memory`, falling back to the memory request, then to the operator default request (256Mi).
+
+`shared_buffers` can only be changed at PostgreSQL start (`PGC_POSTMASTER`). Updating the field rolls the StatefulSet.
+
+The value must be greater than zero and less than the container memory limit (or the memory request if no limit is set). Leave headroom for `work_mem` × connections, autovacuum, and WAL.
+
+```yaml
+spec:
+  storage:
+    type: InClusterPostgreSQL
+    inCluster:
+      resources:
+        requests:
+          cpu: "2"
+          memory: 12Gi
+        limits:
+          cpu: "2"
+          memory: 12Gi
+      postgresql:
+        # Optional. Omit this to get 25% of the 12Gi limit (3Gi).
+        # Set it after measuring postgresql_tables_live_bytes and TOAST hit ratio.
+        sharedBuffers: 2Gi
+      persistence:
+        size: 100Gi
+```
+
+A 2–4Gi `sharedBuffers` on a 12Gi pod is a reasonable starting point when live TOAST is around 1Gi.
+
+#### External PostgreSQL
+
+When `storage.type` is `PostgreSQL`, the operator does not manage the database. Put a DSN in a Secret and point `connectionSecretRef` at it. Prefer `sslmode=verify-full` with a server certificate the Kine image already trusts (public CA or a custom Kine image that includes your CA). Kine does not mount a CA volume for external PostgreSQL. `sslmode=require` encrypts without verifying the server; use it only if verify-full is not possible yet.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-credentials
+  namespace: kube-shard-operator
+stringData:
+  KINE_ENDPOINT: "postgres://kine:PASSWORD@postgres.example.com:5432/kine?sslmode=verify-full"
+---
+# APIShard fragment
+spec:
+  storage:
+    type: PostgreSQL
+    connectionSecretRef:
+      name: pg-credentials
+      key: KINE_ENDPOINT
+```
+
+For storage metrics, set `storage.monitoring.caCertSecret` to the PostgreSQL server CA and have the DBA install `pgstattuple`.
+
+Size and tune the instance for a TOAST-heavy, high-churn key/value workload (not a typical OLTP app):
+
+| Setting | Guidance |
+|---------|----------|
+| **Instance memory** | Large enough that `shared_buffers` plus OS page cache can hold live TOAST plus hot indexes. Watch `postgresql_tables_live_bytes` and buffer hit ratio (TOAST vs indexes separately). |
+| **`shared_buffers`** | Start at ~25% of instance RAM. After measuring, set a fixed size that covers the live working set (for example 2–4Gi when live TOAST is ~1Gi). Do not leave a large instance on the 128MB default. |
+| **`effective_cache_size`** | ~50–75% of instance RAM. Planner hint only; it does not allocate memory. |
+| **`max_connections`** | Must exceed `(kine.replicas × kine.connectionPool.maxOpenConnections) + monitoring + admin`. If Kine `maxOpenConnections` is unset, the pool is uncapped and can exhaust `max_connections`. Set both. |
+| **`work_mem`** | Keep modest (4–16MB). Peak extra RAM is roughly `work_mem × active queries`; a high cap times many Kine connections will OOM the instance. |
+| **`maintenance_work_mem`** | 256MB–1Gi so autovacuum and `VACUUM` can keep up after Kine compaction deletes old revisions. |
+| **Autovacuum** | Compaction leaves dead tuples on the `kine` table. Lower `autovacuum_vacuum_scale_factor` on that table (for example 0.01–0.05) so vacuum does not wait for a large fraction of a multi-GB table. |
+| **WAL / checkpoints** | Raise `max_wal_size` (2–4Gi is a common starting point) and `checkpoint_completion_target = 0.9` so write bursts from watch fan-out and compaction do not stall on full checkpoints. |
+| **Storage** | SSD or equivalent. `random_page_cost = 1.1` (or the cloud vendor's recommended value) so the planner prefers indexes. |
+| **`huge_pages`** | `off` inside containers. Managed services (RDS, Cloud SQL, AlloyDB) set this for you. |
+| **Extensions** | `pgstattuple` is required for `storage.monitoring` bloat metrics. |
+
+Managed parameter groups (RDS, Cloud SQL, Azure) often set `shared_buffers` from instance class, but still verify it against the live TOAST working set. Changing `shared_buffers` requires a restart.
 
 ### Load testing
 

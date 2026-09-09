@@ -89,9 +89,29 @@ type SecretKeyReference struct {
 	Key string `json:"key,omitempty"`
 }
 
+// InClusterStorage configures the operator-managed PostgreSQL instance used
+// when storage.type is InClusterPostgreSQL.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.postgresql) || !has(self.postgresql.sharedBuffers) || quantity(string(self.postgresql.sharedBuffers)).isGreaterThan(quantity('0'))",message="postgresql.sharedBuffers must be greater than zero"
+// +kubebuilder:validation:XValidation:rule="!has(self.postgresql) || !has(self.postgresql.sharedBuffers) || !has(self.resources.limits) || !has(self.resources.limits.memory) || quantity(string(self.postgresql.sharedBuffers)).isLessThan(quantity(string(self.resources.limits.memory)))",message="postgresql.sharedBuffers must be less than resources.limits.memory"
+// +kubebuilder:validation:XValidation:rule="!has(self.postgresql) || !has(self.postgresql.sharedBuffers) || has(self.resources.limits.memory) || !has(self.resources.requests) || !has(self.resources.requests.memory) || quantity(string(self.postgresql.sharedBuffers)).isLessThan(quantity(string(self.resources.requests.memory)))",message="postgresql.sharedBuffers must be less than resources.requests.memory when no memory limit is set"
 type InClusterStorage struct {
 	Resources   corev1.ResourceRequirements `json:"resources,omitempty"`
 	Persistence *PersistenceSpec            `json:"persistence,omitempty"`
+	// PostgreSQL holds in-cluster PostgreSQL server settings.
+	// +optional
+	PostgreSQL *InClusterPostgreSQLConfig `json:"postgresql,omitempty"`
+}
+
+// InClusterPostgreSQLConfig tunes the in-cluster PostgreSQL server.
+type InClusterPostgreSQLConfig struct {
+	// SharedBuffers sets PostgreSQL shared_buffers. If omitted, the operator
+	// uses 25% of the container memory limit, falling back to the memory
+	// request, then to the operator default memory request (256Mi).
+	// shared_buffers is PGC_POSTMASTER: changing this value rolls the
+	// StatefulSet and restarts PostgreSQL.
+	// +optional
+	SharedBuffers *resource.Quantity `json:"sharedBuffers,omitempty"`
 }
 
 // PersistenceSpec configures persistent volume storage for in-cluster backends.

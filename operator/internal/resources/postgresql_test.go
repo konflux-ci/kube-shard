@@ -17,6 +17,7 @@ limitations under the License.
 package resources
 
 import (
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -215,10 +216,143 @@ func TestBuildPostgreSQLStatefulSet_TLSVolume(t *testing.T) {
 	g.Expect(tlsMount.MountPath).To(Equal(postgresqlTLSMountPath))
 	g.Expect(tlsMount.ReadOnly).To(BeTrue())
 
-	g.Expect(container.Args).To(ConsistOf(
+	g.Expect(container.Args).To(ContainElements(
 		"-c", "ssl=on",
 		"-c", "ssl_cert_file="+postgresqlTLSMountPath+"/tls.crt",
 		"-c", "ssl_key_file="+postgresqlTLSMountPath+"/tls.key",
 		"-c", "ssl_ca_file="+postgresqlTLSMountPath+"/ca.crt",
 	))
+	g.Expect(postgresGUC(container.Args, "shared_buffers")).To(Equal("64MB"),
+		"empty inCluster uses 25% of the default 256Mi memory request")
+}
+
+// TestBuildPostgreSQLStatefulSet_SharedBuffers covers the 25% default
+// (limit, then request, then 256Mi) and an explicit sharedBuffers override.
+func TestBuildPostgreSQLStatefulSet_SharedBuffers(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*kubeshardv1alpha1.APIShard)
+		wantGUC string
+	}{
+		{
+			name: "defaults to 25 percent of default memory request",
+			mutate: func(shard *kubeshardv1alpha1.APIShard) {
+				shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{}
+			},
+			wantGUC: "64MB",
+		},
+		{
+			name: "defaults to 25 percent of memory limit",
+			mutate: func(shard *kubeshardv1alpha1.APIShard) {
+				shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("12Gi"),
+						},
+					},
+				}
+			},
+			wantGUC: "3GB",
+		},
+		{
+			name: "falls back to 25 percent of memory request when limit is unset",
+			mutate: func(shard *kubeshardv1alpha1.APIShard) {
+				shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("12Gi"),
+						},
+					},
+				}
+			},
+			wantGUC: "3GB",
+		},
+		{
+			name: "prefers memory limit over request",
+			mutate: func(shard *kubeshardv1alpha1.APIShard) {
+				shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("12Gi"),
+						},
+					},
+				}
+			},
+			wantGUC: "3GB",
+		},
+		{
+			name: "uses explicit sharedBuffers override",
+			mutate: func(shard *kubeshardv1alpha1.APIShard) {
+				sb := resource.MustParse("2Gi")
+				shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("12Gi"),
+						},
+					},
+					PostgreSQL: &kubeshardv1alpha1.InClusterPostgreSQLConfig{
+						SharedBuffers: &sb,
+					},
+				}
+			},
+			wantGUC: "2GB",
+		},
+		{
+			name: "clamps derived shared_buffers to PostgreSQL minimum",
+			mutate: func(shard *kubeshardv1alpha1.APIShard) {
+				shard.Spec.Storage.InCluster = &kubeshardv1alpha1.InClusterStorage{
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceMemory: resource.MustParse("100Ki"),
+						},
+					},
+				}
+			},
+			wantGUC: "128kB",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			shard := newTestShard()
+			shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
+			tt.mutate(shard)
+
+			sts := BuildPostgreSQLStatefulSet(shard)
+			got := postgresGUC(sts.Spec.Template.Spec.Containers[0].Args, "shared_buffers")
+			g.Expect(got).To(Equal(tt.wantGUC))
+		})
+	}
+}
+
+func TestFormatPostgreSQLMemory(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cases := []struct {
+		qty  string
+		want string
+	}{
+		{qty: "2Gi", want: "2GB"},
+		{qty: "128Mi", want: "128MB"},
+		{qty: "1536Mi", want: "1536MB"},
+		{qty: "100Ki", want: "100kB"},
+	}
+	for _, tc := range cases {
+		q := resource.MustParse(tc.qty)
+		g.Expect(formatPostgreSQLMemory(q.Value())).To(Equal(tc.want), "qty %s", tc.qty)
+	}
+}
+
+// postgresGUC returns the value of a PostgreSQL -c name=value argument.
+func postgresGUC(args []string, name string) string {
+	prefix := name + "="
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-c" && strings.HasPrefix(args[i+1], prefix) {
+			return strings.TrimPrefix(args[i+1], prefix)
+		}
+	}
+	return ""
 }
