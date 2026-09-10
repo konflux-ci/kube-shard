@@ -453,7 +453,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Average memory working set per KAS pod, aggregated across all kube-apiserver containers in the shard namespace.",
+      "description": "Container memory working set per KAS pod. Compare with resource limits to assess OOM risk. The secondary KAS caches informer data and holds open watch connections.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -462,22 +462,22 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 58 },
-      "id": 207,
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 58 },
+      "id": 50,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "avg(sum(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"kube-apiserver\"}) by (pod))",
-          "legendFormat": "avg memory"
+          "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"kube-apiserver\"}) by (pod)",
+          "legendFormat": "{{pod}}"
         }
       ],
-      "title": "KAS Memory (avg per pod)",
+      "title": "KAS Memory (Working Set)",
       "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Average CPU usage per KAS pod, aggregated across all kube-apiserver containers in the shard namespace.",
+      "description": "Container CPU usage per KAS pod in cores. High CPU may indicate excessive request volume or expensive list operations.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -486,17 +486,41 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 58 },
-      "id": 208,
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 58 },
+      "id": 51,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "avg(sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"kube-apiserver\"}[5m])) by (pod))",
-          "legendFormat": "avg cpu"
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"kube-apiserver\"}[5m])) by (pod)",
+          "legendFormat": "{{pod}}"
         }
       ],
-      "title": "KAS CPU (avg per pod)",
+      "title": "KAS CPU Usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Container restarts for KAS pods. Restarts may indicate OOMKills, liveness probe failures, or crash loops.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 58 },
+      "id": 52,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"$namespace\", container=\"kube-apiserver\"}) by (pod)",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "title": "KAS Container Restarts",
       "type": "timeseries"
     },
     {
@@ -667,80 +691,8 @@
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Container memory working set per KAS pod. Compare with resource limits to assess OOM risk. The secondary KAS caches informer data and holds open watch connections.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 90 },
-      "id": 50,
-      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\", container=\"kube-apiserver\"}) by (pod)",
-          "legendFormat": "{{pod}}"
-        }
-      ],
-      "title": "KAS Memory (Working Set)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Container CPU usage per KAS pod in cores. High CPU may indicate excessive request volume or expensive list operations.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never", "axisLabel": "cores" },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 90 },
-      "id": 51,
-      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"kube-apiserver\"}[5m])) by (pod)",
-          "legendFormat": "{{pod}}"
-        }
-      ],
-      "title": "KAS CPU Usage",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Container restarts for KAS pods. Restarts may indicate OOMKills, liveness probe failures, or crash loops.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 90 },
-      "id": 52,
-      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"$namespace\", container=\"kube-apiserver\"}) by (pod)",
-          "legendFormat": "{{pod}}"
-        }
-      ],
-      "title": "KAS Container Restarts",
-      "type": "timeseries"
-    },
-    {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 98 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 90 },
       "id": 106,
       "title": "PostgreSQL — The backing database for Kine. Resource pressure here cascades into higher SQL latencies for both reads and writes.",
       "type": "row"
@@ -756,7 +708,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 99 },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 91 },
       "id": 60,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -780,7 +732,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 99 },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 91 },
       "id": 61,
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -809,7 +761,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 99 },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 91 },
       "id": 63,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -838,7 +790,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 99 },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 91 },
       "id": 62,
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
@@ -894,5 +846,5 @@
   "timezone": "browser",
   "title": "Kube-Shard / Shard Overview",
   "uid": "kube-shard-kine",
-  "version": 4
+  "version": 5
 }
