@@ -1,6 +1,6 @@
 module github.com/konflux-ci/kube-shard/tools/generate-from-pipeline
 
-go 1.26.4
+go 1.27
 
 require (
 	github.com/google/go-containerregistry v0.21.7

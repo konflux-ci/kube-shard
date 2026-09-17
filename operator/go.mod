@@ -1,6 +1,6 @@
 module github.com/konflux-ci/kube-shard/operator
 
-go 1.26.4
+go 1.27
 
 require (
 	github.com/go-logr/logr v1.4.3
