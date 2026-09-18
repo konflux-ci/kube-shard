@@ -6,7 +6,7 @@ require (
 	github.com/go-logr/logr v1.4.3
 	github.com/konflux-ci/konflux-ci/operator v0.0.0-20260723080721-a1c04cf96fc5
 	github.com/onsi/ginkgo/v2 v2.32.0
-	github.com/onsi/gomega v1.42.1
+	github.com/onsi/gomega v1.43.0
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.93.0
 	k8s.io/api v0.36.3
 	k8s.io/apiextensions-apiserver v0.36.3

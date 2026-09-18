@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/google/go-containerregistry v0.21.7
-	github.com/onsi/gomega v1.42.1
+	github.com/onsi/gomega v1.43.0
 	github.com/tektoncd/pipeline v1.14.1
 	k8s.io/api v0.35.6
 	k8s.io/apimachinery v0.36.2
