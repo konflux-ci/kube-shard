@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/google/go-containerregistry v0.21.7
-	github.com/onsi/gomega v1.42.1
+	github.com/onsi/gomega v1.43.1
 	github.com/tektoncd/pipeline v1.14.1
 	k8s.io/api v0.35.6
 	k8s.io/apimachinery v0.36.2
@@ -65,7 +65,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	go.yaml.in/yaml/v3 v3.0.4 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20250210185358-939b2ce775ac // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
