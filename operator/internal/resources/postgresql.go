@@ -40,6 +40,15 @@ const (
 	postgresqlServingSecretName = "%s-postgresql-serving-cert"
 	postgresqlTLSCertMode       = int32(0644)
 	postgresqlTLSKeyMode        = int32(0640)
+
+	defaultPostgreSQLCPURequest    = "100m"
+	defaultPostgreSQLMemoryRequest = "256Mi"
+	// postgresqlSharedBuffersPercent is the fraction of the container
+	// memory budget used for shared_buffers when SharedBuffers is unset.
+	postgresqlSharedBuffersPercent = int64(25)
+	// postgresqlMinSharedBuffersBytes is PostgreSQL's shared_buffers minimum
+	// (16 pages of 8kB).
+	postgresqlMinSharedBuffersBytes = int64(128 * 1024)
 )
 
 func PostgreSQLStatefulSetName(shard *kubeshardv1alpha1.APIShard) string {
@@ -107,16 +116,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 	name := PostgreSQLStatefulSetName(shard)
 	labels := postgresLabels(shard)
 
-	var resourceReqs corev1.ResourceRequirements
-	if shard.Spec.Storage.InCluster != nil {
-		resourceReqs = shard.Spec.Storage.InCluster.Resources
-	}
-	if resourceReqs.Requests == nil {
-		resourceReqs.Requests = corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse("100m"),
-			corev1.ResourceMemory: resource.MustParse("256Mi"),
-		}
-	}
+	resourceReqs := postgresqlResourceRequirements(shard)
 
 	volumes := make([]corev1.Volume, 0, 2)
 	var vcts []corev1.PersistentVolumeClaim
@@ -234,12 +234,7 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 									Value: "/var/lib/postgresql/data/pgdata",
 								},
 							},
-							Args: []string{
-								"-c", "ssl=on",
-								"-c", "ssl_cert_file=" + postgresqlTLSMountPath + "/tls.crt",
-								"-c", "ssl_key_file=" + postgresqlTLSMountPath + "/tls.key",
-								"-c", "ssl_ca_file=" + postgresqlTLSMountPath + "/ca.crt",
-							},
+							Args:      postgresqlArgs(shard),
 							Resources: resourceReqs,
 							VolumeMounts: append([]corev1.VolumeMount{
 								{
@@ -313,6 +308,8 @@ func BuildPostgreSQLService(shard *kubeshardv1alpha1.APIShard) *corev1.Service {
 	}
 }
 
+// postgresLabels returns the standard labels for in-cluster PostgreSQL
+// resources owned by the given shard.
 func postgresLabels(shard *kubeshardv1alpha1.APIShard) map[string]string {
 	return map[string]string{
 		LabelName:      "postgresql",
@@ -322,6 +319,91 @@ func postgresLabels(shard *kubeshardv1alpha1.APIShard) map[string]string {
 	}
 }
 
+// postgresqlResourceRequirements returns the in-cluster PostgreSQL container
+// resources, filling in default CPU and memory requests when none are set.
+func postgresqlResourceRequirements(shard *kubeshardv1alpha1.APIShard) corev1.ResourceRequirements {
+	var resourceReqs corev1.ResourceRequirements
+	if shard.Spec.Storage.InCluster != nil {
+		resourceReqs = shard.Spec.Storage.InCluster.Resources
+	}
+	if resourceReqs.Requests == nil {
+		resourceReqs.Requests = corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(defaultPostgreSQLCPURequest),
+			corev1.ResourceMemory: resource.MustParse(defaultPostgreSQLMemoryRequest),
+		}
+	}
+	return resourceReqs
+}
+
+// postgresqlArgs returns postgres -c flags for TLS and shared_buffers.
+func postgresqlArgs(shard *kubeshardv1alpha1.APIShard) []string {
+	return []string{
+		"-c", "ssl=on",
+		"-c", "ssl_cert_file=" + postgresqlTLSMountPath + "/tls.crt",
+		"-c", "ssl_key_file=" + postgresqlTLSMountPath + "/tls.key",
+		"-c", "ssl_ca_file=" + postgresqlTLSMountPath + "/ca.crt",
+		"-c", "shared_buffers=" + postgresqlSharedBuffers(shard),
+	}
+}
+
+// postgresqlSharedBuffers returns the PostgreSQL shared_buffers GUC value.
+// An explicit spec.storage.inCluster.postgresql.sharedBuffers wins; otherwise
+// the operator uses 25% of the memory limit, then the request, then 256Mi.
+func postgresqlSharedBuffers(shard *kubeshardv1alpha1.APIShard) string {
+	if override := inClusterSharedBuffersOverride(shard); override != nil {
+		return formatPostgreSQLMemory(override.Value())
+	}
+	budget := postgresqlMemoryBudget(shard)
+	derived := max(budget.Value()*postgresqlSharedBuffersPercent/100, postgresqlMinSharedBuffersBytes)
+	return formatPostgreSQLMemory(derived)
+}
+
+// inClusterSharedBuffersOverride returns the user-specified sharedBuffers
+// quantity, or nil when the field is unset.
+func inClusterSharedBuffersOverride(shard *kubeshardv1alpha1.APIShard) *resource.Quantity {
+	if shard.Spec.Storage.InCluster == nil || shard.Spec.Storage.InCluster.PostgreSQL == nil {
+		return nil
+	}
+	return shard.Spec.Storage.InCluster.PostgreSQL.SharedBuffers
+}
+
+// postgresqlMemoryBudget returns the container memory used to derive
+// shared_buffers: limit, then request, then the operator default request.
+func postgresqlMemoryBudget(shard *kubeshardv1alpha1.APIShard) resource.Quantity {
+	if ic := shard.Spec.Storage.InCluster; ic != nil {
+		if mem, ok := ic.Resources.Limits[corev1.ResourceMemory]; ok {
+			return mem
+		}
+		if mem, ok := ic.Resources.Requests[corev1.ResourceMemory]; ok {
+			return mem
+		}
+	}
+	return resource.MustParse(defaultPostgreSQLMemoryRequest)
+}
+
+// formatPostgreSQLMemory converts a byte count to a PostgreSQL memory GUC
+// (kB/MB/GB). PostgreSQL memory units are powers of 1024.
+func formatPostgreSQLMemory(bytes int64) string {
+	const (
+		ki = int64(1024)
+		mi = 1024 * 1024
+		gi = 1024 * 1024 * 1024
+	)
+	if bytes < ki {
+		bytes = ki
+	}
+	switch {
+	case bytes%gi == 0:
+		return fmt.Sprintf("%dGB", bytes/gi)
+	case bytes%mi == 0:
+		return fmt.Sprintf("%dMB", bytes/mi)
+	default:
+		return fmt.Sprintf("%dkB", bytes/ki)
+	}
+}
+
+// persistenceFromShard returns the in-cluster persistence spec, or nil when
+// the shard uses emptyDir storage.
 func persistenceFromShard(shard *kubeshardv1alpha1.APIShard) *kubeshardv1alpha1.PersistenceSpec {
 	if shard.Spec.Storage.InCluster == nil {
 		return nil
