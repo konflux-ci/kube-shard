@@ -31,7 +31,7 @@ import (
 
 const (
 	// renovate: datasource=docker depName=registry.k8s.io/kube-apiserver
-	DefaultSecondaryImage    = "registry.k8s.io/kube-apiserver:v1.36.2"
+	DefaultSecondaryImage    = "registry.k8s.io/kube-apiserver:v1.37.1"
 	SecondaryPort            = 6443
 	tmpVolumeName            = "tmp"
 	varRunKubeVolumeName     = "var-run-kubernetes"
