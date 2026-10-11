@@ -852,6 +852,9 @@ spec:
                     - name
                     type: object
                   inCluster:
+                    description: |-
+                      InClusterStorage configures the operator-managed PostgreSQL instance used
+                      when storage.type is InClusterPostgreSQL.
                     properties:
                       persistence:
                         description: |-
@@ -872,6 +875,23 @@ spec:
                             type: string
                         required:
                         - size
+                        type: object
+                      postgresql:
+                        description: PostgreSQL holds in-cluster PostgreSQL server
+                          settings.
+                        properties:
+                          sharedBuffers:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              SharedBuffers sets PostgreSQL shared_buffers. If omitted, the operator
+                              uses 25% of the container memory limit, falling back to the memory
+                              request, then to the operator default memory request (256Mi).
+                              shared_buffers is PGC_POSTMASTER: changing this value rolls the
+                              StatefulSet and restarts PostgreSQL.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
                         type: object
                       resources:
                         description: ResourceRequirements describes the compute resource
@@ -934,6 +954,19 @@ spec:
                             type: object
                         type: object
                     type: object
+                    x-kubernetes-validations:
+                    - message: postgresql.sharedBuffers must be greater than zero
+                      rule: '!has(self.postgresql) || !has(self.postgresql.sharedBuffers)
+                        || quantity(string(self.postgresql.sharedBuffers)).isGreaterThan(quantity(''0''))'
+                    - message: postgresql.sharedBuffers must be less than resources.limits.memory
+                      rule: '!has(self.postgresql) || !has(self.postgresql.sharedBuffers)
+                        || !has(self.resources.limits) || !has(self.resources.limits.memory)
+                        || quantity(string(self.postgresql.sharedBuffers)).isLessThan(quantity(string(self.resources.limits.memory)))'
+                    - message: postgresql.sharedBuffers must be less than resources.requests.memory
+                        when no memory limit is set
+                      rule: '!has(self.postgresql) || !has(self.postgresql.sharedBuffers)
+                        || has(self.resources.limits.memory) || !has(self.resources.requests)
+                        || !has(self.resources.requests.memory) || quantity(string(self.postgresql.sharedBuffers)).isLessThan(quantity(string(self.resources.requests.memory)))'
                   monitoring:
                     description: |-
                       StorageMonitoringSpec configures metrics collection for the storage backend.
