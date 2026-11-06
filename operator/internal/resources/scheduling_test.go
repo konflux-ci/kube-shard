@@ -108,3 +108,19 @@ func TestBuildKineAffinity_MultiReplica(t *testing.T) {
 	g.Expect(labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-shard"))
 	g.Expect(affinity.PodAffinity).To(BeNil())
 }
+
+func TestPriorityClassName_DefaultWhenEmpty(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.PriorityClassName = ""
+
+	g.Expect(PriorityClassName(shard)).To(Equal(DefaultPriorityClassName))
+}
+
+func TestPriorityClassName_Custom(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.PriorityClassName = "high-priority"
+
+	g.Expect(PriorityClassName(shard)).To(Equal("high-priority"))
+}

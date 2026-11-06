@@ -126,6 +126,7 @@ spec:
     labelSelector:
       matchLabels:
         konflux.dev/type: tenant
+  priorityClassName: system-cluster-critical
   secondary:
     replicas: 1
     image: registry.k8s.io/kube-apiserver:v1.36.2
@@ -152,6 +153,7 @@ spec:
     labelSelector:
       matchLabels:
         konflux.dev/type: tenant
+  priorityClassName: system-cluster-critical
   secondary:
     replicas: 1
   kine:

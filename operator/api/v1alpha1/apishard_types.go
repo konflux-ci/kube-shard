@@ -28,6 +28,11 @@ const (
 	StorageTypeSQLite              StorageType = "SQLite"
 	StorageTypeInClusterPostgreSQL StorageType = "InClusterPostgreSQL"
 	StorageTypePostgreSQL          StorageType = "PostgreSQL"
+
+	// DefaultPriorityClassName is the default PriorityClass assigned to managed pods
+	// (secondary kube-apiserver, Kine, and in-cluster PostgreSQL) to prevent them
+	// from being preempted under resource pressure.
+	DefaultPriorityClassName = "system-cluster-critical"
 )
 
 type APIGroupSpec struct {
@@ -247,6 +252,13 @@ type APIShardSpec struct {
 	NamespaceSync   NamespaceSyncConfig `json:"namespaceSync"`
 	Secondary       SecondarySpec       `json:"secondary,omitempty"`
 	Kine            KineSpec            `json:"kine,omitempty"`
+
+	// PriorityClassName specifies the PriorityClass to be assigned to the PodSpec
+	// of all managed workloads (secondary kube-apiserver, Kine, and in-cluster PostgreSQL).
+	// When omitted or empty, defaults to "system-cluster-critical".
+	// +optional
+	// +kubebuilder:default="system-cluster-critical"
+	PriorityClassName string `json:"priorityClassName,omitempty"`
 
 	// Monitoring configures Prometheus metrics collection.
 	// +optional

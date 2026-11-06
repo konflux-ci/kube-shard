@@ -25,9 +25,23 @@ const (
 
 	CACertKey = "ca.crt"
 
+	// DefaultPriorityClassName is the default PriorityClass assigned to managed pods
+	// to prevent them from being preempted under resource pressure.
+	DefaultPriorityClassName = kubeshardv1alpha1.DefaultPriorityClassName
+
 	// LabelOTelConfig is used by the hashedconfigmap utility to track OTel Collector ConfigMaps.
 	LabelOTelConfig = "kube-shard.konflux-ci.dev/otel-config"
 )
+
+// PriorityClassName returns the effective PriorityClass name for managed pods
+// in the given shard. It defaults to DefaultPriorityClassName ("system-cluster-critical")
+// if PriorityClassName is omitted or empty.
+func PriorityClassName(shard *kubeshardv1alpha1.APIShard) string {
+	if shard.Spec.PriorityClassName != "" {
+		return shard.Spec.PriorityClassName
+	}
+	return DefaultPriorityClassName
+}
 
 // isColocateEnabled returns true if component colocation is enabled for the shard.
 // Colocation is enabled by default when ColocateComponents is nil.
