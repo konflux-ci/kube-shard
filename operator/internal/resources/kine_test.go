@@ -512,3 +512,24 @@ func TestBuildKineDeployment_InClusterPostgreSQL_PGCAVolume(t *testing.T) {
 	g.Expect(pgCAMount.MountPath).To(Equal(postgresqlCAMountPath))
 	g.Expect(pgCAMount.ReadOnly).To(BeTrue())
 }
+
+func TestBuildKineDeployment_PriorityClassName_Default(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+
+	deploy := BuildKineDeployment(shard)
+	podSpec := deploy.Spec.Template.Spec
+
+	g.Expect(podSpec.PriorityClassName).To(Equal("system-cluster-critical"))
+}
+
+func TestBuildKineDeployment_PriorityClassName_Custom(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.PriorityClassName = "custom-priority"
+
+	deploy := BuildKineDeployment(shard)
+	podSpec := deploy.Spec.Template.Spec
+
+	g.Expect(podSpec.PriorityClassName).To(Equal("custom-priority"))
+}

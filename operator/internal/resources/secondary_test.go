@@ -143,6 +143,27 @@ func TestBuildSecondaryDeployment_SchedulingFields(t *testing.T) {
 	g.Expect(podSpec.Tolerations[0].Key).To(Equal("node-role.kubernetes.io/infra"))
 }
 
+func TestBuildSecondaryDeployment_PriorityClassName_Default(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
+	podSpec := deploy.Spec.Template.Spec
+
+	g.Expect(podSpec.PriorityClassName).To(Equal("system-cluster-critical"))
+}
+
+func TestBuildSecondaryDeployment_PriorityClassName_Custom(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.PriorityClassName = "custom-priority"
+
+	deploy := BuildSecondaryDeployment(shard, []string{"front-proxy-client"}, testPrimaryIssuers)
+	podSpec := deploy.Spec.Template.Spec
+
+	g.Expect(podSpec.PriorityClassName).To(Equal("custom-priority"))
+}
+
 func TestBuildSecondaryDeployment_AntiAffinityInjected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	shard := newTestShard()

@@ -540,6 +540,13 @@ spec:
                 required:
                 - labelSelector
                 type: object
+              priorityClassName:
+                default: system-cluster-critical
+                description: |-
+                  PriorityClassName specifies the PriorityClass to be assigned to the PodSpec
+                  of all managed workloads (secondary kube-apiserver, Kine, and in-cluster PostgreSQL).
+                  When omitted or empty, defaults to "system-cluster-critical".
+                type: string
               secondary:
                 properties:
                   image:

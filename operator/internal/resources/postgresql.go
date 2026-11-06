@@ -206,7 +206,8 @@ func BuildPostgreSQLStatefulSet(shard *kubeshardv1alpha1.APIShard) *appsv1.State
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					SecurityContext: RestrictedPodSecurityContext(),
+					PriorityClassName: PriorityClassName(shard),
+					SecurityContext:   RestrictedPodSecurityContext(),
 					Containers: []corev1.Container{
 						{
 							Name:            "postgresql",

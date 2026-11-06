@@ -232,6 +232,7 @@ func BuildKineDeployment(shard *kubeshardv1alpha1.APIShard) *appsv1.Deployment {
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					PriorityClassName:         PriorityClassName(shard),
 					SecurityContext:           RestrictedPodSecurityContext(),
 					NodeSelector:              shard.Spec.Kine.NodeSelector,
 					Tolerations:               shard.Spec.Kine.Tolerations,

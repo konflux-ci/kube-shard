@@ -6,4 +6,5 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: apishard-sample
 spec:
-  # TODO(user): Add fields here
+  # PriorityClass assigned to managed pods (defaults to system-cluster-critical when omitted).
+  priorityClassName: system-cluster-critical

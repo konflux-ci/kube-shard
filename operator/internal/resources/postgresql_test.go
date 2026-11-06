@@ -222,3 +222,26 @@ func TestBuildPostgreSQLStatefulSet_TLSVolume(t *testing.T) {
 		"-c", "ssl_ca_file="+postgresqlTLSMountPath+"/ca.crt",
 	))
 }
+
+func TestBuildPostgreSQLStatefulSet_PriorityClassName_Default(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
+
+	sts := BuildPostgreSQLStatefulSet(shard)
+	podSpec := sts.Spec.Template.Spec
+
+	g.Expect(podSpec.PriorityClassName).To(Equal("system-cluster-critical"))
+}
+
+func TestBuildPostgreSQLStatefulSet_PriorityClassName_Custom(t *testing.T) {
+	g := NewGomegaWithT(t)
+	shard := newTestShard()
+	shard.Spec.Storage.Type = kubeshardv1alpha1.StorageTypeInClusterPostgreSQL
+	shard.Spec.PriorityClassName = "custom-priority"
+
+	sts := BuildPostgreSQLStatefulSet(shard)
+	podSpec := sts.Spec.Template.Spec
+
+	g.Expect(podSpec.PriorityClassName).To(Equal("custom-priority"))
+}

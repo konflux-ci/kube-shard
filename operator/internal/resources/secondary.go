@@ -218,6 +218,7 @@ func BuildSecondaryDeployment(
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					PriorityClassName:             PriorityClassName(shard),
 					ServiceAccountName:            SecondaryServiceAccountName(shard),
 					TerminationGracePeriodSeconds: ptr.To(int64(65)),
 					SecurityContext:               APIServerPodSecurityContext(),
