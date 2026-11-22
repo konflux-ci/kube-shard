@@ -15,7 +15,7 @@ jobs:
       ARTIFACT_DIR: ${{ github.workspace }}/artifacts
     steps:
       - name: Clone the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v5
