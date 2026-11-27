@@ -134,3 +134,16 @@ make lint
 - Generated/temporary files go in `_output/` (gitignored)
 - **Doc comments**: Every exported and unexported function/method must have a Go doc comment. The comment must start with the function name (e.g., `// BuildKineDeployment constructs ...`).
 - **Test assertions**: Use [gomega](https://onsi.github.io/gomega/) for all test assertions. Initialize with `g := NewGomegaWithT(t)` and use `g.Expect(...)` instead of raw `t.Error`/`t.Fatal` patterns.
+
+## Dependency Updates
+
+When reviewing or implementing PRs that update version constants in `operator/internal/resources/`, check `operator/config/samples/` for manifests that explicitly set the same values. Sample manifests with explicit `image:` fields bypass the operator's default constants, so they must be updated in lockstep with the defaults.
+
+Known version-pinning constants and their corresponding sample files:
+
+| Constant | Source file | Sample file | Sample field |
+|----------|------------|-------------|--------------|
+| `DefaultSecondaryImage` | `operator/internal/resources/secondary.go` | `operator/config/samples/tekton_shard.yaml` | `spec.secondary.image` |
+| `DefaultKineImage` | `operator/internal/resources/kine.go` | `operator/config/samples/tekton_shard.yaml` | `spec.kine.image` |
+
+If a PR bumps a default image constant but does not update the matching sample file, the sample becomes stale and will deploy an older version when applied directly.
